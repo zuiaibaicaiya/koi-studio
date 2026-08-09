@@ -28,6 +28,7 @@ import (
 	"github.com/goravel/postgres"
 	"github.com/goravel/sqlite"
 
+	"koi-server/app/providers"
 	"koi-server/packages/socketio"
 )
 
@@ -58,6 +59,10 @@ func Providers() []foundation.ServiceProvider {
 		&telemetry.ServiceProvider{},
 		&testing.ServiceProvider{},
 		&sqlite.ServiceProvider{},
+
+		// 应用自身的服务提供者，需排在框架提供者之后，
+		// 以保证其 Register/Boot 阶段可以安全使用 config、log、storage 等基础设施。
 		&socketio.ServiceProvider{},
+		&providers.AudioServiceProvider{},
 	}
 }

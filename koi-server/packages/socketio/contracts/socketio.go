@@ -10,9 +10,9 @@ import (
 type Socketio interface {
 	On(event string, handler EventHandler)
 	OnNamespace(namespace, event string, handler EventHandler)
-	Emit(event string, args ...interface{})
-	EmitToNamespace(namespace, event string, args ...interface{})
-	EmitToRoom(namespace, room, event string, args ...interface{})
+	Emit(event string, args ...any)
+	EmitToNamespace(namespace, event string, args ...any)
+	EmitToRoom(namespace, room, event string, args ...any)
 	JoinRoom(socket *socketio.Socket, room string) error
 	LeaveRoom(socket *socketio.Socket, room string) error
 	GetClientsInRoom(namespace, room string) []*socketio.Socket
@@ -26,7 +26,7 @@ type Socketio interface {
 	Shutdown(ctx context.Context) error
 }
 
-type EventHandler func(*socketio.Socket, ...interface{}) error
+type EventHandler func(*socketio.Socket, ...any) error
 
 type Middleware interface {
 	Handle(socket *socketio.Socket, next func() error) error
@@ -46,7 +46,7 @@ type ConnectionManager interface {
 	GetConnectionCount() int
 	GetClientsInRoom(namespace, room string) []*socketio.Socket
 	GetClientsInNamespace(namespace string) []*socketio.Socket
-	BroadcastToAll(event string, args ...interface{})
-	BroadcastToNamespace(namespace string, event string, args ...interface{})
+	BroadcastToAll(event string, args ...any)
+	BroadcastToNamespace(namespace string, event string, args ...any)
 	ClearConnections()
 }

@@ -4,7 +4,6 @@ import (
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/support"
 
-	"koi-server/app/http/controllers"
 	"koi-server/app/facades"
 )
 
@@ -16,7 +15,4 @@ func Web() {
 	})
 
 	facades.Route().Static("public", "./public")
-
-	userController := controllers.NewUserController()
-	facades.Route().Get("/users", userController.Index)
 }

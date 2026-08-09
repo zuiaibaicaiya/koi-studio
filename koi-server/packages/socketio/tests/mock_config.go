@@ -77,7 +77,7 @@ func (m *mockConfig) GetStringSlice(key string, defaultValue ...[]string) []stri
 	return nil
 }
 
-func (m *mockConfig) UnmarshalKey(key string, dest interface{}) error {
+func (m *mockConfig) UnmarshalKey(key string, dest any) error {
 	return nil
 }
 

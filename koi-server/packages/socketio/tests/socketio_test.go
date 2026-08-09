@@ -13,7 +13,7 @@ import (
 func TestSocketio_On(t *testing.T) {
 	sio := socketiopkg.NewSocketio(newMockConfig())
 
-	sio.On("test", func(socket *socket.Socket, args ...interface{}) error {
+	sio.On("test", func(socket *socket.Socket, args ...any) error {
 		if len(args) > 0 {
 			assert.Equal(t, "test message", args[0])
 		}
@@ -26,7 +26,7 @@ func TestSocketio_On(t *testing.T) {
 func TestSocketio_OnNamespace(t *testing.T) {
 	sio := socketiopkg.NewSocketio(newMockConfig())
 
-	sio.OnNamespace("/chat", "message", func(socket *socket.Socket, args ...interface{}) error {
+	sio.OnNamespace("/chat", "message", func(socket *socket.Socket, args ...any) error {
 		if len(args) > 0 {
 			assert.Equal(t, "chat message", args[0])
 		}
@@ -63,7 +63,7 @@ func TestSocketio_Server(t *testing.T) {
 func TestSocketio_Integration(t *testing.T) {
 	sio := socketiopkg.NewSocketio(newMockConfig())
 
-	sio.On("ping", func(socket *socket.Socket, args ...interface{}) error {
+	sio.On("ping", func(socket *socket.Socket, args ...any) error {
 		return nil
 	})
 

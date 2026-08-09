@@ -25,7 +25,7 @@ func NewConnectionManager() *ConnectionManager {
 	return &ConnectionManager{
 		connections: make(map[string]*ConnectionInfo),
 		namespaces:  make(map[string]map[string]*socketio.Socket),
-		rooms:      make(map[string]map[string]bool),
+		rooms:       make(map[string]map[string]bool),
 	}
 }
 
@@ -126,7 +126,7 @@ func (cm *ConnectionManager) GetClientsInNamespace(namespace string) []*socketio
 	return clients
 }
 
-func (cm *ConnectionManager) BroadcastToAll(event string, args ...interface{}) {
+func (cm *ConnectionManager) BroadcastToAll(event string, args ...any) {
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 
@@ -135,7 +135,7 @@ func (cm *ConnectionManager) BroadcastToAll(event string, args ...interface{}) {
 	}
 }
 
-func (cm *ConnectionManager) BroadcastToNamespace(namespace string, event string, args ...interface{}) {
+func (cm *ConnectionManager) BroadcastToNamespace(namespace string, event string, args ...any) {
 	cm.mutex.RLock()
 	defer cm.mutex.RUnlock()
 

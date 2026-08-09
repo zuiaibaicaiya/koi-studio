@@ -9,6 +9,7 @@ require (
 	github.com/goravel/postgres v1.18.0
 	github.com/goravel/sqlite v1.18.0
 	github.com/k2-fsa/sherpa-onnx-go v1.13.4
+	github.com/spf13/cast v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zishang520/socket.io/servers/socket/v3 v3.0.2
 	github.com/zishang520/socket.io/v3 v3.0.2
@@ -120,7 +121,6 @@ require (
 	github.com/samber/slog-multi v1.8.0 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
-	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect

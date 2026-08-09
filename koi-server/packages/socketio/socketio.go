@@ -15,8 +15,11 @@ import (
 )
 
 type Socketio struct {
-	server      *socketio.Server
-	config      goravelconfig.Config
+	server *socketio.Server
+	config goravelconfig.Config
+	// mu 保护 namespaces：事件回调在库的内部协程中读取中间件链，
+	// 而命名空间可能在运行期继续注册，必须避免并发读写 map。
+	mu          sync.RWMutex
 	namespaces  map[string]*Namespace
 	connections *ConnectionManager
 	initOnce    sync.Once
@@ -71,7 +74,7 @@ func (s *Socketio) loadConfig() sioconfig.Config {
 }
 
 func (s *Socketio) setupServer() {
-	s.server.On("connection", func(args ...interface{}) {
+	s.server.On("connection", func(args ...any) {
 		defer func() {
 			if r := recover(); r != nil {
 				facades.Log().Error(fmt.Sprintf("Connection event panic: %v", r))
@@ -84,7 +87,7 @@ func (s *Socketio) setupServer() {
 			facades.Log().Info("Client connected: " + socketID)
 			s.connections.RegisterConnection(socket, DefaultNamespace)
 
-			socket.On("disconnect", func(reason ...interface{}) {
+			socket.On("disconnect", func(reason ...any) {
 				defer func() {
 					if r := recover(); r != nil {
 						facades.Log().Error(fmt.Sprintf("Disconnect event panic: %v", r))
@@ -100,7 +103,7 @@ func (s *Socketio) setupServer() {
 				s.connections.RemoveConnection(socketID)
 			})
 
-			socket.On("error", func(err ...interface{}) {
+			socket.On("error", func(err ...any) {
 				defer func() {
 					if r := recover(); r != nil {
 						facades.Log().Error(fmt.Sprintf("Error event panic: %v", r))
@@ -119,15 +122,21 @@ func (s *Socketio) On(event string, handler contracts.EventHandler) {
 }
 
 func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventHandler) {
-	if _, ok := s.namespaces[namespace]; !ok {
+	s.mu.Lock()
+	_, exists := s.namespaces[namespace]
+	if !exists {
 		s.namespaces[namespace] = &Namespace{
 			name:        namespace,
 			handlers:    make(map[string]contracts.EventHandler),
 			middlewares: make([]contracts.Middleware, 0),
 		}
+	}
+	s.namespaces[namespace].handlers[event] = handler
+	s.mu.Unlock()
 
+	if !exists {
 		nsp := s.server.Of(namespace, nil)
-		nsp.On("connection", func(args ...interface{}) {
+		nsp.On("connection", func(args ...any) {
 			defer func() {
 				if r := recover(); r != nil {
 					facades.Log().Error(fmt.Sprintf("Namespace connection event panic: %v", r))
@@ -140,7 +149,7 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
 				facades.Log().Info(fmt.Sprintf("Client connected to namespace %s: %s", namespace, socketID))
 				s.connections.RegisterConnection(socket, namespace)
 
-				socket.On("disconnect", func(reason ...interface{}) {
+				socket.On("disconnect", func(reason ...any) {
 					defer func() {
 						if r := recover(); r != nil {
 							facades.Log().Error(fmt.Sprintf("Namespace disconnect event panic: %v", r))
@@ -159,10 +168,8 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
 		})
 	}
 
-	s.namespaces[namespace].handlers[event] = handler
-
 	nsp := s.server.Of(namespace, nil)
-	nsp.On(event, func(args ...interface{}) {
+	nsp.On(event, func(args ...any) {
 		defer func() {
 			if r := recover(); r != nil {
 				facades.Log().Error(fmt.Sprintf("Event handler panic: %v", r))
@@ -170,12 +177,12 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
 		}()
 		if len(args) > 0 {
 			socket := args[0].(*socketio.Socket)
-			var eventArgs []interface{}
+			var eventArgs []any
 			if len(args) > 1 {
 				eventArgs = args[1:]
 			}
 
-			middlewares := s.namespaces[namespace].middlewares
+			middlewares := s.middlewaresOf(namespace)
 			if len(middlewares) > 0 {
 				index := 0
 				var execNext func() error
@@ -201,16 +208,16 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
 	})
 }
 
-func (s *Socketio) Emit(event string, args ...interface{}) {
+func (s *Socketio) Emit(event string, args ...any) {
 	s.EmitToNamespace(DefaultNamespace, event, args...)
 }
 
-func (s *Socketio) EmitToNamespace(namespace, event string, args ...interface{}) {
+func (s *Socketio) EmitToNamespace(namespace, event string, args ...any) {
 	nsp := s.server.Of(namespace, nil)
 	nsp.Emit(event, args...)
 }
 
-func (s *Socketio) EmitToRoom(namespace, room, event string, args ...interface{}) {
+func (s *Socketio) EmitToRoom(namespace, room, event string, args ...any) {
 	nsp := s.server.Of(namespace, nil)
 	nsp.In(socketio.Room(room)).Emit(event, args...)
 }
@@ -265,6 +272,9 @@ func (s *Socketio) Use(middleware contracts.Middleware) {
 }
 
 func (s *Socketio) UseNamespace(namespace string, middleware contracts.Middleware) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, ok := s.namespaces[namespace]; !ok {
 		s.namespaces[namespace] = &Namespace{
 			name:        namespace,
@@ -273,6 +283,18 @@ func (s *Socketio) UseNamespace(namespace string, middleware contracts.Middlewar
 		}
 	}
 	s.namespaces[namespace].middlewares = append(s.namespaces[namespace].middlewares, middleware)
+}
+
+// middlewaresOf 并发安全地读取命名空间的中间件链快照。
+func (s *Socketio) middlewaresOf(namespace string) []contracts.Middleware {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nsp, ok := s.namespaces[namespace]
+	if !ok || len(nsp.middlewares) == 0 {
+		return nil
+	}
+	return append([]contracts.Middleware(nil), nsp.middlewares...)
 }
 
 func (s *Socketio) GetConnectionManager() contracts.ConnectionManager {

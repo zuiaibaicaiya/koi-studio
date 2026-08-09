@@ -10,6 +10,7 @@ import (
 
 func Boot() contractsfoundation.Application {
 	return foundation.Setup().
+		WithSeeders(Seeders).
 		WithMigrations(Migrations).
 		WithRouting(func() {
 			routes.Web()
@@ -18,5 +19,8 @@ func Boot() contractsfoundation.Application {
 		}).
 		WithProviders(Providers).
 		WithConfig(config.Boot).
+		WithEvents(Events).
+		WithJobs(Jobs).
+		WithSchedule(Schedule).
 		Create()
 }

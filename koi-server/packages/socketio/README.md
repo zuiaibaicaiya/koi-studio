@@ -57,11 +57,11 @@ type Socketio interface {
     // OnNamespace 注册特定命名空间的事件处理器
     OnNamespace(namespace, event string, handler EventHandler)
     // Emit 向默认命名空间的所有客户端发送事件
-    Emit(event string, args ...interface{})
+    Emit(event string, args ...any)
     // EmitToNamespace 向特定命名空间的所有客户端发送事件
-    EmitToNamespace(namespace, event string, args ...interface{})
+    EmitToNamespace(namespace, event string, args ...any)
     // EmitToRoom 向特定房间的所有客户端发送事件
-    EmitToRoom(namespace, room, event string, args ...interface{})
+    EmitToRoom(namespace, room, event string, args ...any)
     // JoinRoom 将客户端添加到房间
     JoinRoom(socket *socketio.Socket, room string) error
     // LeaveRoom 将客户端从房间移除
@@ -79,7 +79,7 @@ type Socketio interface {
 }
 
 // EventHandler 事件处理器类型
-type EventHandler func(*socketio.Socket, ...interface{}) error
+type EventHandler func(*socketio.Socket, ...any) error
 ```
 
 ### 4.2 实现类
@@ -132,7 +132,7 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
         }
 
         nsp := s.server.Of(namespace, nil)
-        nsp.On("connection", func(args ...interface{}) {
+        nsp.On("connection", func(args ...any) {
             if len(args) > 0 {
                 socket := args[0].(*socketio.Socket)
                 log.Println("Client connected to namespace", namespace, ":", socket.Id())
@@ -141,10 +141,10 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
     }
 
     nsp := s.server.Of(namespace, nil)
-    nsp.On(event, func(args ...interface{}) {
+    nsp.On(event, func(args ...any) {
         if len(args) > 0 {
             socket := args[0].(*socketio.Socket)
-            var eventArgs []interface{}
+            var eventArgs []any
             if len(args) > 1 {
                 eventArgs = args[1:]
             }
@@ -158,18 +158,18 @@ func (s *Socketio) OnNamespace(namespace, event string, handler contracts.EventH
 
 ```go
 // 向默认命名空间的所有客户端发送事件
-func (s *Socketio) Emit(event string, args ...interface{}) {
+func (s *Socketio) Emit(event string, args ...any) {
     s.EmitToNamespace("/", event, args...)
 }
 
 // 向特定命名空间的所有客户端发送事件
-func (s *Socketio) EmitToNamespace(namespace, event string, args ...interface{}) {
+func (s *Socketio) EmitToNamespace(namespace, event string, args ...any) {
     nsp := s.server.Of(namespace, nil)
     nsp.Emit(event, args...)
 }
 
 // 向特定房间的所有客户端发送事件
-func (s *Socketio) EmitToRoom(namespace, room, event string, args ...interface{}) {
+func (s *Socketio) EmitToRoom(namespace, room, event string, args ...any) {
     nsp := s.server.Of(namespace, nil)
     nsp.In(socketio.Room(room)).Emit(event, args...)
 }
@@ -253,14 +253,14 @@ import (
 sio := socketio.NewSocketio()
 
 // 注册连接事件
-sio.On("connection", func(socket *socketio_lib.Socket, args ...interface{}) error {
+sio.On("connection", func(socket *socketio_lib.Socket, args ...any) error {
     fmt.Println("Client connected:", socket.Id())
     
     // 发送欢迎消息
     socket.Emit("welcome", "Welcome to socket.io server!")
     
     // 注册消息事件
-    socket.On("message", func(args ...interface{}) {
+    socket.On("message", func(args ...any) {
         if len(args) > 0 {
             message := args[0]
             fmt.Println("Received message:", message)
@@ -271,7 +271,7 @@ sio.On("connection", func(socket *socketio_lib.Socket, args ...interface{}) erro
     })
     
     // 注册断开连接事件
-    socket.On("disconnect", func(args ...interface{}) {
+    socket.On("disconnect", func(args ...any) {
         fmt.Println("Client disconnected:", socket.Id())
     })
     
@@ -279,7 +279,7 @@ sio.On("connection", func(socket *socketio_lib.Socket, args ...interface{}) erro
 })
 
 // 注册自定义命名空间
-sio.OnNamespace("/chat", "connection", func(socket *socketio_lib.Socket, args ...interface{}) error {
+sio.OnNamespace("/chat", "connection", func(socket *socketio_lib.Socket, args ...any) error {
     fmt.Println("Client connected to chat namespace:", socket.Id())
     socket.Emit("welcome", "Welcome to chat room!")
     return nil
@@ -320,7 +320,7 @@ func NewSocketioController() *SocketioController {
 // SetupSocketio 初始化 socket.io 并设置事件处理
 func (c *SocketioController) SetupSocketio() {
     // 处理默认命名空间的连接事件
-    c.socketio.On("connection", func(socket *socketio_lib.Socket, args ...interface{}) error {
+    c.socketio.On("connection", func(socket *socketio_lib.Socket, args ...any) error {
         // 事件处理...
         return nil
     })

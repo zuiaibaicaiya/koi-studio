@@ -1,303 +1,231 @@
 package api
 
 import (
-	"bytes"
 	"fmt"
-	"strconv"
-
-	"koi-server/app/facades"
-	"koi-server/app/services/audio"
-	"koi-server/packages/socketio/contracts"
+	"runtime/debug"
 
 	"github.com/goravel/framework/contracts/http"
-	socketio_lib "github.com/zishang520/socket.io/servers/socket/v3"
-	"github.com/zishang520/socket.io/v3/pkg/types"
+	"github.com/goravel/framework/contracts/log"
+	socketiolib "github.com/zishang520/socket.io/servers/socket/v3"
+
+	"koi-server/app/broadcasting"
+	contractsaudio "koi-server/app/contracts/audio"
+	"koi-server/packages/socketio/contracts"
 )
 
+// 出站消息文案，保持与既有客户端协议一致。
+const (
+	welcomeMessage        = "欢迎连接到Socket.IO服务器"
+	helloResponseMessage  = "Hello from server"
+	binaryResponseMessage = "Audio data processed successfully"
+)
+
+// socketHandler 单个 Socket.IO 事件的处理函数。
+// 返回 error 即代表处理失败，由统一的包装层负责记录日志并通知客户端。
+type socketHandler func(socket *socketiolib.Socket, args ...any) error
+
+// SocketioController 负责 Socket.IO 的连接管理与事件分发。
+//
+// 控制器只做协议适配：解析入站参数、调用领域服务、回写响应；
+// 转写结果的下行由 events/listeners 完成，控制器不参与。
 type SocketioController struct {
-	socketio     contracts.Socketio
-	audioService *audio.AudioService
+	socketio contracts.Socketio
+	audio    contractsaudio.Transcriber
+	log      log.Log
 }
 
-func NewSocketioController() *SocketioController {
+// NewSocketioController 通过依赖注入构造控制器。
+// 依赖在组合根（routes/api.go）中从容器解析，便于测试时替换为替身。
+func NewSocketioController(socketio contracts.Socketio, transcriber contractsaudio.Transcriber, logger log.Log) *SocketioController {
 	return &SocketioController{
-		socketio:     facades.Socketio(),
-		audioService: audio.GetAudioService(),
+		socketio: socketio,
+		audio:    transcriber,
+		log:      logger,
 	}
 }
 
-// ServeSocketio 处理 socket.io HTTP 请求
-func (c *SocketioController) ServeSocketio(ctx http.Context) http.Response {
-	// 使用Goravel的Context接口获取请求和响应
-	req := ctx.Request()
-	res := ctx.Response()
-
-	// 调用socket.io的ServeHTTP方法
-	c.socketio.ServeHTTP(res.Writer(), req.Origin())
+// ServeSocketio 将 HTTP 请求交给 Socket.IO 引擎处理。
+func (r *SocketioController) ServeSocketio(ctx http.Context) http.Response {
+	r.socketio.ServeHTTP(ctx.Response().Writer(), ctx.Request().Origin())
 	return nil
 }
 
-// GetSocketio 获取 socket.io 实例
-func (c *SocketioController) GetSocketio() contracts.Socketio {
-	return c.socketio
+// RegisterHandlers 注册 Socket.IO 事件处理器。
+func (r *SocketioController) RegisterHandlers() {
+	r.socketio.On(broadcasting.EventConnection, r.handleConnection)
+	r.log.Info("socketio: event handlers registered")
 }
 
-// RegisterHandlers 注册事件处理器
-func (c *SocketioController) RegisterHandlers() {
-	facades.Log().Info("开始注册 Socket.IO 事件处理器")
+// handleConnection 处理新连接：完成频道授权、绑定事件、下发欢迎消息。
+func (r *SocketioController) handleConnection(socket *socketiolib.Socket, _ ...any) error {
+	clientID := string(socket.Id())
 
-	// 处理默认命名空间的连接事件
-	c.socketio.On("connection", func(socket *socketio_lib.Socket, args ...interface{}) error {
-		clientID := string(socket.Id())
-		facades.Log().Info("客户端连接: " + clientID)
-		// 注册socket到AudioService
-		c.audioService.RegisterClientSocket(clientID, socket)
-		// 发送欢迎消息
-		socket.Emit("welcome", "欢迎连接到Socket.IO服务器")
+	// 频道授权：连接只能加入以自身连接 ID 命名的私有频道，
+	// 转写结果通过该频道下行，杜绝跨客户端串音。
+	channel := broadcasting.PrivateChannel(clientID)
+	if err := broadcasting.Authorize(clientID, channel); err != nil {
+		r.log.Warning(fmt.Sprintf("socketio: channel authorization denied for client %s: %v", clientID, err))
+		r.emit(socket, broadcasting.EventError, "channel authorization denied")
+		return err
+	}
+	if err := r.socketio.JoinRoom(socket, channel); err != nil {
+		return fmt.Errorf("join channel %s: %w", channel, err)
+	}
 
-		// 处理断开连接事件
-		socket.On("disconnect", func(args ...interface{}) {
-			facades.Log().Info("客户端断开连接: " + clientID)
-			// 从AudioService注销socket
-			c.audioService.UnregisterClientSocket(clientID)
-		})
+	r.on(socket, broadcasting.EventHello, r.handleHello)
+	r.on(socket, broadcasting.EventWithBinary, r.handleAudioFrame)
+	r.on(socket, broadcasting.EventMessage, r.handleMessage)
+	r.on(socket, broadcasting.EventSetHotwords, r.handleSetHotwords)
+	r.on(socket, broadcasting.EventGetHotwords, r.handleGetHotwords)
+	r.onDisconnect(socket, clientID, channel)
 
-		// 注册 transcript 事件处理器（用于接收转写结果）
-		socket.On("transcript", func(args ...interface{}) {
-			facades.Log().Info("接收到 transcript 事件: " + fmt.Sprintf("%v", args))
-		})
+	r.log.Info(fmt.Sprintf("socketio: client %s joined channel %s", clientID, channel))
+	r.emit(socket, broadcasting.EventWelcome, welcomeMessage)
 
-		// 注册 error 事件处理器
-		socket.On("error", func(args ...interface{}) {
-			facades.Log().Error("Socket 错误: " + fmt.Sprintf("%v", args))
-		})
+	return nil
+}
 
-		// 注册 hello 事件
-		socket.On("hello", func(args ...interface{}) {
-			facades.Log().Info("接收到 hello 事件: " + fmt.Sprintf("%v", args))
-			// 发送响应
-			socket.Emit("hello-response", "Hello from server")
-		})
+// onDisconnect 连接断开时释放会话并退出频道。
+func (r *SocketioController) onDisconnect(socket *socketiolib.Socket, clientID, channel string) {
+	socket.On(broadcasting.EventDisconnect, func(args ...any) {
+		defer r.recoverHandler(broadcasting.EventDisconnect, clientID)
 
-		// 注册 with-binary 事件
-		socket.On("with-binary", func(args ...interface{}) {
-			facades.Log().Info("接收到 with-binary 事件")
-			facades.Log().Info("参数数量: " + fmt.Sprintf("%d", len(args)))
+		r.log.Info(fmt.Sprintf("socketio: client %s disconnected", clientID))
 
-			// 处理音频数据
-			if len(args) >= 2 {
-				// 提取数据和标志
-				facades.Log().Info("第一个参数类型: " + fmt.Sprintf("%T", args[0]))
-				facades.Log().Info("第二个参数类型: " + fmt.Sprintf("%T", args[1]))
+		// 触发转写收尾：冲刷解码残留、归档录音、回收识别流与协程。
+		r.audio.Release(clientID)
 
-				// 尝试不同的类型转换
-				var data []byte
-				var flag int
-
-				// 处理数据
-				switch v := args[0].(type) {
-				case []byte:
-					data = v
-					facades.Log().Info("数据类型: []byte, 长度: " + fmt.Sprintf("%d", len(data)))
-				case string:
-					data = []byte(v)
-					facades.Log().Info("数据类型: string, 长度: " + fmt.Sprintf("%d", len(data)))
-				case []int8:
-					data = make([]byte, len(v))
-					for i, b := range v {
-						data[i] = byte(b)
-					}
-					facades.Log().Info("数据类型: []int8, 长度: " + fmt.Sprintf("%d", len(data)))
-				case []uint16:
-					data = make([]byte, len(v)*2)
-					for i, b := range v {
-						data[i*2] = byte(b & 0xFF)
-						data[i*2+1] = byte(b >> 8)
-					}
-					facades.Log().Info("数据类型: []uint16, 长度: " + fmt.Sprintf("%d", len(data)))
-				case []int16:
-					data = make([]byte, len(v)*2)
-					for i, b := range v {
-						data[i*2] = byte(b & 0xFF)
-						data[i*2+1] = byte(b >> 8)
-					}
-					facades.Log().Info("数据类型: []int16, 长度: " + fmt.Sprintf("%d", len(data)))
-				case *types.BytesBuffer:
-					// 处理 BytesBuffer 类型
-					data = v.Bytes()
-					facades.Log().Info("数据类型: *types.BytesBuffer, 长度: " + fmt.Sprintf("%d", len(data)))
-				case *bytes.Buffer:
-					// 处理标准 bytes.Buffer 类型
-					data = v.Bytes()
-					facades.Log().Info("数据类型: *bytes.Buffer, 长度: " + fmt.Sprintf("%d", len(data)))
-				default:
-					// 尝试检查是否为二进制数据的其他表示形式
-					facades.Log().Error("不支持的数据类型: " + fmt.Sprintf("%T", v))
-					// 尝试将任何类型转换为字符串，然后再转换为 []byte
-					str := fmt.Sprintf("%v", v)
-					data = []byte(str)
-					facades.Log().Info("数据类型: unknown, 转换为字符串后长度: " + fmt.Sprintf("%d", len(data)))
-				}
-
-				// 处理标志
-				switch v := args[1].(type) {
-				case int:
-					flag = v
-					facades.Log().Info("标志类型: int, 值: " + fmt.Sprintf("%d", flag))
-				case float64:
-					flag = int(v)
-					facades.Log().Info("标志类型: float64, 值: " + fmt.Sprintf("%d", flag))
-				case string:
-					// 尝试从字符串转换
-					f, err := strconv.Atoi(v)
-					if err != nil {
-						facades.Log().Error("Failed to convert flag to int: " + err.Error())
-						socket.Emit("error", "Failed to convert flag to int")
-						return
-					}
-					flag = f
-					facades.Log().Info("标志类型: string, 值: " + fmt.Sprintf("%d", flag))
-				default:
-					facades.Log().Error("不支持的标志类型: " + fmt.Sprintf("%T", v))
-					socket.Emit("error", "Unsupported flag type")
-					return
-				}
-
-				// 模型尚未加载完成时丢弃音频，避免在工作协程排队堆积
-				if !c.audioService.IsModelReady() {
-					return
-				}
-
-				// 处理音频数据
-				err := c.audioService.ProcessAudioData(string(socket.Id()), data, flag)
-				if err != nil {
-					facades.Log().Error("Failed to process audio data: " + err.Error())
-					socket.Emit("error", "Failed to process audio data")
-					return
-				}
-
-				// 发送响应
-				socket.Emit("with-binary-response", "Audio data processed successfully")
-			} else {
-				facades.Log().Error("Insufficient arguments for with-binary event")
-				socket.Emit("error", "Insufficient arguments for with-binary event")
-			}
-		})
-
-		// 注册 message 事件
-		socket.On("message", func(args ...interface{}) {
-			if len(args) > 0 {
-				message := args[0]
-				facades.Log().Info("接收到消息: " + fmt.Sprintf("%v", message))
-				// 发送响应
-				socket.Emit("message", message)
-			}
-		})
-
-		// 注册设置热词事件
-		socket.On("set-hotwords", func(args ...interface{}) {
-			facades.Log().Info("接收到 set-hotwords 事件: " + fmt.Sprintf("%v", args))
-
-			if len(args) >= 1 {
-				var hotwords string
-				var score float32 = 2.0
-
-				// 处理热词
-				if h, ok := args[0].(string); ok {
-					hotwords = h
-				} else {
-					facades.Log().Error("热词类型错误，期望 string 类型")
-					socket.Emit("hotwords-error", "Hotwords must be a string")
-					return
-				}
-
-				// 处理热词分数（可选）
-				if len(args) >= 2 {
-					if s, ok := args[1].(float64); ok {
-						score = float32(s)
-					} else if s, ok := args[1].(int); ok {
-						score = float32(s)
-					}
-				}
-
-				if err := c.audioService.SetHotwords(hotwords, score); err != nil {
-					facades.Log().Error("Failed to set hotwords: " + err.Error())
-					socket.Emit("hotwords-error", "Failed to set hotwords: "+err.Error())
-					return
-				}
-				facades.Log().Info("热词已设置: " + hotwords + ", 分数: " + fmt.Sprintf("%.1f", score))
-
-				// 发送响应
-				socket.Emit("hotwords-set", map[string]interface{}{
-					"hotwords": hotwords,
-					"score":    score,
-				})
-			} else {
-				facades.Log().Error("set-hotwords 事件缺少参数")
-				socket.Emit("hotwords-error", "Missing hotwords argument")
-			}
-		})
-
-		// 注册获取热词事件
-		socket.On("get-hotwords", func(args ...interface{}) {
-			facades.Log().Info("接收到 get-hotwords 事件")
-
-			hotwords, score := c.audioService.GetHotwords()
-
-			// 发送响应
-			socket.Emit("hotwords-data", map[string]interface{}{
-				"hotwords": hotwords,
-				"score":    score,
-			})
-		})
-
-		return nil
+		if err := r.socketio.LeaveRoom(socket, channel); err != nil {
+			r.log.Warning(fmt.Sprintf("socketio: failed to leave channel %s: %v", channel, err))
+		}
 	})
-
-	facades.Log().Info("Socket.IO 事件处理器注册完成")
 }
 
-// SendMessage 发送消息到指定客户端
-func (c *SocketioController) SendMessage(socket *socketio_lib.Socket, event string, args ...interface{}) error {
-	return socket.Emit(event, args...)
+// handleHello 握手探测。
+func (r *SocketioController) handleHello(socket *socketiolib.Socket, _ ...any) error {
+	r.emit(socket, broadcasting.EventHelloResponse, helloResponseMessage)
+	return nil
 }
 
-// BroadcastMessage 广播消息到所有客户端
-func (c *SocketioController) BroadcastMessage(event string, args ...interface{}) {
-	c.socketio.Emit(event, args...)
+// handleMessage 文本消息回显。
+func (r *SocketioController) handleMessage(socket *socketiolib.Socket, args ...any) error {
+	if len(args) == 0 {
+		return fmt.Errorf("missing message argument")
+	}
+	r.emit(socket, broadcasting.EventMessage, args[0])
+	return nil
 }
 
-// BroadcastToNamespace 广播消息到指定命名空间
-func (c *SocketioController) BroadcastToNamespace(namespace, event string, args ...interface{}) {
-	c.socketio.EmitToNamespace(namespace, event, args...)
+// handleAudioFrame 接收音频分片并交给转写服务。
+//
+// 该方法运行在 Socket.IO 事件循环上，必须保持轻量：
+// 仅做参数解析与入队，解码在转写服务的客户端专属协程中完成。
+func (r *SocketioController) handleAudioFrame(socket *socketiolib.Socket, args ...any) error {
+	if len(args) < 2 {
+		return fmt.Errorf("insufficient arguments for %s event", broadcasting.EventWithBinary)
+	}
+
+	// 模型尚未就绪时直接丢弃，避免音频在队列中堆积。
+	if !r.audio.Ready() {
+		if status := r.audio.Status(); status.Error != "" {
+			return fmt.Errorf("speech model unavailable: %s", status.Error)
+		}
+		return nil
+	}
+
+	data, err := decodeAudioPayload(args[0])
+	if err != nil {
+		return err
+	}
+	flag, err := decodeAudioFlag(args[1])
+	if err != nil {
+		return err
+	}
+
+	if err := r.audio.Push(string(socket.Id()), data, flag); err != nil {
+		return fmt.Errorf("failed to process audio data: %w", err)
+	}
+
+	r.emit(socket, broadcasting.EventWithBinaryResponse, binaryResponseMessage)
+	return nil
 }
 
-// BroadcastToRoom 广播消息到指定房间
-func (c *SocketioController) BroadcastToRoom(namespace, room, event string, args ...interface{}) {
-	c.socketio.EmitToRoom(namespace, room, event, args...)
+// handleSetHotwords 设置识别热词。
+func (r *SocketioController) handleSetHotwords(socket *socketiolib.Socket, args ...any) error {
+	if len(args) == 0 {
+		r.emit(socket, broadcasting.EventHotwordsError, "Missing hotwords argument")
+		return fmt.Errorf("missing hotwords argument")
+	}
+
+	hotwords, ok := args[0].(string)
+	if !ok {
+		r.emit(socket, broadcasting.EventHotwordsError, "Hotwords must be a string")
+		return fmt.Errorf("hotwords must be a string, got %T", args[0])
+	}
+
+	// 权重可选，缺省时由转写服务回落到配置中的默认值。
+	var score float32
+	if len(args) >= 2 {
+		switch v := args[1].(type) {
+		case float64:
+			score = float32(v)
+		case float32:
+			score = v
+		case int:
+			score = float32(v)
+		}
+	}
+
+	if err := r.audio.SetHotwords(hotwords, score); err != nil {
+		r.emit(socket, broadcasting.EventHotwordsError, "Failed to set hotwords: "+err.Error())
+		return fmt.Errorf("failed to set hotwords: %w", err)
+	}
+
+	applied, appliedScore := r.audio.Hotwords()
+	r.emit(socket, broadcasting.EventHotwordsSet, map[string]any{
+		"hotwords": applied,
+		"score":    appliedScore,
+	})
+	return nil
 }
 
-// JoinRoom 将客户端加入房间
-func (c *SocketioController) JoinRoom(socket *socketio_lib.Socket, room string) error {
-	return c.socketio.JoinRoom(socket, room)
+// handleGetHotwords 查询当前热词。
+func (r *SocketioController) handleGetHotwords(socket *socketiolib.Socket, _ ...any) error {
+	hotwords, score := r.audio.Hotwords()
+	r.emit(socket, broadcasting.EventHotwordsData, map[string]any{
+		"hotwords": hotwords,
+		"score":    score,
+	})
+	return nil
 }
 
-// LeaveRoom 将客户端从房间移除
-func (c *SocketioController) LeaveRoom(socket *socketio_lib.Socket, room string) error {
-	return c.socketio.LeaveRoom(socket, room)
+// on 注册事件处理器，统一承担 panic 恢复、错误日志与错误回执。
+//
+// 事件回调运行在库的内部协程中，未捕获的 panic 会直接终止整个进程，
+// 因此所有处理器都必须经过这一层包装。
+func (r *SocketioController) on(socket *socketiolib.Socket, event string, handler socketHandler) {
+	clientID := string(socket.Id())
+
+	socket.On(event, func(args ...any) {
+		defer r.recoverHandler(event, clientID)
+
+		if err := handler(socket, args...); err != nil {
+			r.log.Warning(fmt.Sprintf("socketio: handler %q failed for client %s: %v", event, clientID, err))
+			r.emit(socket, broadcasting.EventError, err.Error())
+		}
+	})
 }
 
-// GetConnectionCount 获取连接数量
-func (c *SocketioController) GetConnectionCount() int {
-	return c.socketio.GetConnectionManager().GetConnectionCount()
+// recoverHandler 捕获事件处理过程中的 panic，防止单个连接的异常拖垮进程。
+func (r *SocketioController) recoverHandler(event, clientID string) {
+	if rec := recover(); rec != nil {
+		r.log.Error(fmt.Sprintf("socketio: handler %q panicked for client %s: %v\n%s", event, clientID, rec, debug.Stack()))
+	}
 }
 
-// GetAllConnections 获取所有连接
-func (c *SocketioController) GetAllConnections() []*socketio_lib.Socket {
-	return c.socketio.GetConnectionManager().GetAllConnections()
-}
-
-// GetConnection 根据ID获取连接
-func (c *SocketioController) GetConnection(socketID string) *socketio_lib.Socket {
-	return c.socketio.GetConnectionManager().GetConnection(socketID)
+// emit 向客户端发送消息，失败只记录日志，不影响主流程。
+func (r *SocketioController) emit(socket *socketiolib.Socket, event string, args ...any) {
+	if err := socket.Emit(event, args...); err != nil {
+		r.log.Warning(fmt.Sprintf("socketio: failed to emit %q to client %s: %v", event, socket.Id(), err))
+	}
 }
