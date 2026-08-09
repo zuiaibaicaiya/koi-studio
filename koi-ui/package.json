@@ -1,0 +1,52 @@
+{
+  "name": "koi-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/electron/main.cjs",
+  "scripts": {
+    "build": "rsbuild build",
+    "dev": "rsbuild",
+    "format": "prettier --write .",
+    "lint": "eslint .",
+    "preview": "rsbuild preview"
+  },
+  "dependencies": {
+    "@antdv-next/icons": "^1.1.1",
+    "antdv-next": "^1.5.0",
+    "bytenode": "^1.6.0",
+    "pinia": "^4.0.2",
+    "pinia-plugin-persistedstate": "^4.7.1",
+    "vue": "^3.5.41",
+    "vue-router": "^4.0.13"
+  },
+  "devDependencies": {
+    "@antdv-next/auto-import-resolver": "^1.1.0",
+    "@rsbuild/core": "^2.1.10",
+    "@rsbuild/plugin-node-polyfill": "^1.4.6",
+    "@rsbuild/plugin-vue": "^2.0.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@vue/eslint-config-typescript": "^14.7.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-rs": "^2.1.1",
+    "eslint": "^10.4.0",
+    "eslint-plugin-vue": "^10.9.1",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.4",
+    "unplugin-auto-import": "^21.1.0",
+    "unplugin-vue-components": "^32.1.0"
+  },
+  "build": {
+    "directories": {
+      "output": "build-electron"
+    },
+    "extraResources": [],
+    "files": [
+      "dist"
+    ]
+  }
+}
