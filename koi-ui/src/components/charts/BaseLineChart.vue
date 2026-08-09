@@ -15,7 +15,9 @@ const padT = 12;
 const padB = 30;
 const innerW = W - padL - padR;
 const innerH = computed(() => H.value - padB - padT);
-const max = computed(() => Math.max(1, ...props.data.map((d) => d.value)));
+const max = computed(() =>
+  Math.max(1, ...props.data.map((d) => Number(d.value) || 0)),
+);
 
 const points = computed(() =>
   props.data.map((d, i) => {

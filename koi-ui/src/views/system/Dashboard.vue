@@ -54,7 +54,10 @@ const speakerByLanguage = computed(() => {
 });
 
 const topSpeakers = computed(() =>
-  [...speakerStore.list].sort((a, b) => b.sampleCount - a.sampleCount).slice(0, 6),
+  [...speakerStore.list]
+    .sort((a, b) => b.sampleCount - a.sampleCount)
+    .slice(0, 6)
+    .map((s) => ({ label: s.name, value: s.sampleCount })),
 );
 
 const cards = computed(() => [

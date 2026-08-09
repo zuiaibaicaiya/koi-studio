@@ -15,7 +15,9 @@ const padT = 12;
 const padB = 30;
 const innerW = W - padL - padR;
 const innerH = computed(() => H.value - padB - padT);
-const max = computed(() => Math.max(1, ...props.data.map((d) => d.value)));
+const max = computed(() =>
+  Math.max(1, ...props.data.map((d) => Number(d.value) || 0)),
+);
 const slotW = computed(() => (props.data.length ? innerW / props.data.length : 0));
 const barW = computed(() => Math.min(48, (slotW.value || 0) * 0.6));
 
