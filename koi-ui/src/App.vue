@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 import type { ThemeConfig } from 'antdv-next';
 import { theme, App as AntdApp } from 'antdv-next';
+import zhCN from 'antdv-next/locale/zh_CN';
 import { useThemeStore } from './store/theme';
 
 const themeStore = useThemeStore();
@@ -26,7 +27,7 @@ const antdTheme = computed<ThemeConfig>(() => {
 </script>
 
 <template>
-  <a-config-provider :theme="antdTheme">
+  <a-config-provider :theme="antdTheme" :locale="zhCN">
     <AntdApp>
       <router-view />
     </AntdApp>

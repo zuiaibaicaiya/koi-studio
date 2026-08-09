@@ -41,6 +41,7 @@ declare module 'vue' {
     APopconfirm: typeof import('antdv-next')['Popconfirm']
     AProgress: typeof import('antdv-next')['Progress']
     ARadio: typeof import('antdv-next')['Radio']
+    ARadioButton: typeof import('antdv-next')['RadioButton']
     ARadioGroup: typeof import('antdv-next')['RadioGroup']
     ARow: typeof import('antdv-next')['Row']
     ASelect: typeof import('antdv-next')['Select']
