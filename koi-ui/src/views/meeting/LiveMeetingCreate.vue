@@ -17,6 +17,7 @@ import {
   ThunderboltOutlined,
 } from '@antdv-next/icons';
 import { createSystemAudioStream } from '../../services/capture';
+import audioProcessorCode from '@/worklets/audio-processor.js?raw';
 
 const router = useRouter();
 const userStore = useSystemUserStore();
@@ -46,12 +47,14 @@ const isListening = ref(false);
 const currentVolume = ref(0); // 0-1 归一化音量
 
 let audioContext: AudioContext | null = null;
-let analyserNode: AnalyserNode | null = null;
 let activeStream: MediaStream | null = null;
 let placeholderVideoTracks: MediaStreamTrack[] = [];
 let sourceNode: MediaStreamAudioSourceNode | null = null;
 let systemCaptureStop: (() => void) | null = null;
+let workletNode: AudioWorkletNode | null = null;
+let workletAdded = false;
 let animationId = 0;
+let latestRms = 0;
 
 onMounted(() => {
   requestAnimationFrame(() => {
@@ -177,19 +180,45 @@ function handleBack() {
 // 音频采集：麦克风 / 系统内录
 // ==========================================
 
-/** 懒初始化 AudioContext + AnalyserNode */
+/** 懒初始化 AudioContext，并注册 audio-processor AudioWorklet 模块 */
 async function ensureAudioGraph() {
   if (!audioContext) {
     audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    workletAdded = false;
   }
   if (audioContext.state === 'suspended') {
     await audioContext.resume();
   }
-  if (!analyserNode) {
-    analyserNode = audioContext.createAnalyser();
-    analyserNode.fftSize = 256;
-    analyserNode.smoothingTimeConstant = 0.1;
+  if (!workletAdded) {
+    const blob = new Blob([audioProcessorCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    try {
+      await audioContext.audioWorklet.addModule(url);
+      workletAdded = true;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   }
+}
+
+/** 建立 audio-processor AudioWorklet 采集节点（source → worklet → destination），由 worklet 输出的 PCM 计算实时音量 */
+function attachRecordingWorklet() {
+  if (!audioContext || !sourceNode) return;
+  const node = new AudioWorkletNode(audioContext, 'audio-processor');
+  // worklet 每帧回传 16bit PCM（ArrayBuffer），直接在此计算 RMS 驱动音量条
+  node.port.onmessage = (e: MessageEvent) => {
+    const samples = new Int16Array(e.data as ArrayBuffer);
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const v = samples[i] / 32768;
+      sum += v * v;
+    }
+    latestRms = samples.length ? Math.sqrt(sum / samples.length) : 0;
+  };
+  sourceNode.connect(node);
+  node.connect(audioContext.destination);
+  workletNode = node;
+  startVolumeLoop();
 }
 
 /** 麦克风采集：getUserMedia 直接获取 */
@@ -206,12 +235,12 @@ async function startMic() {
     activeStream = stream;
     placeholderVideoTracks = [];
     sourceNode = audioContext!.createMediaStreamSource(stream);
-    sourceNode.connect(analyserNode!);
+    attachRecordingWorklet();
 
     captureType.value = 'mic';
     systemError.value = '';
     isListening.value = true;
-    updateVolume();
+    startVolumeLoop();
   } catch (err: any) {
     console.error('Microphone access error:', err);
   }
@@ -233,7 +262,7 @@ async function startSystem() {
     activeStream = sys.stream;
     placeholderVideoTracks = [];
     sourceNode = audioContext!.createMediaStreamSource(activeStream);
-    sourceNode.connect(analyserNode!);
+    attachRecordingWorklet();
 
     // 用户主动停止屏幕共享时同步收尾
     activeStream.getAudioTracks()[0].onended = () => stopCapture();
@@ -241,7 +270,7 @@ async function startSystem() {
     captureType.value = 'system';
     systemError.value = '';
     isListening.value = true;
-    updateVolume();
+    startVolumeLoop();
   } catch (err: any) {
     systemCaptureStop = null;
     systemError.value = err?.message || '系统内录失败';
@@ -255,6 +284,19 @@ function stopCapture() {
   if (sourceNode) {
     sourceNode.disconnect();
     sourceNode = null;
+  }
+  if (workletNode) {
+    try {
+      workletNode.disconnect();
+    } catch {
+      /* noop */
+    }
+    try {
+      workletNode.port.close();
+    } catch {
+      /* noop */
+    }
+    workletNode = null;
   }
   if (activeStream) {
     activeStream.getTracks().forEach((t) => {
@@ -273,30 +315,22 @@ function stopCapture() {
     audioContext.close().catch(() => {});
     audioContext = null;
   }
-  analyserNode = null;
   isListening.value = false;
   captureType.value = 'none';
   currentVolume.value = 0;
 }
 
-/** 音量采集循环 */
-function updateVolume() {
-  if (!isListening.value || !analyserNode) return;
-
-  const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
-  analyserNode.getByteTimeDomainData(dataArray);
-
-  let sumSquares = 0;
-  for (let i = 0; i < dataArray.length; i++) {
-    const normalized = (dataArray[i] - 128) / 128;
-    sumSquares += normalized * normalized;
-  }
-  const rms = Math.sqrt(sumSquares / dataArray.length);
-  // 幂函数曲线：把低音量区间拉开，视觉效果更符合听觉感知
-  const expanded = Math.min(Math.pow(rms, 0.28), 1);
-  currentVolume.value = currentVolume.value * 0.3 + expanded * 0.7;
-
-  animationId = requestAnimationFrame(updateVolume);
+/** 音量采集循环：基于 worklet 计算的 RMS 平滑出实时音量（仅用 audio-processor，无 AnalyserNode） */
+function startVolumeLoop() {
+  cancelAnimationFrame(animationId);
+  const update = () => {
+    if (!isListening.value) return;
+    // 幂函数曲线：把低音量区间拉开，更接近听觉感知
+    const expanded = Math.min(Math.pow(latestRms, 0.28), 1);
+    currentVolume.value = currentVolume.value * 0.3 + expanded * 0.7;
+    animationId = requestAnimationFrame(update);
+  };
+  update();
 }
 
 /** 监听录音模式切换 */
