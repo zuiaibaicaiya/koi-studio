@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref } from 'vue';
-import { message } from 'antdv-next';
+import { message, Modal } from 'antdv-next';
 import type { UploadProps } from 'antdv-next';
 import {
   useSpeakerStore,
@@ -21,6 +21,7 @@ import {
   StopOutlined,
   PlayCircleOutlined,
   PauseCircleOutlined,
+  DownOutlined,
 } from '@antdv-next/icons';
 
 const store = useSpeakerStore();
@@ -34,7 +35,7 @@ const columns = [
   { title: '音频样本', key: 'audio', width: 130 },
   { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 120 },
-  { title: '操作', key: 'action', width: 150, fixed: 'right' },
+  { title: '操作', key: 'action', width: 90, fixed: 'right' },
 ];
 
 const csvColumns: CsvColumn[] = [
@@ -472,6 +473,16 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
   reader.readAsText(file);
   return false;
 };
+
+function confirmDelete(record: Speaker) {
+  Modal.confirm({
+    title: '确认删除该说话人？',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: () => handleDelete(record.id),
+  });
+}
 </script>
 
 <template>
@@ -505,7 +516,7 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
         :data-source="filtered"
         :pagination="pagination"
         row-key="id"
-        :scroll="{ x: 1100 }"
+        :scroll="{ x: 'max-content' }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'gender'">
@@ -532,16 +543,21 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
             <span v-else class="row-empty">—</span>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-space>
-              <a-button type="link" size="small" @click="openEdit(record)">
-                <EditOutlined />编辑
+            <a-dropdown :trigger="['click']" placement="bottomRight">
+              <a-button type="link" size="small">
+                操作<DownOutlined />
               </a-button>
-              <a-popconfirm title="确认删除该说话人？" @confirm="handleDelete(record.id)">
-                <a-button type="link" size="small" danger>
-                  <DeleteOutlined />删除
-                </a-button>
-              </a-popconfirm>
-            </a-space>
+              <template #popupRender>
+                <a-menu class="action-menu">
+                  <a-menu-item key="edit" @click="openEdit(record)">
+                    <EditOutlined />编辑
+                  </a-menu-item>
+                  <a-menu-item key="delete" danger @click="confirmDelete(record)">
+                    <DeleteOutlined />删除
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
           </template>
         </template>
       </a-table>
@@ -784,5 +800,13 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-muted);
+}
+.action-menu {
+  min-width: 140px;
+}
+.action-menu :deep(.ant-dropdown-menu-item) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>

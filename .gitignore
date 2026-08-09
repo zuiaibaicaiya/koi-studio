@@ -1,2 +1,3 @@
 .DS_Store
 build-electron
+koi-ui/src/components.d.ts

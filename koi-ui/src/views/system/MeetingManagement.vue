@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import { message } from 'antdv-next';
+import { message, Modal } from 'antdv-next';
 import type { UploadProps } from 'antdv-next';
 import {
   useMeetingStore,
@@ -24,6 +24,7 @@ import {
   PlayCircleOutlined,
   EyeOutlined,
   LoadingOutlined,
+  DownOutlined,
 } from '@antdv-next/icons';
 
 const store = useMeetingStore();
@@ -40,7 +41,7 @@ const meetingColumns = [
   { title: '结束时间', dataIndex: 'endTime', key: 'endTime', width: 160 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
   { title: '参会人数', dataIndex: 'participants', key: 'participants', width: 90, sorter: (a: Meeting, b: Meeting) => a.participants - b.participants },
-  { title: '操作', key: 'action', width: 180, fixed: 'right' },
+  { title: '操作', key: 'action', width: 90, fixed: 'right' },
 ];
 
 const meetingCsvColumns: CsvColumn[] = [
@@ -179,7 +180,7 @@ const transcriptionColumns = [
   { title: '时长', dataIndex: 'duration', key: 'duration', width: 90, sorter: (a: Transcription, b: Transcription) => a.duration - b.duration },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 120 },
-  { title: '操作', key: 'action', width: 200, fixed: 'right' },
+  { title: '操作', key: 'action', width: 90, fixed: 'right' },
 ];
 
 const transcriptionCsvColumns: CsvColumn[] = [
@@ -318,6 +319,24 @@ function openTranscriptDetail(record: Transcription) {
   transcriptDetail.value = record;
   transcriptDetailVisible.value = true;
 }
+function confirmDeleteMeeting(record: Meeting) {
+  Modal.confirm({
+    title: '确认删除该会议？',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: () => handleMeetingDelete(record.id),
+  });
+}
+function confirmDeleteTrans(record: Transcription) {
+  Modal.confirm({
+    title: '确认删除该转写记录？',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: () => handleTransDelete(record.id),
+  });
+}
 </script>
 
 <template>
@@ -372,7 +391,7 @@ function openTranscriptDetail(record: Transcription) {
           :data-source="meetingFiltered"
           :pagination="meetingPagination"
           row-key="id"
-          :scroll="{ x: 1000 }"
+          :scroll="{ x: 'max-content' }"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
@@ -384,19 +403,24 @@ function openTranscriptDetail(record: Transcription) {
               </a-tag>
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-space>
-                <a-button type="link" size="small" @click="openMeetingDetail(record)">
-                  <EyeOutlined />详情
+              <a-dropdown :trigger="['click']" placement="bottomRight">
+                <a-button type="link" size="small">
+                  操作<DownOutlined />
                 </a-button>
-                <a-button type="link" size="small" @click="openMeetingEdit(record)">
-                  <EditOutlined />编辑
-                </a-button>
-                <a-popconfirm title="确认删除该会议？" @confirm="handleMeetingDelete(record.id)">
-                  <a-button type="link" size="small" danger>
-                    <DeleteOutlined />删除
-                  </a-button>
-                </a-popconfirm>
-              </a-space>
+                <template #popupRender>
+                  <a-menu class="action-menu">
+                    <a-menu-item key="detail" @click="openMeetingDetail(record)">
+                      <EyeOutlined />详情
+                    </a-menu-item>
+                    <a-menu-item key="edit" @click="openMeetingEdit(record)">
+                      <EditOutlined />编辑
+                    </a-menu-item>
+                    <a-menu-item key="delete" danger @click="confirmDeleteMeeting(record)">
+                      <DeleteOutlined />删除
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
             </template>
           </template>
         </a-table>
@@ -507,7 +531,7 @@ function openTranscriptDetail(record: Transcription) {
           :data-source="transcriptionFiltered"
           :pagination="transcriptionPagination"
           row-key="id"
-          :scroll="{ x: 1050 }"
+          :scroll="{ x: 'max-content' }"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
@@ -522,19 +546,24 @@ function openTranscriptDetail(record: Transcription) {
               {{ formatDuration(record.duration) }}
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-space>
-                <a-button type="link" size="small" @click="openTranscriptDetail(record)">
-                  <EyeOutlined />查看
+              <a-dropdown :trigger="['click']" placement="bottomRight">
+                <a-button type="link" size="small">
+                  操作<DownOutlined />
                 </a-button>
-                <a-button type="link" size="small" @click="openTransEdit(record)">
-                  <EditOutlined />编辑
-                </a-button>
-                <a-popconfirm title="确认删除该转写记录？" @confirm="handleTransDelete(record.id)">
-                  <a-button type="link" size="small" danger>
-                    <DeleteOutlined />删除
-                  </a-button>
-                </a-popconfirm>
-              </a-space>
+                <template #popupRender>
+                  <a-menu class="action-menu">
+                    <a-menu-item key="detail" @click="openTranscriptDetail(record)">
+                      <EyeOutlined />查看
+                    </a-menu-item>
+                    <a-menu-item key="edit" @click="openTransEdit(record)">
+                      <EditOutlined />编辑
+                    </a-menu-item>
+                    <a-menu-item key="delete" danger @click="confirmDeleteTrans(record)">
+                      <DeleteOutlined />删除
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
             </template>
           </template>
         </a-table>
@@ -696,5 +725,13 @@ function openTranscriptDetail(record: Transcription) {
   background: var(--color-surface-2);
   padding: 12px;
   border-radius: var(--radius-md);
+}
+.action-menu {
+  min-width: 140px;
+}
+.action-menu :deep(.ant-dropdown-menu-item) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>

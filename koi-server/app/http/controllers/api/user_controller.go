@@ -32,18 +32,7 @@ func (ctrl *UserController) ListUsers(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
 	}
 
-	page := userListReq.Page
-	if page <= 0 {
-		page = 1
-	}
-
-	pageSize := userListReq.PageSize
-	if pageSize <= 0 {
-		pageSize = 16
-	}
-	if pageSize > 100 {
-		pageSize = 100
-	}
+	page, pageSize := normalizePagination(userListReq.Page, userListReq.PageSize)
 
 	usersList, total, err := ctrl.userService.GetUserList(page, pageSize, userListReq.Keyword, userListReq.Status)
 	if err != nil {
@@ -278,4 +267,214 @@ func (ctrl *UserController) GetCurrentUserInfo(ctx http.Context) http.Response {
 	}
 
 	return ctrl.ApiSuccess(ctx, currentUser)
+}
+
+// Register 用户注册，成功后返回 JWT 令牌
+func (ctrl *UserController) Register(ctx http.Context) http.Response {
+	var userRegister users.UserRegisterRequest
+	errors, err := ctx.Request().ValidateRequest(&userRegister)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	// 检查用户名是否已存在
+	exists, err := ctrl.userService.IsUsernameExists(userRegister.Username, 0)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("校验用户名失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "注册失败")
+	}
+	if exists {
+		return ctrl.ApiErrorMsg(ctx, "用户名已存在")
+	}
+
+	// 对密码进行哈希加密
+	password, err := facades.Hash().Make(userRegister.Password)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("密码加密失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "注册失败")
+	}
+
+	// 设置默认昵称
+	nickname := userRegister.Nickname
+	if nickname == "" {
+		nickname = userRegister.Username
+	}
+
+	user := models.User{
+		Username: userRegister.Username,
+		Password: password,
+		Nickname: nickname,
+		Email:    userRegister.Email,
+		Phone:    userRegister.Phone,
+		Avatar:   "",
+		Status:   "active",
+	}
+
+	if err := ctrl.userService.AddUser(&user); err != nil {
+		facades.Log().WithContext(ctx).Error("创建用户失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "注册失败")
+	}
+
+	// 注册后自动登录，签发 JWT 令牌
+	token, err := facades.Auth(ctx).Login(&user)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("生成令牌失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "生成令牌失败")
+	}
+
+	facades.Log().WithContext(ctx).Info("用户注册成功: " + user.Username)
+
+	return ctrl.ApiSuccess(ctx, map[string]any{
+		"token": token,
+		"user":  user,
+	})
+}
+
+// RefreshToken 刷新当前用户的 JWT 令牌
+func (ctrl *UserController) RefreshToken(ctx http.Context) http.Response {
+	token, err := facades.Auth(ctx).Refresh()
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("刷新令牌失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "刷新令牌失败")
+	}
+
+	facades.Log().WithContext(ctx).Info("令牌刷新成功")
+
+	return ctrl.ApiSuccess(ctx, map[string]any{
+		"token": token,
+	})
+}
+
+// UpdateProfile 当前用户更新自身资料（不允许修改用户名和状态）
+func (ctrl *UserController) UpdateProfile(ctx http.Context) http.Response {
+	currentUser, err := ctrl.GetCurrentUser(ctx)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "未授权，请重新登录")
+	}
+
+	var updateProfileReq users.UserUpdateProfileRequest
+	errors, err := ctx.Request().ValidateRequest(&updateProfileReq)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	if updateProfileReq.Nickname != "" {
+		currentUser.Nickname = updateProfileReq.Nickname
+	}
+	if updateProfileReq.Email != "" {
+		currentUser.Email = updateProfileReq.Email
+	}
+	if updateProfileReq.Phone != "" {
+		currentUser.Phone = updateProfileReq.Phone
+	}
+	if updateProfileReq.Avatar != "" {
+		currentUser.Avatar = updateProfileReq.Avatar
+	}
+
+	if err := ctrl.userService.UpdateUser(&currentUser); err != nil {
+		facades.Log().WithContext(ctx).Error("更新用户资料失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "更新资料失败")
+	}
+
+	facades.Log().WithContext(ctx).Info("更新用户资料成功: " + currentUser.Username)
+
+	return ctrl.ApiSuccess(ctx, currentUser)
+}
+
+// ChangePassword 当前用户修改自身密码
+func (ctrl *UserController) ChangePassword(ctx http.Context) http.Response {
+	currentUser, err := ctrl.GetCurrentUser(ctx)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "未授权，请重新登录")
+	}
+
+	var changePwdReq users.UserChangePasswordRequest
+	errors, err := ctx.Request().ValidateRequest(&changePwdReq)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	// 验证旧密码
+	if !facades.Hash().Check(changePwdReq.OldPassword, currentUser.Password) {
+		return ctrl.ApiErrorMsg(ctx, "旧密码不正确")
+	}
+
+	// 新密码不能与旧密码相同
+	if changePwdReq.OldPassword == changePwdReq.NewPassword {
+		return ctrl.ApiErrorMsg(ctx, "新密码不能与旧密码相同")
+	}
+
+	// 对新密码进行哈希加密
+	password, err := facades.Hash().Make(changePwdReq.NewPassword)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("密码加密失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "修改密码失败")
+	}
+
+	currentUser.Password = password
+	if err := ctrl.userService.UpdateUser(&currentUser); err != nil {
+		facades.Log().WithContext(ctx).Error("修改密码失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "修改密码失败")
+	}
+
+	facades.Log().WithContext(ctx).Info("修改密码成功: " + currentUser.Username)
+
+	return ctrl.ApiSuccess(ctx, map[string]string{
+		"msg": "密码修改成功",
+	})
+}
+
+// ToggleUserStatus 管理员启用或禁用指定用户
+func (ctrl *UserController) ToggleUserStatus(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "用户ID不正确")
+	}
+
+	// 不允许对自己操作
+	currentUser, err := ctrl.GetCurrentUser(ctx)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "未授权，请重新登录")
+	}
+	if currentUser.ID == uint(id) {
+		return ctrl.ApiErrorMsg(ctx, "不能修改自己的状态")
+	}
+
+	user, err := ctrl.userService.GetUserById(id)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "用户不存在")
+	}
+
+	// 切换状态：active <-> inactive
+	if user.Status == "active" {
+		user.Status = "inactive"
+	} else {
+		user.Status = "active"
+	}
+
+	if err := ctrl.userService.UpdateUser(&user); err != nil {
+		facades.Log().WithContext(ctx).Error("切换用户状态失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "操作失败")
+	}
+
+	action := "禁用"
+	if user.Status == "active" {
+		action = "启用"
+	}
+	facades.Log().WithContext(ctx).Info(action + "用户成功: " + user.Username)
+
+	return ctrl.ApiSuccess(ctx, map[string]any{
+		"id":     user.ID,
+		"status": user.Status,
+		"msg":    "操作成功",
+	})
 }

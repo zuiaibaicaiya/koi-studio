@@ -56,8 +56,8 @@ function showLogoutConfirm() {
     okText: '确认退出',
     cancelText: '取消',
     okType: 'danger',
-    onOk: () => {
-      auth.logout();
+    onOk: async () => {
+      await auth.logout();
       message.success('已退出登录');
       router.replace('/login');
     },
@@ -126,11 +126,11 @@ onBeforeUnmount(() => {
           <a-dropdown placement="bottomRight" :trigger="['click']">
             <span class="user">
               <a-avatar :src="currentUser?.avatar" class="user-avatar">
-                <template v-if="!currentUser?.avatar">{{ currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
+                <template v-if="!currentUser?.avatar">{{ currentUser?.nickname?.charAt(0) || currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
               </a-avatar>
               <span class="user-meta">
-                <span class="username">{{ currentUser?.username || '未登录' }}</span>
-                <span class="user-role">{{ currentUser?.role || '—' }}</span>
+                <span class="username">{{ currentUser?.nickname || currentUser?.username || '未登录' }}</span>
+                <span class="user-role">{{ auth.userRole }}</span>
               </span>
               <DownOutlined class="user-caret" />
             </span>
@@ -140,11 +140,11 @@ onBeforeUnmount(() => {
                   <template #title>
                     <div class="user-card">
                       <a-avatar :src="currentUser?.avatar" :size="40">
-                        <template v-if="!currentUser?.avatar">{{ currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
+                        <template v-if="!currentUser?.avatar">{{ currentUser?.nickname?.charAt(0) || currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
                       </a-avatar>
                       <div class="user-card-meta">
-                        <div class="user-card-name">{{ currentUser?.username || '未登录' }}</div>
-                        <div class="user-card-role">{{ currentUser?.role || '—' }}</div>
+                        <div class="user-card-name">{{ currentUser?.nickname || currentUser?.username || '未登录' }}</div>
+                        <div class="user-card-role">{{ auth.userRole }}</div>
                         <div class="user-card-email">{{ currentUser?.email || '—' }}</div>
                       </div>
                     </div>

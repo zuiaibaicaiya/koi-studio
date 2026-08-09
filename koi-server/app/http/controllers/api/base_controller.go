@@ -78,6 +78,22 @@ func (base *BaseController) ApiPaginate(ctx http.Context, data any, total int64,
 	})
 }
 
+// normalizePagination 规范化分页参数，返回合法的页码与每页数量
+func normalizePagination(page int, pageSize int) (int, int) {
+	if page <= 0 {
+		page = 1
+	}
+
+	if pageSize <= 0 {
+		pageSize = 16
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	return page, pageSize
+}
+
 // GetCurrentUser 获取当前登录用户
 func (base *BaseController) GetCurrentUser(ctx http.Context) (models.User, error) {
 	var user models.User

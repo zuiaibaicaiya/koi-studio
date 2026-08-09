@@ -2,25 +2,34 @@
 import { reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { message } from 'antdv-next';
-import { UserOutlined, LockOutlined } from '@antdv-next/icons';
-import { useAuthStore } from '../store/auth';
+import { UserOutlined, LockOutlined, MailOutlined, PhoneOutlined, IdcardOutlined } from '@antdv-next/icons';
+import type { Rule } from 'antdv-next';
+import { useAuthStore, type RegisterPayload } from '../store/auth';
 
 const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
 
-const formRef = ref();
-const formState = reactive({
-  username: '',
-  password: '',
+const activeTab = ref<'login' | 'register'>('login');
+
+/* 开发模式下预填默认凭据，生产模式留空 */
+const isDev = import.meta.env.DEV;
+const DEFAULT_USERNAME = 'admin';
+const DEFAULT_PASSWORD = 'admin123';
+
+/* ---- 登录表单 ---- */
+const loginFormRef = ref();
+const loginState = reactive({
+  username: isDev ? DEFAULT_USERNAME : '',
+  password: isDev ? DEFAULT_PASSWORD : '',
 });
 
-const rules = {
-  username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+const loginRules: Record<string, Rule[]> = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' as const }, { min: 5, message: '用户名至少 5 位', trigger: 'blur' as const }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' as const }, { min: 6, message: '密码至少 6 位', trigger: 'blur' as const }],
 };
 
-async function onFinish(values: { username: string; password: string }) {
+async function onLoginFinish(values: { username: string; password: string }) {
   try {
     await auth.login(values);
     message.success('登录成功');
@@ -31,32 +40,75 @@ async function onFinish(values: { username: string; password: string }) {
   }
 }
 
-function onFinishFailed() {
+function onLoginFailed() {
   message.warning('请先完成表单填写');
+}
+
+/* ---- 注册表单 ---- */
+const registerFormRef = ref();
+const registerState = reactive<RegisterPayload>({
+  username: '',
+  password: '',
+  nickname: '',
+  email: '',
+  phone: '',
+});
+
+const registerRules: Record<string, Rule[]> = {
+  username: [{ required: true, message: '请输入用户名', trigger: 'blur' as const }, { min: 6, message: '用户名至少 6 位', trigger: 'blur' as const }],
+  password: [{ required: true, message: '请输入密码', trigger: 'blur' as const }, { min: 6, message: '密码至少 6 位', trigger: 'blur' as const }],
+  email: [{ type: 'email', message: '邮箱格式不正确', trigger: 'blur' as const }],
+};
+
+async function onRegisterFinish(values: RegisterPayload) {
+  try {
+    await auth.register(values);
+    message.success('注册成功，已自动登录');
+    const redirect = (route.query.redirect as string) || '/home';
+    router.replace(redirect);
+  } catch (err) {
+    message.error((err as Error).message || '注册失败');
+  }
+}
+
+function onRegisterFailed() {
+  message.warning('请先完成表单填写');
+}
+
+function switchTab(tab: 'login' | 'register') {
+  activeTab.value = tab;
 }
 </script>
 
 <template>
   <div class="login-page">
-    <a-card class="login-card" title="Koi Studio 登录">
+    <a-card class="login-card" variant="borderless">
+      <!-- Tab 切换 -->
+      <a-tabs v-model:activeKey="activeTab" centered class="login-tabs" @change="switchTab">
+        <a-tab-pane key="login" tab="登录" />
+        <a-tab-pane key="register" tab="注册" />
+      </a-tabs>
+
+      <!-- 登录表单 -->
       <a-form
-        ref="formRef"
-        :model="formState"
-        :rules="rules"
+        v-show="activeTab === 'login'"
+        ref="loginFormRef"
+        :model="loginState"
+        :rules="loginRules"
         layout="vertical"
-        @finish="onFinish"
-        @finish-failed="onFinishFailed"
+        @finish="onLoginFinish"
+        @finish-failed="onLoginFailed"
       >
         <a-form-item label="用户名" name="username">
-          <a-input v-model:value="formState.username" placeholder="请输入用户名" size="large">
+          <a-input v-model:value="loginState.username" :placeholder="`请输入用户名（默认 ${DEFAULT_USERNAME}）`" size="large">
             <template #prefix><UserOutlined /></template>
           </a-input>
         </a-form-item>
 
         <a-form-item label="密码" name="password">
           <a-input-password
-            v-model:value="formState.password"
-            placeholder="请输入密码"
+            v-model:value="loginState.password"
+            :placeholder="`请输入密码（默认 ${DEFAULT_PASSWORD}）`"
             size="large"
           >
             <template #prefix><LockOutlined /></template>
@@ -70,7 +122,63 @@ function onFinishFailed() {
         </a-form-item>
       </a-form>
 
-      <p class="hint">演示账号：admin / 123456</p>
+      <!-- 注册表单 -->
+      <a-form
+        v-show="activeTab === 'register'"
+        ref="registerFormRef"
+        :model="registerState"
+        :rules="registerRules"
+        layout="vertical"
+        @finish="onRegisterFinish"
+        @finish-failed="onRegisterFailed"
+      >
+        <a-form-item label="用户名" name="username">
+          <a-input v-model:value="registerState.username" placeholder="请输入用户名（至少 6 位）" size="large">
+            <template #prefix><UserOutlined /></template>
+          </a-input>
+        </a-form-item>
+
+        <a-form-item label="密码" name="password">
+          <a-input-password
+            v-model:value="registerState.password"
+            placeholder="请输入密码（至少 6 位）"
+            size="large"
+          >
+            <template #prefix><LockOutlined /></template>
+          </a-input-password>
+        </a-form-item>
+
+        <a-form-item label="昵称" name="nickname">
+          <a-input v-model:value="registerState.nickname" placeholder="请输入昵称（选填）" size="large">
+            <template #prefix><IdcardOutlined /></template>
+          </a-input>
+        </a-form-item>
+
+        <a-form-item label="邮箱" name="email">
+          <a-input v-model:value="registerState.email" placeholder="请输入邮箱（选填）" size="large">
+            <template #prefix><MailOutlined /></template>
+          </a-input>
+        </a-form-item>
+
+        <a-form-item label="手机号" name="phone">
+          <a-input v-model:value="registerState.phone" placeholder="请输入手机号（选填）" size="large">
+            <template #prefix><PhoneOutlined /></template>
+          </a-input>
+        </a-form-item>
+
+        <a-form-item>
+          <a-button type="primary" html-type="submit" block size="large" :loading="auth.loading">
+            注册
+          </a-button>
+        </a-form-item>
+      </a-form>
+
+      <p v-if="activeTab === 'login'" class="hint">
+        还没有账号？<a @click="switchTab('register')">立即注册</a>
+      </p>
+      <p v-if="activeTab === 'register'" class="hint">
+        已有账号？<a @click="switchTab('login')">返回登录</a>
+      </p>
     </a-card>
   </div>
 </template>
@@ -90,16 +198,40 @@ function onFinishFailed() {
 }
 
 .login-card {
-  width: 360px;
+  width: 400px;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-md);
   background: var(--color-surface);
 }
 
+.login-tabs {
+  margin-bottom: 8px;
+}
+
+.login-tabs :deep(.ant-tabs-nav) {
+  margin-bottom: 16px;
+}
+
+.login-tabs :deep(.ant-tabs-tab) {
+  font-size: 15px;
+  font-weight: 500;
+  padding: 8px 16px;
+}
+
 .hint {
   margin: 0;
   text-align: center;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--color-text-muted);
+}
+
+.hint a {
+  color: var(--color-brand);
+  cursor: pointer;
+  margin-left: 4px;
+}
+
+.hint a:hover {
+  color: var(--color-brand-hover);
 }
 </style>

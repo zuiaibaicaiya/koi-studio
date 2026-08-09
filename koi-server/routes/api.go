@@ -26,19 +26,41 @@ func Api() {
 	facades.Route().Any("/socket.io/*any", socketioController.ServeSocketio)
 
 	userController := api.NewUserController()
+	hotWordLibraryController := api.NewHotWordLibraryController()
+	hotWordController := api.NewHotWordController()
 
-	// 登录接口，无需认证。
+	// 登录和注册接口，无需认证。
 	facades.Route().Post("/api/user/login", userController.Login)
+	facades.Route().Post("/api/user/register", userController.Register)
 
 	// 用户管理接口，统一挂载 JWT 认证中间件。
 	facades.Route().Prefix("api").Middleware(middleware.JWT()).Group(func(router route.Router) {
 		router.Post("/user/logout", userController.Logout)
 		router.Get("/user/current", userController.GetCurrentUserInfo)
+		router.Post("/user/refresh", userController.RefreshToken)
+		router.Put("/user/profile", userController.UpdateProfile)
+		router.Put("/user/password", userController.ChangePassword)
 
 		router.Get("/user", userController.ListUsers)
 		router.Post("/user", userController.CreateUser)
 		router.Get("/user/{id}", userController.GetUser)
 		router.Put("/user/{id}", userController.UpdateUser)
 		router.Delete("/user/{id}", userController.DeleteUser)
+		router.Put("/user/{id}/status", userController.ToggleUserStatus)
+
+		// 热词库管理接口。
+		router.Get("/hot-word-library", hotWordLibraryController.ListLibraries)
+		router.Post("/hot-word-library", hotWordLibraryController.CreateLibrary)
+		router.Post("/hot-word-library/import", hotWordLibraryController.ImportLibrary)
+		router.Get("/hot-word-library/{id}", hotWordLibraryController.GetLibrary)
+		router.Put("/hot-word-library/{id}", hotWordLibraryController.UpdateLibrary)
+		router.Delete("/hot-word-library/{id}", hotWordLibraryController.DeleteLibrary)
+
+		// 热词管理接口，归属于指定热词库。
+		router.Get("/hot-word-library/{id}/word", hotWordController.ListHotWords)
+		router.Post("/hot-word-library/{id}/word", hotWordController.CreateHotWord)
+		router.Get("/hot-word-library/{id}/word/{wordId}", hotWordController.GetHotWord)
+		router.Put("/hot-word-library/{id}/word/{wordId}", hotWordController.UpdateHotWord)
+		router.Delete("/hot-word-library/{id}/word/{wordId}", hotWordController.DeleteHotWord)
 	})
 }
