@@ -239,7 +239,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
+  padding: 0 var(--layout-gutter);
   height: 56px;
   line-height: normal;
   position: sticky;
@@ -345,6 +345,9 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
 }
 .content {
-  margin: 16px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0 var(--layout-gutter);
+  margin: 16px 0;
 }
 </style>
