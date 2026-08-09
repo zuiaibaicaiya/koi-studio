@@ -16,6 +16,7 @@ import {
   FontSizeOutlined,
   ThunderboltOutlined,
 } from '@antdv-next/icons';
+import { createSystemAudioStream } from '../../services/capture';
 
 const router = useRouter();
 const userStore = useSystemUserStore();
@@ -225,7 +226,6 @@ async function startSystem() {
   try {
     // 动态加载：capture 服务依赖 electron IPC，仅在 Electron 运行时可用，
     // 惰性加载可避免非 Electron 环境下顶层 import 导致整页崩溃
-    const { createSystemAudioStream } = await import('../../services/capture');
     const sys = await createSystemAudioStream({ silent: false });
     systemCaptureStop = sys.stop;
 
@@ -309,9 +309,9 @@ watch(
         startMic();
       }
     } else {
-      // 系统内录不能自动开启（需用户手势），仅清理旧会话
+      // 切换为系统内录：由 radio 切换触发用户手势，直接自动开启内录
       stopCapture();
-      systemError.value = '';
+      startSystem();
     }
   },
 );
@@ -431,25 +431,17 @@ onBeforeUnmount(() => {
                       </div>
                     </template>
 
-                    <!-- 系统内录：需用户手势开启 -->
+                    <!-- 系统内录 -->
                     <template v-else>
-                      <template v-if="captureType === 'system'">
-                        <div class="volume-meter">
-                          <div
-                            class="volume-meter-fill"
-                            :style="{
-                              width: (currentVolume * 100) + '%',
-                              background: `linear-gradient(90deg, hsl(${210 - currentVolume * 210}, 85%, 55%), hsl(${210 - currentVolume * 210}, 85%, 65%))`,
-                            }"
-                          ></div>
-                        </div>
-                      </template>
-                      <template v-else>
-                        <a-button size="small" type="primary" ghost @click="startSystem">
-                          <template #icon><SoundOutlined /></template>
-                          开始内录
-                        </a-button>
-                      </template>
+                      <div class="volume-meter">
+                        <div
+                          class="volume-meter-fill"
+                          :style="{
+                            width: (currentVolume * 100) + '%',
+                            background: `linear-gradient(90deg, hsl(${210 - currentVolume * 210}, 85%, 55%), hsl(${210 - currentVolume * 210}, 85%, 65%))`,
+                          }"
+                        ></div>
+                      </div>
                       <span v-if="systemError" class="sys-error-tip">{{ systemError }}</span>
                     </template>
                   </div>

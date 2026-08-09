@@ -19,6 +19,8 @@ import {
   UserOutlined,
   MailOutlined,
 } from '@antdv-next/icons';
+import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
+import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 
 const route = useRoute();
 const router = useRouter();
@@ -58,40 +60,59 @@ let timer: number | undefined;
 let segId = 0;
 
 const sampleTexts = [
-  '我们先来回顾一下上周的项目进展。',
-  '实时转写功能已经接入了最新的语音识别模型。',
+  '我们先来回顾一下上周的项目进展，整体节奏比预期要快一些，几个核心模块都已经进入了联调阶段。',
+  '实时转写功能已经接入了最新的语音识别模型，中文普通话的识别准确率在安静环境下已经可以稳定在 97% 以上，而且端到端的延迟控制在 800 毫秒以内，基本能做到“边说边出字”。',
   '热词库对专业术语的识别准确率有明显提升。',
-  '麦克风录音和系统内录两种方式都可以稳定工作。',
-  '接下来讨论一下下个版本的迭代计划。',
-  '说话人分离的效果比预期要好很多。',
-  '建议在会议结束后自动生成结构化纪要。',
-  '用户反馈希望支持更多方言的实时识别。',
+  '麦克风录音和系统内录两种方式都可以稳定工作，不过在多人同时发言、会议室回声较大的场景下，系统内录的信噪比会更好一点。',
+  '接下来讨论一下下个版本的迭代计划：第一优先级是把实时转写沉淀成会议纪要，第二优先级是多语种混合识别，第三优先级是离线模式，方便在没有网络的现场会议里也能用。',
+  '说话人分离的效果比预期要好很多，五人以内的会议基本能准确区分每个人，但超过八人之后偶发会串音，后续需要引入声纹聚类来做兜底。',
+  '建议在会议结束后自动生成结构化纪要，包含议程、决议、待办、负责人和截止时间五个板块，并支持一键导出成 Markdown 和 Word。',
+  '用户反馈希望支持更多方言的实时识别，比如粤语、四川话、闽南语，这部分我们和算法团队约了下周做一次可行性评估。',
+  '关于权限这块，建议区分“查看者 / 编辑者 / 管理员”三种角色，查看者只能浏览转写结果，编辑者可以修正文本和说话人，管理员可以管理热词和参会人员。',
+  '数据安全的同学提了一个点：转写音频默认在本地处理、不上传云端，只有用户主动开启“云端增强识别”时才会上传，而且上传的内容要做脱敏和加密。',
+  '短句。',
+  '性能方面，单场会议累积到上千条转写时，普通列表会出现明显卡顿，所以我们打算换成虚拟滚动来只渲染可视区域，理论上列表再长也不会掉帧。',
+  '还有一件小事——很多同事习惯在会议里用缩写，比如把“客户成功”叫成“客成”，这类内部黑话我们可以维护一份同义词热词，识别之后再自动展开成完整表述。',
+  '最后同步一个排期：灰度会在下周二先对内部 20 人开放，收集一轮反馈后，月底再对全公司开放，正式 GA 预计在季度末。',
 ];
 
-function nowTime() {
-  const d = new Date();
+function nowTime(base?: Date) {
+  const d = base ?? new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
-function pushSegment() {
-  if (speakers.value.length === 0) return;
-  const sp = speakers.value[segId % speakers.value.length];
-  const text = sampleTexts[segId % sampleTexts.length];
-  segments.value.push({
+function makeSegment(at?: Date): Segment {
+  const sp = speakers.value.length
+    ? speakers.value[Math.floor(Math.random() * speakers.value.length)]
+    : { id: -1, name: '说话人' };
+  const text = sampleTexts[Math.floor(Math.random() * sampleTexts.length)];
+  return {
     id: segId++,
     speakerId: sp.id,
     speakerName: sp.name,
     text,
-    time: nowTime(),
-  });
+    time: nowTime(at),
+  };
+}
+
+function pushSegment() {
+  if (speakers.value.length === 0) return;
+  segments.value.push(makeSegment());
   scrollToBottom();
 }
 
-const transcriptListRef = ref<HTMLElement | null>(null);
+const transcriptScrollerRef = ref<{ scrollToBottom: () => void } | null>(null);
+const autoScroll = ref(true);
+
+function onTranscriptScroll(e: Event) {
+  const el = e.target as HTMLElement;
+  autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+}
 function scrollToBottom() {
   nextTick(() => {
-    const el = transcriptListRef.value;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (autoScroll.value && transcriptScrollerRef.value) {
+      transcriptScrollerRef.value.scrollToBottom();
+    }
   });
 }
 
@@ -358,22 +379,41 @@ onBeforeUnmount(() => {
           </a-tag>
         </span>
       </template>
-      <div ref="transcriptListRef" class="transcript-list">
+      <div class="transcript-list">
         <div v-if="visibleSegments.length === 0" class="transcript-empty">
           <AudioOutlined />
           <p v-if="focusSpeakerId !== null">该说话人暂无发言内容</p>
           <p v-else>正在聆听… 转写内容将实时显示在这里</p>
         </div>
-        <div v-for="seg in visibleSegments" :key="seg.id" class="transcript-item">
-          <div class="seg-head">
-            <a-avatar :size="24" :style="{ backgroundColor: 'var(--color-success)' }">
-              {{ seg.speakerName.charAt(0) }}
-            </a-avatar>
-            <span class="seg-speaker">{{ seg.speakerName }}</span>
-            <span class="seg-time">{{ seg.time }}</span>
-          </div>
-          <div class="seg-text" v-html="highlight(seg.text)"></div>
-        </div>
+        <DynamicScroller
+          v-else
+          ref="transcriptScrollerRef"
+          class="transcript-scroller"
+          :items="visibleSegments"
+          :min-item-size="64"
+          key-field="id"
+          @scroll="onTranscriptScroll"
+        >
+          <template #default="{ item, index, active }">
+            <DynamicScrollerItem
+              :item="item"
+              :active="active"
+              :size-dependencies="[item.text, item.speakerName]"
+              :data-index="index"
+            >
+              <div class="transcript-item">
+                <div class="seg-head">
+                  <a-avatar :size="24" :style="{ backgroundColor: 'var(--color-success)' }">
+                    {{ item.speakerName.charAt(0) }}
+                  </a-avatar>
+                  <span class="seg-speaker">{{ item.speakerName }}</span>
+                  <span class="seg-time">{{ item.time }}</span>
+                </div>
+                <div class="seg-text" v-html="highlight(item.text)"></div>
+              </div>
+            </DynamicScrollerItem>
+          </template>
+        </DynamicScroller>
       </div>
     </a-card>
 
@@ -728,19 +768,22 @@ onBeforeUnmount(() => {
   100% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0); }
 }
 .transcript-list {
-  max-height: 60vh;
+  min-height: 200px;
+}
+.transcript-scroller {
+  height: 60vh;
   overflow-y: auto;
   padding-right: 8px;
   scroll-behavior: smooth;
 }
-.transcript-list::-webkit-scrollbar {
+.transcript-scroller::-webkit-scrollbar {
   width: 6px;
 }
-.transcript-list::-webkit-scrollbar-thumb {
+.transcript-scroller::-webkit-scrollbar-thumb {
   background: var(--color-border-strong);
   border-radius: 3px;
 }
-.transcript-list::-webkit-scrollbar-thumb:hover {
+.transcript-scroller::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
 }
 .transcript-empty {
@@ -758,21 +801,10 @@ onBeforeUnmount(() => {
   margin: 0 -12px;
   border-radius: 8px;
   border-bottom: 1px solid var(--color-border-secondary);
-  animation: segIn 0.35s ease both;
   transition: background 0.2s ease;
 }
 .transcript-item:hover {
   background: var(--color-surface-2);
-}
-@keyframes segIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 .seg-head {
   display: flex;
