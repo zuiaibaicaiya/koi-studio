@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AAvatar: typeof import('antdv-next')['Avatar']
+    ABadge: typeof import('antdv-next')['Badge']
     ABreadcrumb: typeof import('antdv-next')['Breadcrumb']
     ABreadcrumbItem: typeof import('antdv-next')['BreadcrumbItem']
     AButton: typeof import('antdv-next')['Button']
@@ -27,6 +28,7 @@ declare module 'vue' {
     AFormItem: typeof import('antdv-next')['FormItem']
     AInput: typeof import('antdv-next')['Input']
     AInputNumber: typeof import('antdv-next')['InputNumber']
+    AInputPassword: typeof import('antdv-next')['InputPassword']
     ALayout: typeof import('antdv-next')['Layout']
     ALayoutContent: typeof import('antdv-next')['LayoutContent']
     ALayoutHeader: typeof import('antdv-next')['LayoutHeader']
