@@ -64,6 +64,8 @@ onMounted(() => {
   if (formState.recordMode === 'mic') {
     startMic();
   }
+  // 加载说话人列表（供选择参与转写的说话人）
+  speakerStore.load();
 });
 
 // ---- 选项数据 ----
@@ -71,10 +73,12 @@ const participantOptions = userStore.list
   .filter((u) => u.status === '启用')
   .map((u) => ({ label: `${u.name}（${u.username}）`, value: u.id }));
 
-const speakerOptions = speakerStore.list.map((s) => ({
-  label: `${s.name} · ${s.language}`,
-  value: s.id,
-}));
+const speakerOptions = computed(() =>
+  speakerStore.list.map((s) => ({
+    label: `${s.name} · ${s.language}`,
+    value: s.id,
+  })),
+);
 
 const hotWordOptions = hotWordStore.list.map((w) => ({
   label: `${w.word} · ${w.category}`,
@@ -112,7 +116,7 @@ const rules: Record<string, Rule[]> = {
 
 // ---- 全选/清空 ----
 const allParticipantIds = participantOptions.map((o) => o.value);
-const allSpeakerIds = speakerOptions.map((o) => o.value);
+const allSpeakerIds = computed(() => speakerOptions.value.map((o) => o.value));
 const allHotWordIds = hotWordOptions.map((o) => o.value);
 
 function toggleAll(key: 'participants' | 'speakers' | 'hotWords', all: number[]) {
@@ -129,7 +133,7 @@ const selectedParticipants = computed(() =>
 );
 
 const selectedSpeakers = computed(() =>
-  speakerOptions.filter((o) => formState.speakers.includes(o.value)),
+  speakerOptions.value.filter((o) => formState.speakers.includes(o.value)),
 );
 
 const selectedHotWords = computed(() =>

@@ -311,6 +311,8 @@ watch(
 
 onMounted(() => {
   startTimer();
+  // 加载说话人列表，供 getById 检索转写参与者
+  speakerStore.load();
 });
 onBeforeUnmount(() => {
   stopTimer();

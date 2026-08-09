@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { message, Modal } from 'antdv-next';
 import type { UploadProps } from 'antdv-next';
 import {
   useSpeakerStore,
   type Speaker,
   type SpeakerAudio,
-  type SpeakerGender,
+  type UIGender,
+  type UIStatus,
 } from '../../store/speaker';
 import { exportToCsv, rowsFromCsv, type CsvColumn } from '../../utils/csv';
+import { toWavFile } from '../../utils/audio';
 import {
   PlusOutlined,
   EditOutlined,
@@ -19,8 +21,6 @@ import {
   UploadOutlined,
   AudioOutlined,
   StopOutlined,
-  PlayCircleOutlined,
-  PauseCircleOutlined,
   DownOutlined,
 } from '@antdv-next/icons';
 
@@ -28,11 +28,8 @@ const store = useSpeakerStore();
 
 const columns = [
   { title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: (a: Speaker, b: Speaker) => a.id - b.id },
-  { title: '姓名', dataIndex: 'name', key: 'name', sorter: (a: Speaker, b: Speaker) => a.name.localeCompare(b.name) },
-  { title: '性别', dataIndex: 'gender', key: 'gender', width: 80 },
-  { title: '语言', dataIndex: 'language', key: 'language', width: 100 },
-  { title: '样本数', dataIndex: 'sampleCount', key: 'sampleCount', width: 100, sorter: (a: Speaker, b: Speaker) => a.sampleCount - b.sampleCount },
-  { title: '音频样本', key: 'audio', width: 130 },
+  { title: '姓名', dataIndex: 'name', key: 'name' },
+  { title: '音频样本', key: 'audio', width: 280 },
   { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 120 },
   { title: '操作', key: 'action', width: 90, fixed: 'right' },
@@ -41,27 +38,37 @@ const columns = [
 const csvColumns: CsvColumn[] = [
   { key: 'id', title: 'ID' },
   { key: 'name', title: '姓名' },
-  { key: 'gender', title: '性别' },
-  { key: 'language', title: '语言' },
-  { key: 'sampleCount', title: '样本数' },
   { key: 'description', title: '描述' },
   { key: 'createdAt', title: '创建时间' },
 ];
 
-const genders: SpeakerGender[] = ['男', '女', '未知'];
-const languages = ['中文', '英文', '粤语', '四川话', '日语'];
 const keyword = ref('');
-const languageFilter = ref<string | undefined>();
-const pagination = reactive({ current: 1, pageSize: 10, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` });
+const genderFilter = ref<UIGender | '' | undefined>('');
+const statusFilter = ref<UIStatus | '' | undefined>('');
 
-const filtered = computed(() =>
-  store.list.filter((s) => {
-    const kw = keyword.value.trim().toLowerCase();
-    const matchKw = !kw || s.name.toLowerCase().includes(kw) || s.description.toLowerCase().includes(kw);
-    const matchLang = !languageFilter.value || s.language === languageFilter.value;
-    return matchKw && matchLang;
-  }),
-);
+const pagination = computed(() => ({
+  current: store.page,
+  pageSize: store.pageSize,
+  total: store.total,
+  showSizeChanger: true,
+  showTotal: (t: number) => `共 ${t} 条`,
+}));
+
+/** 关键词 / 性别 / 状态筛选后重新查询 */
+function doSearch() {
+  store.load({ page: 1, keyword: keyword.value, gender: genderFilter.value, status: statusFilter.value });
+}
+
+/** 分页切换时重新查询 */
+function handleTableChange(pg: { current: number; pageSize: number }) {
+  store.load({
+    page: pg.current,
+    pageSize: pg.pageSize,
+    keyword: keyword.value,
+    gender: genderFilter.value,
+    status: statusFilter.value,
+  });
+}
 
 const modalVisible = ref(false);
 const editingId = ref<number | null>(null);
@@ -70,6 +77,7 @@ const formState = reactive<Omit<Speaker, 'id' | 'createdAt'>>({
   name: '',
   gender: '未知',
   language: '中文',
+  status: '启用',
   sampleCount: 0,
   description: '',
   audio: null,
@@ -82,6 +90,8 @@ const formState = reactive<Omit<Speaker, 'id' | 'createdAt'>>({
 const audioSample = ref<SpeakerAudio | null>(null);
 const audioError = ref('');
 const recording = ref(false);
+/** 音频转码中（录音/导入后统一转 wav） */
+const transcoding = ref(false);
 /** 录制时长（秒） */
 const recordSeconds = ref(0);
 /** 0-1 归一化音量，用于音量条 */
@@ -122,11 +132,7 @@ function pickMimeType() {
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   return candidates.find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(t)) || '';
 }
-function extFromMime(mime: string) {
-  if (mime.includes('mp4')) return 'm4a';
-  if (mime.includes('ogg')) return 'ogg';
-  return 'webm';
-}
+
 
 /** 读取音频真实时长（导入文件时使用） */
 function probeDuration(url: string) {
@@ -215,14 +221,7 @@ async function startRecord() {
         return;
       }
       const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-      setAudioSample({
-        name: `录音_${stamp}.${extFromMime(type)}`,
-        url: URL.createObjectURL(blob),
-        duration,
-        size: blob.size,
-        source: 'record',
-      });
-      message.success(`录制完成，时长 ${formatDuration(duration)}`);
+      void applyRecording(blob, duration, `录音_${stamp}.wav`);
     };
 
     recordStartAt = Date.now();
@@ -293,6 +292,27 @@ function updateVolume() {
   animationId = requestAnimationFrame(updateVolume);
 }
 
+/** 录音结束后转码为 WAV（后端声纹服务只接受 wav），再作为待提交样本 */
+async function applyRecording(blob: Blob, duration: number, fileName: string) {
+  transcoding.value = true;
+  try {
+    const wav = await toWavFile(blob, fileName);
+    setAudioSample({
+      name: wav.name,
+      url: URL.createObjectURL(wav),
+      duration,
+      size: wav.size,
+      source: 'record',
+      blob: wav,
+    });
+    message.success(`录制完成，时长 ${formatDuration(duration)}`);
+  } catch (e: unknown) {
+    audioError.value = (e as { message?: string })?.message || '录音转码失败，请重试';
+  } finally {
+    transcoding.value = false;
+  }
+}
+
 /** 导入本地音频文件 */
 const beforeAudioUpload: UploadProps['beforeUpload'] = async (file) => {
   const f = file as File;
@@ -309,15 +329,32 @@ const beforeAudioUpload: UploadProps['beforeUpload'] = async (file) => {
     stopRecord();
   }
   audioError.value = '';
-  const url = URL.createObjectURL(f);
-  const duration = await probeDuration(url);
-  setAudioSample({ name: f.name, url, duration, size: f.size, source: 'import' });
-  message.success('音频导入成功');
+  transcoding.value = true;
+  try {
+    const probeUrl = URL.createObjectURL(f);
+    const duration = await probeDuration(probeUrl);
+    URL.revokeObjectURL(probeUrl);
+    // 非 wav 文件统一转码，保证后端可解析
+    const wav = await toWavFile(f, f.name);
+    setAudioSample({
+      name: wav.name,
+      url: URL.createObjectURL(wav),
+      duration,
+      size: wav.size,
+      source: 'import',
+      blob: wav,
+    });
+    message.success('音频导入成功');
+  } catch (e: unknown) {
+    audioError.value = (e as { message?: string })?.message || '音频解析失败，请更换文件';
+  } finally {
+    transcoding.value = false;
+  }
   return false;
 };
 
 function resetForm() {
-  Object.assign(formState, { name: '', gender: '未知', language: '中文', sampleCount: 0, description: '', audio: null });
+  Object.assign(formState, { name: '', gender: '未知', language: '中文', status: '启用', sampleCount: 0, description: '', audio: null });
 }
 function openCreate() {
   if (recording.value) {
@@ -339,20 +376,21 @@ function openEdit(record: Speaker) {
   }
   releasePendingUrls();
   editingId.value = record.id;
-  originalAudioUrl = record.audio?.url ?? null;
-  audioSample.value = record.audio ? { ...record.audio } : null;
+  originalAudioUrl = null;
+  audioSample.value = null;
   audioError.value = '';
   Object.assign(formState, {
     name: record.name,
     gender: record.gender,
-    language: record.language,
-    sampleCount: record.sampleCount,
+    language: record.language ?? '中文',
+    status: record.status ?? '启用',
+    sampleCount: record.sampleCount ?? 0,
     description: record.description,
-    audio: record.audio ?? null,
+    audio: null,
   });
   modalVisible.value = true;
 }
-function handleSubmit() {
+async function handleSubmit() {
   if (recording.value) {
     message.warning('请先结束录制');
     return;
@@ -361,24 +399,43 @@ function handleSubmit() {
     message.warning('请填写姓名');
     return;
   }
-  submitting.value = true;
-  const audio = audioSample.value ? { ...audioSample.value } : null;
-  // 已上传音频但样本数为 0 时，至少记为 1 条样本
-  const sampleCount = audio && !formState.sampleCount ? 1 : formState.sampleCount;
-  const payload = { ...formState, audio, sampleCount };
-  if (editingId.value) {
-    // 编辑时若替换/清除了原音频，释放旧地址
-    if (originalAudioUrl && originalAudioUrl !== audio?.url) URL.revokeObjectURL(originalAudioUrl);
-    store.update(editingId.value, payload);
-    message.success('更新成功');
-  } else {
-    store.add(payload);
-    message.success('创建成功');
+  if (transcoding.value) {
+    message.warning('音频处理中，请稍候');
+    return;
   }
-  releasePendingUrls(audio?.url);
-  originalAudioUrl = null;
-  submitting.value = false;
-  modalVisible.value = false;
+  if (!audioSample.value && !editingId.value) {
+    message.error('请先录制或上传音频样本');
+    return;
+  }
+  submitting.value = true;
+  try {
+    const audio = audioSample.value;
+    const payload = {
+      name: formState.name.trim(),
+      gender: formState.gender,
+      description: formState.description.trim(),
+      status: formState.status,
+      // 录音随表单一起以 multipart/form-data 提交
+      audio: audio?.blob
+        ? { blob: audio.blob, fileName: audio.name, remark: audio.remark || audio.name }
+        : undefined,
+    };
+    if (editingId.value) {
+      await store.update(editingId.value, payload);
+      message.success('更新成功');
+    } else {
+      await store.add(payload);
+      message.success('注册成功');
+    }
+    releasePendingUrls(audio?.url);
+    audioSample.value = null;
+    originalAudioUrl = null;
+    modalVisible.value = false;
+  } catch (e: unknown) {
+    message.error((e as { message?: string })?.message || '保存失败');
+  } finally {
+    submitting.value = false;
+  }
 }
 function handleCancel() {
   if (recording.value) {
@@ -393,43 +450,18 @@ function handleCancel() {
   originalAudioUrl = null;
   modalVisible.value = false;
 }
-function handleDelete(id: number) {
-  const target = store.getById(id);
-  if (target?.audio?.url) URL.revokeObjectURL(target.audio.url);
-  if (playingId.value === id) stopRowPlay();
-  store.remove(id);
-  message.success('删除成功');
+async function handleDelete(id: number) {
+  try {
+    await store.remove(id);
+    message.success('删除成功');
+  } catch (e: unknown) {
+    message.error((e as { message?: string })?.message || '删除失败');
+  }
 }
 
-// ---- 表格内试听 ----
-const playingId = ref<number | null>(null);
-let rowPlayer: HTMLAudioElement | null = null;
-
-function stopRowPlay() {
-  rowPlayer?.pause();
-  playingId.value = null;
-}
-function toggleRowPlay(record: Speaker) {
-  if (!record.audio?.url) return;
-  if (playingId.value === record.id) {
-    stopRowPlay();
-    return;
-  }
-  if (!rowPlayer) {
-    rowPlayer = new Audio();
-    rowPlayer.onended = () => (playingId.value = null);
-    rowPlayer.onerror = () => {
-      playingId.value = null;
-      message.error('音频播放失败');
-    };
-  }
-  rowPlayer.src = record.audio.url;
-  rowPlayer.currentTime = 0;
-  rowPlayer
-    .play()
-    .then(() => (playingId.value = record.id))
-    .catch(() => message.error('音频播放失败'));
-}
+onMounted(() => {
+  store.load();
+});
 
 onBeforeUnmount(() => {
   if (recording.value) {
@@ -438,13 +470,12 @@ onBeforeUnmount(() => {
   }
   teardownRecord();
   releasePendingUrls();
-  rowPlayer?.pause();
-  rowPlayer = null;
 });
-function handleRefresh() {
+async function handleRefresh() {
   keyword.value = '';
-  languageFilter.value = undefined;
-  pagination.current = 1;
+  genderFilter.value = '';
+  statusFilter.value = '';
+  await store.load({ page: 1 });
   message.success('已刷新');
 }
 function handleExport() {
@@ -454,21 +485,22 @@ function handleExport() {
 
 const beforeUpload: UploadProps['beforeUpload'] = (file) => {
   const reader = new FileReader();
-  reader.onload = () => {
+  reader.onload = async () => {
     const text = String(reader.result || '');
     const rows = rowsFromCsv<Speaker>(text, csvColumns).map((r) => ({
       name: r.name || '',
-      gender: (r.gender as SpeakerGender) || '未知',
-      language: r.language || '中文',
-      sampleCount: Number(r.sampleCount) || 0,
       description: r.description || '',
     }));
     if (rows.length === 0) {
       message.warning('未解析到有效数据');
       return;
     }
-    store.importRows(rows as Speaker[]);
-    message.success(`成功导入 ${rows.length} 条数据`);
+    try {
+      await store.importRows(rows);
+      message.success(`成功导入 ${rows.length} 条数据`);
+    } catch (e: unknown) {
+      message.error((e as { message?: string })?.message || '导入失败');
+    }
   };
   reader.readAsText(file);
   return false;
@@ -490,13 +522,36 @@ function confirmDelete(record: Speaker) {
     <a-card class="toolbar" variant="borderless">
       <a-form layout="inline" class="filter-form">
         <a-form-item label="关键词">
-          <a-input v-model:value="keyword" placeholder="姓名 / 描述" allow-clear style="width: 220px">
+          <a-input-search
+            v-model:value="keyword"
+            placeholder="姓名 / 描述"
+            allow-clear
+            style="width: 220px"
+            @search="doSearch"
+          >
             <template #prefix><SearchOutlined /></template>
-          </a-input>
+          </a-input-search>
         </a-form-item>
-        <a-form-item label="语言">
-          <a-select v-model:value="languageFilter" placeholder="全部" allow-clear style="width: 130px">
-            <a-select-option v-for="l in languages" :key="l" :value="l">{{ l }}</a-select-option>
+        <a-form-item label="性别">
+          <a-select
+            v-model:value="genderFilter"
+            placeholder="全部"
+            allow-clear
+            style="width: 120px"
+            @change="doSearch"
+          >
+            <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select
+            v-model:value="statusFilter"
+            placeholder="全部"
+            allow-clear
+            style="width: 120px"
+            @change="doSearch"
+          >
+            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
           </a-select>
         </a-form-item>
       </a-form>
@@ -513,33 +568,16 @@ function confirmDelete(record: Speaker) {
     <a-card variant="borderless" class="table-card">
       <a-table
         :columns="columns"
-        :data-source="filtered"
+        :data-source="store.list"
+        :loading="store.loading"
         :pagination="pagination"
         row-key="id"
         :scroll="{ x: 'max-content' }"
+        @change="handleTableChange"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'gender'">
-            <a-tag :color="record.gender === '男' ? 'blue' : record.gender === '女' ? 'magenta' : 'default'">
-              {{ record.gender }}
-            </a-tag>
-          </template>
-          <template v-else-if="column.key === 'sampleCount'">
-            <a-badge :count="record.sampleCount" :number-style="{ backgroundColor: 'var(--color-success)' }" />
-          </template>
-          <template v-else-if="column.key === 'audio'">
-            <a-button
-              v-if="record.audio"
-              type="link"
-              size="small"
-              class="row-play-btn"
-              @click="toggleRowPlay(record)"
-            >
-              <PauseCircleOutlined v-if="playingId === record.id" />
-              <PlayCircleOutlined v-else />
-              {{ playingId === record.id ? '停止' : '试听' }}
-              <span class="row-play-dur">{{ formatDuration(record.audio.duration) }}</span>
-            </a-button>
+          <template v-if="column.key === 'audio'">
+            <a-tag v-if="(record.sampleCount ?? 0) > 0" color="blue">{{ record.sampleCount }} 段声纹</a-tag>
             <span v-else class="row-empty">—</span>
           </template>
           <template v-else-if="column.key === 'action'">
@@ -579,17 +617,14 @@ function confirmDelete(record: Speaker) {
           <a-input v-model:value="formState.name" placeholder="请输入姓名" />
         </a-form-item>
         <a-form-item label="性别">
-          <a-select v-model:value="formState.gender">
-            <a-select-option v-for="g in genders" :key="g" :value="g">{{ g }}</a-select-option>
+          <a-select v-model:value="formState.gender" style="width: 160px">
+            <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
           </a-select>
         </a-form-item>
-        <a-form-item label="语言">
-          <a-select v-model:value="formState.language">
-            <a-select-option v-for="l in languages" :key="l" :value="l">{{ l }}</a-select-option>
+        <a-form-item label="状态">
+          <a-select v-model:value="formState.status" style="width: 160px">
+            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
           </a-select>
-        </a-form-item>
-        <a-form-item label="样本数">
-          <a-input-number v-model:value="formState.sampleCount" :min="0" style="width: 100%" />
         </a-form-item>
         <a-form-item label="音频样本">
           <div class="audio-panel">
@@ -624,6 +659,7 @@ function confirmDelete(record: Speaker) {
               </div>
             </div>
 
+            <p v-if="transcoding" class="audio-hint">音频转码中（转为 wav）…</p>
             <p v-if="audioError" class="audio-error">{{ audioError }}</p>
 
             <!-- 已有样本：试听 -->
@@ -645,7 +681,8 @@ function confirmDelete(record: Speaker) {
             </div>
 
             <p class="audio-hint">
-              支持麦克风录制或导入本地音频（mp3 / wav / m4a 等，≤ {{ MAX_AUDIO_MB }}MB），建议 5 秒以上清晰人声，录制后可直接试听
+              支持麦克风录制或导入本地音频（mp3 / wav / m4a 等，≤ {{ MAX_AUDIO_MB }}MB），提交前会自动转为 16kHz 单声道 wav，建议
+              5 秒以上清晰人声，录制后可直接试听
             </p>
           </div>
         </a-form-item>
@@ -692,14 +729,10 @@ function confirmDelete(record: Speaker) {
   color: var(--color-text);
 }
 
-/* ---- 表格内试听 ---- */
-.row-play-btn {
-  padding-left: 0;
-}
-.row-play-dur {
-  margin-left: 6px;
-  font-size: 12px;
-  color: var(--color-text-muted);
+/* ---- 表格内音频 ---- */
+.row-audio {
+  width: 240px;
+  height: 32px;
 }
 .row-empty {
   color: var(--color-text-muted);
