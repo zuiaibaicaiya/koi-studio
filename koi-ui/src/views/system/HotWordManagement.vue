@@ -600,11 +600,14 @@ function confirmRemoveWord(record: LibraryWord) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 4px;
 }
 
 .toolbar {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
+  padding: 12px 16px;
 }
 .form-row {
   display: flex;
@@ -626,6 +629,9 @@ function confirmRemoveWord(record: LibraryWord) {
 }
 
 .table-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
 }
 .lib-name {
