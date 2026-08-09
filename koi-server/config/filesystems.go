@@ -37,6 +37,10 @@ func init() {
 				"driver": "local",
 				"root":   path.Storage("audio"),
 			},
+			"speaker": map[string]any{
+				"driver": "local",
+				"root":   path.Storage("speaker"),
+			},
 		},
 	})
 }

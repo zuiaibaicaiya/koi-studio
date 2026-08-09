@@ -28,6 +28,8 @@ func Api() {
 	userController := api.NewUserController()
 	hotWordLibraryController := api.NewHotWordLibraryController()
 	hotWordController := api.NewHotWordController()
+	speakerController := api.NewSpeakerController()
+	speakerAudioController := api.NewSpeakerAudioController()
 
 	// 登录和注册接口，无需认证。
 	facades.Route().Post("/api/user/login", userController.Login)
@@ -62,5 +64,20 @@ func Api() {
 		router.Get("/hot-word-library/{id}/word/{wordId}", hotWordController.GetHotWord)
 		router.Put("/hot-word-library/{id}/word/{wordId}", hotWordController.UpdateHotWord)
 		router.Delete("/hot-word-library/{id}/word/{wordId}", hotWordController.DeleteHotWord)
+
+		// 说话人管理接口。
+		router.Get("/speaker", speakerController.ListSpeakers)
+		router.Post("/speaker", speakerController.CreateSpeaker)
+		router.Get("/speaker/status", speakerAudioController.GetStatus)
+		router.Post("/speaker/identify", speakerAudioController.IdentifySpeaker)
+		router.Get("/speaker/{id}", speakerController.GetSpeaker)
+		router.Put("/speaker/{id}", speakerController.UpdateSpeaker)
+		router.Delete("/speaker/{id}", speakerController.DeleteSpeaker)
+
+		// 说话人声纹音频接口，归属于指定说话人。
+		router.Get("/speaker/{id}/audio", speakerAudioController.ListAudios)
+		router.Post("/speaker/{id}/audio", speakerAudioController.UploadAudio)
+		router.Delete("/speaker/{id}/audio/{audioId}", speakerAudioController.DeleteAudio)
+		router.Post("/speaker/{id}/verify", speakerAudioController.VerifySpeaker)
 	})
 }

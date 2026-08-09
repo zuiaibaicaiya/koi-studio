@@ -64,5 +64,6 @@ func Providers() []foundation.ServiceProvider {
 		// 以保证其 Register/Boot 阶段可以安全使用 config、log、storage 等基础设施。
 		&socketio.ServiceProvider{},
 		&providers.AudioServiceProvider{},
+		&providers.SpeakerServiceProvider{},
 	}
 }
