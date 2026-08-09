@@ -35,15 +35,21 @@ const submitting = ref(false);
 const mounted = ref(false);
 
 // ==========================================
-// 音频可视化状态
+// 音频采集状态
 // ==========================================
+/** 当前采集类型 */
+const captureType = ref<'none' | 'mic' | 'system'>('none');
+/** 系统内录错误信息 */
+const systemError = ref('');
 const isListening = ref(false);
 const currentVolume = ref(0); // 0-1 归一化音量
 
 let audioContext: AudioContext | null = null;
 let analyserNode: AnalyserNode | null = null;
-let mediaStream: MediaStream | null = null;
+let activeStream: MediaStream | null = null;
+let placeholderVideoTracks: MediaStreamTrack[] = [];
 let sourceNode: MediaStreamAudioSourceNode | null = null;
+let systemCaptureStop: (() => void) | null = null;
 let animationId = 0;
 
 onMounted(() => {
@@ -167,28 +173,42 @@ function handleBack() {
 }
 
 // ==========================================
-// 音频可视化 - 麦克风采集与波形渲染
+// 音频采集：麦克风 / 系统内录
 // ==========================================
 
-/** 请求麦克风权限并启动音频采集 */
+/** 懒初始化 AudioContext + AnalyserNode */
+async function ensureAudioGraph() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+  }
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+  if (!analyserNode) {
+    analyserNode = audioContext.createAnalyser();
+    analyserNode.fftSize = 256;
+    analyserNode.smoothingTimeConstant = 0.1;
+  }
+}
+
+/** 麦克风采集：getUserMedia 直接获取 */
 async function startMic() {
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
       },
     });
+    await ensureAudioGraph();
+    activeStream = stream;
+    placeholderVideoTracks = [];
+    sourceNode = audioContext!.createMediaStreamSource(stream);
+    sourceNode.connect(analyserNode!);
 
-    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    analyserNode = audioContext.createAnalyser();
-    analyserNode.fftSize = 256;
-    analyserNode.smoothingTimeConstant = 0.1;
-
-    sourceNode = audioContext.createMediaStreamSource(mediaStream);
-    sourceNode.connect(analyserNode);
-
+    captureType.value = 'mic';
+    systemError.value = '';
     isListening.value = true;
     updateVolume();
   } catch (err: any) {
@@ -196,27 +216,70 @@ async function startMic() {
   }
 }
 
-/** 停止麦克风采集 */
-function stopMic() {
+/**
+ * 系统内录：经由主进程 setDisplayMediaRequestHandler 提供的 loopback 音频轨采集系统声音。
+ * 渲染进程先通过 captureApi 写入采集配置（audio: 'system'），再调用 getDisplayMedia，
+ * 主进程会拦截并返回带系统音频的流；占位视频轨在 createSystemAudioStream 内部已剔除并在 stop 时释放。
+ */
+async function startSystem() {
+  try {
+    // 动态加载：capture 服务依赖 electron IPC，仅在 Electron 运行时可用，
+    // 惰性加载可避免非 Electron 环境下顶层 import 导致整页崩溃
+    const { createSystemAudioStream } = await import('../../services/capture');
+    const sys = await createSystemAudioStream({ silent: false });
+    systemCaptureStop = sys.stop;
+
+    await ensureAudioGraph();
+    activeStream = sys.stream;
+    placeholderVideoTracks = [];
+    sourceNode = audioContext!.createMediaStreamSource(activeStream);
+    sourceNode.connect(analyserNode!);
+
+    // 用户主动停止屏幕共享时同步收尾
+    activeStream.getAudioTracks()[0].onended = () => stopCapture();
+
+    captureType.value = 'system';
+    systemError.value = '';
+    isListening.value = true;
+    updateVolume();
+  } catch (err: any) {
+    systemCaptureStop = null;
+    systemError.value = err?.message || '系统内录失败';
+    console.error('System audio capture error:', err);
+  }
+}
+
+/** 停止采集（两种模式通用） */
+function stopCapture() {
   cancelAnimationFrame(animationId);
   if (sourceNode) {
     sourceNode.disconnect();
     sourceNode = null;
   }
+  if (activeStream) {
+    activeStream.getTracks().forEach((t) => {
+      t.onended = null;
+      t.stop();
+    });
+    activeStream = null;
+  }
+  placeholderVideoTracks.forEach((t) => t.stop());
+  placeholderVideoTracks = [];
+  if (systemCaptureStop) {
+    systemCaptureStop();
+    systemCaptureStop = null;
+  }
   if (audioContext && audioContext.state !== 'closed') {
     audioContext.close().catch(() => {});
     audioContext = null;
   }
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((t) => t.stop());
-    mediaStream = null;
-  }
   analyserNode = null;
   isListening.value = false;
+  captureType.value = 'none';
   currentVolume.value = 0;
 }
 
-/** 音量采集循环（仅更新音量值，无波形渲染） */
+/** 音量采集循环 */
 function updateVolume() {
   if (!isListening.value || !analyserNode) return;
 
@@ -236,20 +299,25 @@ function updateVolume() {
   animationId = requestAnimationFrame(updateVolume);
 }
 
-/** 监听录音模式切换，自动启停麦克风 */
+/** 监听录音模式切换 */
 watch(
   () => formState.recordMode,
   (mode) => {
-    if (mode === 'mic' && !isListening.value) {
-      startMic();
-    } else if (mode !== 'mic' && isListening.value) {
-      stopMic();
+    if (mode === 'mic') {
+      if (captureType.value !== 'mic') {
+        stopCapture();
+        startMic();
+      }
+    } else {
+      // 系统内录不能自动开启（需用户手势），仅清理旧会话
+      stopCapture();
+      systemError.value = '';
     }
   },
 );
 
 onBeforeUnmount(() => {
-  stopMic();
+  stopCapture();
 });
 </script>
 
@@ -346,20 +414,47 @@ onBeforeUnmount(() => {
                     </a-radio-button>
                   </a-radio-group>
 
-                  <!-- 录音状态指示（两种模式均展示） -->
+                  <!-- 录音状态指示 -->
                   <div class="inline-volume">
                     <span class="inline-volume-label">录音状态</span>
-                    <div class="volume-meter">
-                      <div
-                        class="volume-meter-fill"
-                        :style="{
-                          width: (currentVolume * 100) + '%',
-                          background: `linear-gradient(90deg, hsl(${210 - currentVolume * 210}, 85%, 55%), hsl(${210 - currentVolume * 210}, 85%, 65%))`,
-                        }"
-                      ></div>
-                    </div>
+
+                    <!-- 麦克风模式：自动采集，直接显示音量条 -->
+                    <template v-if="formState.recordMode === 'mic'">
+                      <div class="volume-meter">
+                        <div
+                          class="volume-meter-fill"
+                          :style="{
+                            width: (currentVolume * 100) + '%',
+                            background: `linear-gradient(90deg, hsl(${210 - currentVolume * 210}, 85%, 55%), hsl(${210 - currentVolume * 210}, 85%, 65%))`,
+                          }"
+                        ></div>
+                      </div>
+                    </template>
+
+                    <!-- 系统内录：需用户手势开启 -->
+                    <template v-else>
+                      <template v-if="captureType === 'system'">
+                        <div class="volume-meter">
+                          <div
+                            class="volume-meter-fill"
+                            :style="{
+                              width: (currentVolume * 100) + '%',
+                              background: `linear-gradient(90deg, hsl(${210 - currentVolume * 210}, 85%, 55%), hsl(${210 - currentVolume * 210}, 85%, 65%))`,
+                            }"
+                          ></div>
+                        </div>
+                      </template>
+                      <template v-else>
+                        <a-button size="small" type="primary" ghost @click="startSystem">
+                          <template #icon><SoundOutlined /></template>
+                          开始内录
+                        </a-button>
+                      </template>
+                      <span v-if="systemError" class="sys-error-tip">{{ systemError }}</span>
+                    </template>
                   </div>
                 </div>
+
                 <p class="field-hint">
                   {{ formState.recordMode === 'mic' ? '通过设备麦克风采集现场声音，适合线下会议、访谈等场景' : '采集系统播放的音频（如线上会议、视频通话），适合远程会议' }}
                 </p>
@@ -1124,6 +1219,13 @@ onBeforeUnmount(() => {
   color: var(--color-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.sys-error-tip {
+  flex: 0 0 100%;
+  font-size: 11px;
+  color: #ff4d4f;
+  line-height: 1.3;
 }
 
 .volume-meter {
