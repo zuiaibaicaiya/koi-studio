@@ -8,7 +8,11 @@ class AudioProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs) {
-    const channel = inputs[0][0];
+    const input = inputs[0];
+    // 节点断开后可能仍触发一次 process，此时声道为空，直接跳过
+    if (!input || input.length === 0) return true;
+    const channel = input[0];
+    if (!channel || channel.length === 0) return true;
 
     for (let i = 0; i < channel.length; i++) {
       this.buffer[this.bufferIndex] = channel[i];

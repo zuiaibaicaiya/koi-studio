@@ -2,7 +2,7 @@
 import { computed, reactive, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Dayjs } from 'dayjs';
-import type { Rule } from 'antdv-next';
+import { message, type Rule } from 'antdv-next';
 import { useSpeakerStore } from '../../store/speaker';
 import { hotWordApi } from '../../services/hotWordApi';
 import type { HotWordLibraryDTO } from '../../services/hotWordApi';
@@ -104,42 +104,25 @@ const hotWordOptions = computed(() =>
 );
 
 // ---- 表单验证 ----
+// 仅「会议名称」为必填；参会人员、会议时间、说话人、热词库均为选填。
+// 录音方式（recordMode）表单初始化即默认「麦克风录音」，无需校验。
 const rules: Record<string, Rule[]> = {
-  name: [{ required: true, message: '请输入会议名称', whitespace: true }],
-  participants: [
-    {
-      validator: (_r, v) =>
-        typeof v === 'string' && v.trim().length > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('请至少填写一位参会人员')),
-    },
+  name: [
+    { required: true, message: '请输入会议名称', whitespace: true },
+    { max: 60, message: '会议名称不超过 60 个字符' },
   ],
+  // 会议时间为选填：仅在用户填写了完整区间时校验「结束晚于开始」
   meetingTime: [
     {
-      validator: (_r, v: [Dayjs, Dayjs] | []) =>
-        !v ||
-        v.length !== 2 ||
-        !v[0] ||
-        !v[1] ||
-        v[1].isAfter(v[0])
+      validator: (_r, v: unknown) => {
+        const range = v as [Dayjs, Dayjs] | [];
+        if (!range || range.length !== 2 || !range[0] || !range[1]) {
+          return Promise.resolve();
+        }
+        return range[1].isAfter(range[0])
           ? Promise.resolve()
-          : Promise.reject(new Error('结束时间须晚于开始时间')),
-    },
-  ],
-  speakers: [
-    {
-      validator: (_r, v) =>
-        Array.isArray(v) && v.length > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('请至少选择一位说话人')),
-    },
-  ],
-  hotWords: [
-    {
-      validator: (_r, v) =>
-        Array.isArray(v) && v.length > 0
-          ? Promise.resolve()
-          : Promise.reject(new Error('请至少选择一个热词库')),
+          : Promise.reject(new Error('结束时间须晚于开始时间'));
+      },
     },
   ],
 };
@@ -185,7 +168,8 @@ const completionCount = computed(() => {
 
 const completionPercent = computed(() => (completionCount.value / 5) * 100);
 
-const isFormReady = computed(() => completionCount.value >= 3);
+// 仅会议名称为必填项，其余均为选填，录音方式已有默认值，故只要名称非空即可开始
+const isFormReady = computed(() => formState.name.trim().length > 0);
 
 // ---- 操作 ----
 async function handleStart() {
@@ -466,7 +450,7 @@ onBeforeUnmount(() => {
                 </a-input>
               </a-form-item>
 
-              <a-form-item name="participants" label="参会人员">
+              <a-form-item name="participants" label="参会人员（选填）">
                 <a-input
                   v-model:value="formState.participants"
                   placeholder="输入参会人员姓名，多个用逗号或换行分隔"
@@ -476,7 +460,7 @@ onBeforeUnmount(() => {
                 </a-input>
               </a-form-item>
 
-              <a-form-item name="meetingTime" label="会议时间">
+              <a-form-item name="meetingTime" label="会议时间（选填）">
                 <a-range-picker
                   v-model:value="formState.meetingTime"
                   show-time
@@ -554,7 +538,7 @@ onBeforeUnmount(() => {
                 <template #label>
                   <span class="field-label-row">
                     <span class="field-label">
-                      <UserSwitchOutlined /> 说话人
+                      <UserSwitchOutlined /> 说话人（选填）
                     </span>
                     <a
                       class="field-toggle"
@@ -580,7 +564,7 @@ onBeforeUnmount(() => {
                 <template #label>
                   <span class="field-label-row">
                     <span class="field-label">
-                      <FontSizeOutlined /> 热词库
+                      <FontSizeOutlined /> 热词库（选填）
                     </span>
                     <a
                       class="field-toggle"
@@ -623,7 +607,7 @@ onBeforeUnmount(() => {
                   开始实时转写
                 </a-button>
                 <p v-if="!isFormReady" class="submit-hint">
-                  请至少填写会议名称、选择参会人员和录音方式
+                  请先填写会议名称（其余信息均为选填）
                 </p>
               </a-form-item>
             </a-form>
@@ -634,7 +618,7 @@ onBeforeUnmount(() => {
         <aside class="preview-section" :style="{ '--i': 2 }">
           <div class="preview-card" :class="{ 'is-active': completionCount > 0 }">
             <div class="preview-header">
-              <div class="preview-pulse" :class="{ active: completionCount >= 3 }">
+              <div class="preview-pulse" :class="{ active: isFormReady }">
                 <span class="pulse-dot" />
               </div>
               <span class="preview-title">会议预览</span>

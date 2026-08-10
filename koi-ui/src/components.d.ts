@@ -59,8 +59,11 @@ declare module 'vue' {
     BaseBarChart: typeof import('./components/charts/BaseBarChart.vue')['default']
     BaseLineChart: typeof import('./components/charts/BaseLineChart.vue')['default']
     BasePieChart: typeof import('./components/charts/BasePieChart.vue')['default']
+    PlayCircleOutlined: typeof import('@antdv-next/icons')['PlayCircleOutlined']
+    PlusOutlined: typeof import('@antdv-next/icons')['PlusOutlined']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    StopOutlined: typeof import('@antdv-next/icons')['StopOutlined']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
   }
 }

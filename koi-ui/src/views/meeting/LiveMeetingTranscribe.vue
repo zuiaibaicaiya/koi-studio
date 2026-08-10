@@ -114,6 +114,8 @@ const elapsed = ref(0); // 秒
 const segments = ref<Segment[]>([]);
 const hotWordSet = computed(() => new Set(hotWords.value.map((w) => w.word)));
 
+/** 转写会话是否已由用户主动开始 */
+const started = ref(false);
 /** 正在采集音频 */
 const recording = ref(false);
 /** 转写服务连接状态 */
@@ -438,9 +440,63 @@ function togglePause() {
   message.info(running.value ? '已继续转写' : '已暂停转写');
 }
 
-async function backToCreate() {
+/**
+ * 用户主动开始实时转写：标记会议进行中、建立转写连接、按配置开始采集上行。
+ * 页面加载后不会自动调用，需用户点击「开始转写」按钮触发。
+ */
+async function startTranscription() {
+  if (started.value) return;
+  started.value = true;
+  running.value = true;
+  startTimer();
+  markMeetingOngoing();
+  setupSocket();
+  await startCapture();
+}
+
+/**
+ * 离开前收尾：自动结束会议；若全程没有任何转写内容则删除该会议。
+ * 所有后端接口都需等待成功响应后才允许执行导航。
+ * @param leave 实际执行导航的回调（确认且接口成功后才调用）
+ */
+async function finalizeAndLeave(leave: () => void) {
+  running.value = false;
+  // 先收尾音频链路，并触发后端定稿最后一段文本
   await teardown();
-  router.push({ name: 'liveCreate' });
+
+  const id = meetingId.value ? Number(meetingId.value) : 0;
+  if (!id) {
+    leave();
+    return;
+  }
+
+  const hasTranscript = segments.value.length > 0;
+  try {
+    if (hasTranscript) {
+      // 有转写内容：仅标记结束，保留会议与纪要
+      await meetingApi.finishMeeting(id);
+    } else {
+      // 无任何转写内容：结束并删除该会议
+      await meetingApi.finishMeeting(id);
+      await meetingApi.deleteMeeting(id);
+    }
+    leave();
+  } catch (err) {
+    message.warning((err as Error)?.message || '结束会议失败，请重试');
+  }
+}
+
+/** 点击「返回」：先弹确认框，确认后自动结束会议，等待后端成功再返回创建页 */
+function backToCreate() {
+  Modal.confirm({
+    title: '返回',
+    content: '返回将结束本次实时会议，确认继续？',
+    okText: '确认返回',
+    cancelText: '取消',
+    onOk: async () => {
+      await finalizeAndLeave(() => router.push({ name: 'liveCreate' }));
+    },
+  });
 }
 
 function stopMeeting() {
@@ -450,16 +506,7 @@ function stopMeeting() {
     okText: '结束',
     cancelText: '取消',
     onOk: async () => {
-      running.value = false;
-      await teardown();
-      if (meetingId.value) {
-        try {
-          await meetingApi.finishMeeting(Number(meetingId.value));
-        } catch (err) {
-          message.warning((err as Error)?.message || '标记会议结束失败');
-        }
-      }
-      router.push({ name: 'home' });
+      await finalizeAndLeave(() => router.push({ name: 'home' }));
     },
   });
 }
@@ -581,6 +628,7 @@ const showInterim = computed(
 /** 顶部转写状态标签 */
 const statusTag = computed(() => {
   if (captureError.value) return { color: 'error', text: '采集异常' };
+  if (!started.value) return { color: 'default', text: '未开始' };
   if (!connected.value) return { color: 'warning', text: '连接中' };
   if (!recording.value) return { color: 'default', text: '未采集' };
   if (!running.value) return { color: 'warning', text: '已暂停' };
@@ -614,12 +662,12 @@ async function loadMeetingDetail() {
   }
 }
 
-// 切换会议时重置
+// 切换会议时重置（不自动开始转写，等待用户点击「开始转写」）
 watch(
   () => route.query,
   async (q) => {
     // 先结束上一场会议的采集，避免音频链路串场
-    await stopCapture();
+    await teardown(false);
     meetingName.value = (q.name as string) || '未命名会议';
     recordMode.value = (q.recordMode as 'mic' | 'system') || 'mic';
     participantNames.value =
@@ -634,28 +682,21 @@ watch(
     clearInterim();
     elapsed.value = 0;
     segId = 0;
+    started.value = false;
     running.value = true;
     focusSpeakerId.value = null;
-    startTimer();
     loadHotWords();
-    markMeetingOngoing();
-    await startCapture();
   },
 );
 
 onMounted(async () => {
-  startTimer();
   // 加载说话人列表，供 getById 检索转写参与者
   speakerStore.load();
-  // 建立转写长连接并注册下行事件
-  setupSocket();
   // 优先从后端 API 获取会议详情
   await loadMeetingDetail();
   // 加载所选热词库及其热词
   loadHotWords();
-  markMeetingOngoing();
-  // 按会议配置的录音方式开始采集并上行 PCM
-  await startCapture();
+  // 注意：不在此处建立连接 / 开始采集，等待用户点击「开始转写」
 });
 
 /** 进入转写页即标记会议为进行中（实时会议）。 */
@@ -715,24 +756,30 @@ onBeforeUnmount(() => {
           <template #icon><TagsOutlined /></template>
           热词库
         </a-button>
-        <a-button :disabled="!recording" @click="togglePause">
-          <template #icon>
-            <component :is="running ? PauseCircleOutlined : PlayCircleOutlined" />
-          </template>
-          {{ running ? '暂停' : '继续' }}
+        <a-button v-if="!started" type="primary" @click="startTranscription">
+          <template #icon><PlayCircleOutlined /></template>
+          开始转写
         </a-button>
-        <a-button v-if="!recording" type="primary" @click="startCapture">
-          <template #icon><AudioOutlined /></template>
-          重新采集
-        </a-button>
-        <a-button danger @click="stopMeeting"><StopOutlined />结束</a-button>
+        <template v-else>
+          <a-button :disabled="!recording" @click="togglePause">
+            <template #icon>
+              <component :is="running ? PauseCircleOutlined : PlayCircleOutlined" />
+            </template>
+            {{ running ? '暂停' : '继续' }}
+          </a-button>
+          <a-button v-if="!recording" type="primary" @click="startCapture">
+            <template #icon><AudioOutlined /></template>
+            重新采集
+          </a-button>
+          <a-button danger @click="stopMeeting"><StopOutlined />结束</a-button>
+        </template>
       </div>
     </div>
 
     <a-card class="transcript-card" variant="borderless">
       <template #title>
         <span class="live-title">
-          <span class="live-dot" :class="{ paused: !running || !recording }"></span>
+          <span class="live-dot" :class="{ paused: !started || !running || !recording }"></span>
           实时转写
           <a-tag :color="statusTag.color">{{ statusTag.text }}</a-tag>
           <a-tag
@@ -756,7 +803,8 @@ onBeforeUnmount(() => {
         <div v-if="visibleSegments.length === 0 && !showInterim" class="transcript-empty">
           <AudioOutlined />
           <p v-if="focusSpeakerId !== null">该说话人暂无发言内容</p>
-          <p v-else-if="!recording">音频采集未开启，点击「重新采集」后开始转写</p>
+          <p v-else-if="!started">点击「开始转写」后，转写内容将实时显示在这里</p>
+          <p v-else-if="!recording">音频采集未开启，点击「重新采集」后继续转写</p>
           <p v-else>正在聆听… 转写内容将实时显示在这里</p>
         </div>
         <DynamicScroller
