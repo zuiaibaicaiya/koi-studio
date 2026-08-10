@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import type { Dayjs } from 'dayjs';
 import type { Rule } from 'antdv-next';
-import { useSystemUserStore } from '../../store/systemUser';
 import { useSpeakerStore } from '../../store/speaker';
-import { useHotWordStore } from '../../store/hotWord';
+import { hotWordApi } from '../../services/hotWordApi';
+import type { HotWordLibraryDTO } from '../../services/hotWordApi';
+import { meetingApi } from '../../services/meetingApi';
 import {
   VideoCameraOutlined,
   AudioOutlined,
@@ -15,19 +17,19 @@ import {
   UserSwitchOutlined,
   FontSizeOutlined,
   ThunderboltOutlined,
+  ClockCircleOutlined,
 } from '@antdv-next/icons';
 import { createSystemAudioStream } from '../../services/capture';
 import audioProcessorCode from '@/worklets/audio-processor.js?raw';
 
 const router = useRouter();
-const userStore = useSystemUserStore();
 const speakerStore = useSpeakerStore();
-const hotWordStore = useHotWordStore();
 
 const formRef = ref();
 const formState = reactive({
   name: '',
-  participants: [] as number[],
+  participants: '',
+  meetingTime: [] as [Dayjs, Dayjs] | [],
   recordMode: 'mic' as 'mic' | 'system',
   speakers: [] as number[],
   hotWords: [] as number[],
@@ -66,12 +68,26 @@ onMounted(() => {
   }
   // 加载说话人列表（供选择参与转写的说话人）
   speakerStore.load();
+  // 加载热词库（通过热词库接口查询）
+  loadLibraries();
 });
 
 // ---- 选项数据 ----
-const participantOptions = userStore.list
-  .filter((u) => u.status === '启用')
-  .map((u) => ({ label: `${u.name}（${u.username}）`, value: u.id }));
+// 热词库：通过热词库接口查询
+const libraries = ref<HotWordLibraryDTO[]>([]);
+const hotWordLoading = ref(false);
+
+async function loadLibraries() {
+  hotWordLoading.value = true;
+  try {
+    const res = await hotWordApi.listLibraries({ pageSize: 1000 });
+    libraries.value = res.items;
+  } catch (err) {
+    console.error('加载热词库失败:', err);
+  } finally {
+    hotWordLoading.value = false;
+  }
+}
 
 const speakerOptions = computed(() =>
   speakerStore.list.map((s) => ({
@@ -80,10 +96,12 @@ const speakerOptions = computed(() =>
   })),
 );
 
-const hotWordOptions = hotWordStore.list.map((w) => ({
-  label: `${w.word} · ${w.category}`,
-  value: w.id,
-}));
+const hotWordOptions = computed(() =>
+  libraries.value.map((lib) => ({
+    label: `${lib.name}（${lib.word_count} 词）`,
+    value: lib.id,
+  })),
+);
 
 // ---- 表单验证 ----
 const rules: Record<string, Rule[]> = {
@@ -91,9 +109,21 @@ const rules: Record<string, Rule[]> = {
   participants: [
     {
       validator: (_r, v) =>
-        Array.isArray(v) && v.length > 0
+        typeof v === 'string' && v.trim().length > 0
           ? Promise.resolve()
-          : Promise.reject(new Error('请至少选择一位参会人员')),
+          : Promise.reject(new Error('请至少填写一位参会人员')),
+    },
+  ],
+  meetingTime: [
+    {
+      validator: (_r, v: [Dayjs, Dayjs] | []) =>
+        !v ||
+        v.length !== 2 ||
+        !v[0] ||
+        !v[1] ||
+        v[1].isAfter(v[0])
+          ? Promise.resolve()
+          : Promise.reject(new Error('结束时间须晚于开始时间')),
     },
   ],
   speakers: [
@@ -115,9 +145,8 @@ const rules: Record<string, Rule[]> = {
 };
 
 // ---- 全选/清空 ----
-const allParticipantIds = participantOptions.map((o) => o.value);
 const allSpeakerIds = computed(() => speakerOptions.value.map((o) => o.value));
-const allHotWordIds = hotWordOptions.map((o) => o.value);
+const allHotWordIds = computed(() => hotWordOptions.value.map((o) => o.value));
 
 function toggleAll(key: 'participants' | 'speakers' | 'hotWords', all: number[]) {
   if (formState[key].length === all.length) formState[key] = [];
@@ -129,7 +158,10 @@ function toggleAll(key: 'participants' | 'speakers' | 'hotWords', all: number[])
 const previewName = computed(() => formState.name || '未命名会议');
 
 const selectedParticipants = computed(() =>
-  participantOptions.filter((o) => formState.participants.includes(o.value)),
+  formState.participants
+    .split(/[,，\n\s]+/)
+    .map((p) => p.trim())
+    .filter(Boolean),
 );
 
 const selectedSpeakers = computed(() =>
@@ -137,14 +169,14 @@ const selectedSpeakers = computed(() =>
 );
 
 const selectedHotWords = computed(() =>
-  hotWordOptions.filter((o) => formState.hotWords.includes(o.value)),
+  hotWordOptions.value.filter((o) => formState.hotWords.includes(o.value)),
 );
 
 // 表单完成度 (0-5)
 const completionCount = computed(() => {
   let c = 0;
   if (formState.name.trim()) c++;
-  if (formState.participants.length > 0) c++;
+  if (selectedParticipants.value.length > 0) c++;
   if (formState.recordMode) c++;
   if (formState.speakers.length > 0) c++;
   if (formState.hotWords.length > 0) c++;
@@ -164,16 +196,41 @@ async function handleStart() {
   }
 
   submitting.value = true;
-  router.push({
-    name: 'liveTranscribe',
-    query: {
-      name: formState.name,
-      participants: formState.participants.join(','),
-      recordMode: formState.recordMode,
-      speakers: formState.speakers.join(','),
-      hotWords: formState.hotWords.join(','),
-    },
-  });
+  try {
+    const payload = {
+      name: formState.name.trim(),
+      participants: selectedParticipants.value.join('、'),
+      speaker_ids: formState.speakers.join(','),
+      hot_word_library_ids: formState.hotWords.join(','),
+      start_time:
+        formState.meetingTime.length === 2
+          ? formState.meetingTime[0].format('YYYY-MM-DD HH:mm:ss')
+          : undefined,
+      end_time:
+        formState.meetingTime.length === 2
+          ? formState.meetingTime[1].format('YYYY-MM-DD HH:mm:ss')
+          : undefined,
+    } as const;
+
+    const meeting = await meetingApi.createMeeting(payload);
+
+    router.push({
+      name: 'liveTranscribe',
+      query: {
+        meetingId: String(meeting.id),
+        name: formState.name,
+        participants: selectedParticipants.value.join(','),
+        recordMode: formState.recordMode,
+        speakers: formState.speakers.join(','),
+        hotWords: formState.hotWords.join(','),
+        startTime: payload.start_time,
+        endTime: payload.end_time,
+      },
+    });
+  } catch (err) {
+    message.error((err as Error)?.message || '创建会议失败，请稍后重试');
+    submitting.value = false;
+  }
 }
 
 function handleBack() {
@@ -409,34 +466,26 @@ onBeforeUnmount(() => {
                 </a-input>
               </a-form-item>
 
-              <a-form-item name="participants">
-                <template #label>
-                  <span class="field-label-row">
-                    <span class="field-label">
-                      <TeamOutlined /> 参会人员
-                    </span>
-                    <a
-                      class="field-toggle"
-                      @click="toggleAll('participants', allParticipantIds)"
-                    >
-                      {{ formState.participants.length === allParticipantIds.length ? '清空' : '全选' }}
-                    </a>
-                  </span>
-                </template>
-                <a-select
+              <a-form-item name="participants" label="参会人员">
+                <a-input
                   v-model:value="formState.participants"
-                  mode="multiple"
-                  placeholder="搜索并选择参会人员"
-                  :options="participantOptions"
+                  placeholder="输入参会人员姓名，多个用逗号或换行分隔"
                   allow-clear
-                  show-search
-                  option-filter-prop="label"
-                  max-tag-count="responsive"
                 >
-                  <template #notFoundContent>
-                    <a-empty description="没有可用的参会人员" :image="false" />
-                  </template>
-                </a-select>
+                  <template #prefix><TeamOutlined /></template>
+                </a-input>
+              </a-form-item>
+
+              <a-form-item name="meetingTime" label="会议时间">
+                <a-range-picker
+                  v-model:value="formState.meetingTime"
+                  show-time
+                  format="YYYY-MM-DD HH:mm"
+                  placeholder="['开始时间', '结束时间']"
+                  style="width: 100%"
+                >
+                  <template #suffixIcon><ClockCircleOutlined /></template>
+                </a-range-picker>
               </a-form-item>
 
               <a-form-item label="录音方式" name="recordMode">
@@ -546,11 +595,15 @@ onBeforeUnmount(() => {
                   mode="multiple"
                   placeholder="选择热词库，提升专业术语识别率"
                   :options="hotWordOptions"
+                  :loading="hotWordLoading"
                   allow-clear
                   show-search
                   option-filter-prop="label"
                   max-tag-count="responsive"
                 >
+                  <template #notFoundContent>
+                    <a-empty description="暂无热词库" :image="false" />
+                  </template>
                   <template #suffixIcon><TagsOutlined /></template>
                 </a-select>
               </a-form-item>
@@ -607,8 +660,8 @@ onBeforeUnmount(() => {
             <div class="preview-field">
               <span class="preview-label">参会人员</span>
               <span class="preview-value">
-                <template v-if="formState.participants.length">
-                  {{ formState.participants.length }} 人
+                <template v-if="selectedParticipants.length">
+                  {{ selectedParticipants.length }} 人
                 </template>
                 <span v-else class="placeholder">—</span>
               </span>
@@ -616,11 +669,11 @@ onBeforeUnmount(() => {
             <div v-if="selectedParticipants.length" class="preview-tags">
               <a-tag
                 v-for="p in selectedParticipants.slice(0, 5)"
-                :key="p.value"
+                :key="p"
                 color="blue"
                 class="preview-tag"
               >
-                {{ p.label }}
+                {{ p }}
               </a-tag>
               <a-tag v-if="selectedParticipants.length > 5" class="preview-tag">
                 +{{ selectedParticipants.length - 5 }}

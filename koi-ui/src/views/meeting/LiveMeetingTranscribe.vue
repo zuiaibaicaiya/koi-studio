@@ -2,9 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { message, Modal } from 'antdv-next';
-import { useSystemUserStore } from '../../store/systemUser';
 import { useSpeakerStore, type Speaker } from '../../store/speaker';
-import { useHotWordStore, type HotWord } from '../../store/hotWord';
+import { hotWordApi } from '../../services/hotWordApi';
+import type { HotWordDTO } from '../../services/hotWordApi';
+import { meetingApi } from '../../services/meetingApi';
 import {
   AudioOutlined,
   PauseCircleOutlined,
@@ -16,17 +17,14 @@ import {
   SoundOutlined,
   ArrowLeftOutlined,
   SearchOutlined,
-  UserOutlined,
-  MailOutlined,
+  CalendarOutlined,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 
 const route = useRoute();
 const router = useRouter();
-const userStore = useSystemUserStore();
 const speakerStore = useSpeakerStore();
-const hotWordStore = useHotWordStore();
 
 interface Segment {
   id: number;
@@ -39,17 +37,68 @@ interface Segment {
 // 会议配置（来自创建页 query）
 const meetingName = ref((route.query.name as string) || '未命名会议');
 const recordMode = ref<'mic' | 'system'>((route.query.recordMode as 'mic' | 'system') || 'mic');
-const participantIds = (route.query.participants as string)?.split(',').filter(Boolean).map(Number) || [];
+const participantNames = (route.query.participants as string)?.split(',').filter(Boolean) || [];
 const speakerIds = (route.query.speakers as string)?.split(',').filter(Boolean).map(Number) || [];
 const hotWordIds = (route.query.hotWords as string)?.split(',').filter(Boolean).map(Number) || [];
+const startTime = (route.query.startTime as string) || '';
+const endTime = (route.query.endTime as string) || '';
+const meetingId = (route.query.meetingId as string) || '';
+const meetingTimeLabel = computed(() => {
+  if (!startTime) return '';
+  const fmt = (s: string) =>
+    new Date(s).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  return endTime ? `${fmt(startTime)} ~ ${fmt(endTime)}` : fmt(startTime);
+});
 
-const participants = computed(() => userStore.list.filter((u) => participantIds.includes(u.id)));
+const participants = computed(() => participantNames);
 const speakers = computed<Speaker[]>(() =>
   speakerIds.map((id) => speakerStore.getById(id)).filter((s): s is Speaker => !!s),
 );
-const hotWords = computed<HotWord[]>(() =>
-  hotWordIds.map((id) => hotWordStore.getById(id)).filter((w): w is HotWord => !!w),
-);
+
+// 热词库：根据选中的库 id，通过热词库接口加载库及其热词
+interface SelectedLibrary {
+  id: number;
+  name: string;
+  words: HotWordDTO[];
+}
+const selectedLibraries = ref<SelectedLibrary[]>([]);
+const hotWordLoading = ref(false);
+
+async function loadHotWords() {
+  if (hotWordIds.length === 0) {
+    selectedLibraries.value = [];
+    return;
+  }
+  hotWordLoading.value = true;
+  try {
+    const res = await hotWordApi.listLibraries({ pageSize: 1000 });
+    const chosen = res.items.filter((lib) => hotWordIds.includes(lib.id));
+    const libs: SelectedLibrary[] = await Promise.all(
+      chosen.map(async (lib) => {
+        let words: HotWordDTO[] = [];
+        try {
+          const wres = await hotWordApi.listWords(lib.id);
+          words = wres.items;
+        } catch {
+          words = [];
+        }
+        return { id: lib.id, name: lib.name, words };
+      }),
+    );
+    selectedLibraries.value = libs;
+  } catch (err) {
+    console.error('加载热词库失败:', err);
+  } finally {
+    hotWordLoading.value = false;
+  }
+}
+
+const hotWords = computed(() => selectedLibraries.value.flatMap((lib) => lib.words));
 
 const running = ref(true);
 const elapsed = ref(0); // 秒
@@ -148,9 +197,16 @@ function stopMeeting() {
     content: '确认结束本次实时会议？结束后将跳转首页。',
     okText: '结束',
     cancelText: '取消',
-    onOk: () => {
+    onOk: async () => {
       running.value = false;
       stopTimer();
+      if (meetingId) {
+        try {
+          await meetingApi.finishMeeting(Number(meetingId));
+        } catch (err) {
+          message.warning((err as Error)?.message || '标记会议结束失败');
+        }
+      }
       router.push({ name: 'home' });
     },
   });
@@ -206,9 +262,7 @@ const lowerKeyword = computed(() => keyword.value.trim().toLowerCase());
 const filteredParticipants = computed(() => {
   const kw = lowerKeyword.value;
   if (!kw) return participants.value;
-  return participants.value.filter((u) =>
-    [u.name, u.username, u.email, u.role].some((f) => f.toLowerCase().includes(kw)),
-  );
+  return participants.value.filter((name) => name.toLowerCase().includes(kw));
 });
 
 const filteredSpeakers = computed(() => {
@@ -218,27 +272,6 @@ const filteredSpeakers = computed(() => {
     [s.name, s.language, s.gender, s.description].some((f) => f.toLowerCase().includes(kw)),
   );
 });
-
-const filteredHotWords = computed(() => {
-  const kw = lowerKeyword.value;
-  if (!kw) return hotWords.value;
-  return hotWords.value.filter((w) =>
-    [w.word, w.category, w.description].some((f) => f.toLowerCase().includes(kw)),
-  );
-});
-
-// 参会人员角色分布
-const participantRoleStats = computed(() => {
-  const map = new Map<string, number>();
-  participants.value.forEach((u) => map.set(u.role, (map.get(u.role) ?? 0) + 1));
-  return Array.from(map, ([role, count]) => ({ role, count }));
-});
-
-function roleColor(role: string) {
-  if (role === '管理员') return 'red';
-  if (role === '编辑') return 'blue';
-  return 'default';
-}
 
 // 各说话人发言段数
 const speakerSegmentCount = computed(() => {
@@ -253,25 +286,23 @@ function speakerShare(id: number) {
   return Math.round(((speakerSegmentCount.value.get(id) ?? 0) / total) * 100);
 }
 
-// 各热词命中次数
+// 各热词命中次数（按词匹配，因热词库接口返回的热词仅有 word/weight）
 const hotWordHitCount = computed(() => {
   const all = segments.value.map((s) => s.text).join('\n');
-  const map = new Map<number, number>();
+  const map = new Map<string, number>();
   hotWords.value.forEach((w) => {
-    map.set(w.id, w.word ? all.split(w.word).length - 1 : 0);
+    map.set(w.word, w.word ? all.split(w.word).length - 1 : 0);
   });
   return map;
 });
 
-// 按分类分组热词
+// 按热词库分组热词
 const hotWordGroups = computed(() => {
-  const map = new Map<string, HotWord[]>();
-  filteredHotWords.value.forEach((w) => {
-    const arr = map.get(w.category);
-    if (arr) arr.push(w);
-    else map.set(w.category, [w]);
-  });
-  return Array.from(map, ([category, words]) => ({ category, words }));
+  const kw = lowerKeyword.value;
+  return selectedLibraries.value.map((lib) => ({
+    name: lib.name,
+    words: kw ? lib.words.filter((w) => w.word.toLowerCase().includes(kw)) : lib.words,
+  }));
 });
 
 // 只看某位说话人的发言
@@ -306,6 +337,8 @@ watch(
     running.value = true;
     focusSpeakerId.value = null;
     startTimer();
+    loadHotWords();
+    markMeetingOngoing();
   },
 );
 
@@ -313,7 +346,18 @@ onMounted(() => {
   startTimer();
   // 加载说话人列表，供 getById 检索转写参与者
   speakerStore.load();
+  // 加载所选热词库及其热词
+  loadHotWords();
+  markMeetingOngoing();
 });
+
+/** 进入转写页即标记会议为进行中（实时会议）。 */
+function markMeetingOngoing() {
+  if (!meetingId) return;
+  meetingApi
+    .startMeeting(Number(meetingId))
+    .catch((err) => message.warning((err as Error)?.message || '标记会议进行中失败'));
+}
 onBeforeUnmount(() => {
   stopTimer();
 });
@@ -339,6 +383,9 @@ onBeforeUnmount(() => {
             <span class="meta-item">
               <component :is="recordMode === 'mic' ? AudioOutlined : SoundOutlined" />
               {{ recordMode === 'mic' ? '麦克风录音' : '系统内录' }}
+            </span>
+            <span v-if="meetingTimeLabel" class="meta-item">
+              <CalendarOutlined /> {{ meetingTimeLabel }}
             </span>
           </div>
         </div>
@@ -431,7 +478,7 @@ onBeforeUnmount(() => {
           allow-clear
           :placeholder="
             drawerKey === 'participants'
-              ? '搜索姓名 / 账号 / 邮箱'
+              ? '搜索参会人员姓名'
               : drawerKey === 'speakers'
                 ? '搜索说话人 / 语种'
                 : '搜索热词 / 分类'
@@ -444,27 +491,16 @@ onBeforeUnmount(() => {
         <template v-if="drawerKey === 'participants'">
           <div class="drawer-summary">
             <span>共 {{ participants.length }} 人</span>
-            <a-tag v-for="r in participantRoleStats" :key="r.role" :color="roleColor(r.role)">
-              {{ r.role }} {{ r.count }}
-            </a-tag>
           </div>
           <div class="detail-list">
-            <div v-for="u in filteredParticipants" :key="u.id" class="detail-item">
+            <div v-for="name in filteredParticipants" :key="name" class="detail-item">
               <a-avatar :size="38" :style="{ backgroundColor: 'var(--color-brand)' }">
-                {{ u.name.charAt(0) }}
+                {{ name.charAt(0) }}
               </a-avatar>
               <div class="detail-main">
                 <div class="detail-title">
-                  <span>{{ u.name }}</span>
-                  <a-tag :color="roleColor(u.role)">{{ u.role }}</a-tag>
-                  <a-tag :color="u.status === '启用' ? 'green' : 'red'">{{ u.status }}</a-tag>
+                  <span>{{ name }}</span>
                 </div>
-                <div class="detail-sub">
-                  <UserOutlined /> {{ u.username }}
-                  <span class="dot-split">·</span>
-                  <MailOutlined /> {{ u.email }}
-                </div>
-                <div class="detail-sub">创建于 {{ u.createdAt }}</div>
               </div>
             </div>
             <a-empty v-if="filteredParticipants.length === 0" description="暂无匹配的参会人员" />
@@ -523,25 +559,24 @@ onBeforeUnmount(() => {
             <a-switch v-model:checked="highlightEnabled" />
           </div>
           <div class="drawer-summary">
-            <span>共 {{ hotWords.length }} 个热词</span>
-            <span>{{ hotWordGroups.length }} 个分类</span>
+            <span>共 {{ selectedLibraries.length }} 个热词库</span>
+            <span>{{ hotWords.length }} 个热词</span>
           </div>
           <div class="detail-list">
-            <div v-for="g in hotWordGroups" :key="g.category" class="word-group">
+            <div v-for="g in hotWordGroups" :key="g.name" class="word-group">
               <div class="group-title">
-                {{ g.category }}
+                {{ g.name }}
                 <span class="group-count">{{ g.words.length }}</span>
               </div>
-              <div v-for="w in g.words" :key="w.id" class="detail-item">
+              <div v-for="w in g.words" :key="w.word" class="detail-item">
                 <div class="detail-main">
                   <div class="detail-title">
                     <span>{{ w.word }}</span>
                     <a-tag color="gold">权重 {{ w.weight }}</a-tag>
-                    <a-tag :color="(hotWordHitCount.get(w.id) || 0) > 0 ? 'green' : 'default'">
-                      命中 {{ hotWordHitCount.get(w.id) || 0 }} 次
+                    <a-tag :color="(hotWordHitCount.get(w.word) || 0) > 0 ? 'green' : 'default'">
+                      命中 {{ hotWordHitCount.get(w.word) || 0 }} 次
                     </a-tag>
                   </div>
-                  <div class="detail-sub">{{ w.description }}</div>
                   <div class="detail-metric">
                     <span class="metric-label">识别权重</span>
                     <a-progress :percent="w.weight" size="small" :show-info="false" />
@@ -549,7 +584,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <a-empty v-if="filteredHotWords.length === 0" description="暂无匹配的热词" />
+            <a-empty v-if="hotWords.length === 0" description="暂无匹配的热词" />
           </div>
         </template>
       </div>

@@ -27,18 +27,56 @@ import { hotWordApi } from '../../services/hotWordApi';
 const store = useHotWordLibraryStore();
 
 /* ----------------------------- 热词库列表 ----------------------------- */
-const keyword = ref('');
+const selectedLibId = ref<number | null>(null);
+const searchText = ref('');
 const statusFilter = ref<'all' | LibraryStatus>('all');
+/** 已应用（点击搜索后生效）的筛选条件 */
+const appliedKeyword = ref('');
+const appliedStatus = ref<'all' | LibraryStatus>('all');
 const loading = ref(false);
 
+const libOptions = computed(() =>
+  store.libraries.map((lib) => ({
+    value: lib.id,
+    label: lib.name,
+  })),
+);
+
+function filterLibOption(input: string, option: { label?: string }) {
+  return (option?.label ?? '').toLowerCase().includes(input.toLowerCase());
+}
+
+function onLibSearch(val: string) {
+  searchText.value = val;
+}
+
+function onLibChange(val: number | null) {
+  if (val != null) {
+    const lib = store.libraries.find((l) => l.id === val);
+    searchText.value = lib ? lib.name : '';
+  } else {
+    searchText.value = '';
+  }
+}
+
+function handleSearch() {
+  appliedKeyword.value = searchText.value.trim();
+  appliedStatus.value = statusFilter.value;
+}
+
+function handleReset() {
+  selectedLibId.value = null;
+  searchText.value = '';
+  statusFilter.value = 'all';
+  appliedKeyword.value = '';
+  appliedStatus.value = 'all';
+}
+
 const filteredLibraries = computed<HotWordLibrary[]>(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = appliedKeyword.value.trim().toLowerCase();
   return store.libraries.filter((lib) => {
-    const matchKw =
-      !kw ||
-      lib.name.toLowerCase().includes(kw) ||
-      lib.description.toLowerCase().includes(kw);
-    const matchStatus = statusFilter.value === 'all' || lib.status === statusFilter.value;
+    const matchKw = !kw || lib.name.toLowerCase().includes(kw);
+    const matchStatus = appliedStatus.value === 'all' || lib.status === appliedStatus.value;
     return matchKw && matchStatus;
   });
 });
@@ -75,11 +113,6 @@ const libModalVisible = ref(false);
 const libEditingId = ref<number | null>(null);
 const libForm = reactive({ name: '', description: '', status: 'active' as LibraryStatus });
 
-function openCreateLib() {
-  libEditingId.value = null;
-  Object.assign(libForm, { name: '', description: '', status: 'active' });
-  libModalVisible.value = true;
-}
 function openEditLib(lib: HotWordLibrary) {
   libEditingId.value = lib.id;
   Object.assign(libForm, { name: lib.name, description: lib.description, status: lib.status });
@@ -373,21 +406,25 @@ function confirmRemoveWord(record: LibraryWord) {
     <!-- 工具栏 -->
     <a-card class="toolbar" variant="borderless">
       <div class="form-row">
-        <a-input
-          v-model:value="keyword"
-          placeholder="搜索热词库名称或描述"
+        <a-select
+          v-model:value="selectedLibId"
+          class="search-select"
+          placeholder="搜索热词库名称"
           allow-clear
-          class="search-input"
-        >
-          <template #prefix><SearchOutlined /></template>
-        </a-input>
+          show-search
+          :filter-option="filterLibOption"
+          :options="libOptions"
+          @search="onLibSearch"
+          @change="onLibChange"
+        />
         <a-select v-model:value="statusFilter" class="status-select">
           <a-select-option value="all">全部状态</a-select-option>
           <a-select-option value="active">启用</a-select-option>
           <a-select-option value="inactive">禁用</a-select-option>
         </a-select>
+        <a-button type="primary" @click="handleSearch"><SearchOutlined />搜索</a-button>
+        <a-button @click="handleReset">重置</a-button>
         <div class="actions">
-          <a-button type="primary" @click="openCreateLib"><PlusOutlined />新增热词库</a-button>
           <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
             <a-button :loading="importing"><UploadOutlined />导入</a-button>
           </a-upload>
@@ -446,7 +483,7 @@ function confirmRemoveWord(record: LibraryWord) {
           <template v-else>{{ record[column.dataIndex] }}</template>
         </template>
         <template #emptyText>
-          <a-empty description="暂无热词库，点击「新增热词库」或「导入」开始" />
+          <a-empty description="暂无热词库，点击「导入」开始" />
         </template>
       </a-table>
     </a-card>
@@ -615,7 +652,7 @@ function confirmRemoveWord(record: LibraryWord) {
   align-items: center;
   gap: 12px;
 }
-.search-input {
+.search-select {
   width: 280px;
 }
 .status-select {
