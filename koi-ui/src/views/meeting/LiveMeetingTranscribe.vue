@@ -21,6 +21,9 @@ import {
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
+import socketioService, { type TranscriptPayload } from '../../services/socketio';
+import { createMicrophoneStream, createSystemAudioStream } from '../../services/capture';
+import audioProcessorCode from '@/worklets/audio-processor.js?raw';
 
 const route = useRoute();
 const router = useRouter();
@@ -111,49 +114,285 @@ const elapsed = ref(0); // 秒
 const segments = ref<Segment[]>([]);
 const hotWordSet = computed(() => new Set(hotWords.value.map((w) => w.word)));
 
+/** 正在采集音频 */
+const recording = ref(false);
+/** 转写服务连接状态 */
+const connected = ref(false);
+/** 采集 / 权限错误提示 */
+const captureError = ref('');
+/** 实时输入音量（0~1），用于状态指示 */
+const currentVolume = ref(0);
+/** 后端下发的中间结果（未定稿），定稿后并入 segments */
+const interimText = ref('');
+const interimSpeakerId = ref<number>(-1);
+const interimSpeakerName = ref('');
+
 let timer: number | undefined;
 let segId = 0;
-
-const sampleTexts = [
-  '我们先来回顾一下上周的项目进展，整体节奏比预期要快一些，几个核心模块都已经进入了联调阶段。',
-  '实时转写功能已经接入了最新的语音识别模型，中文普通话的识别准确率在安静环境下已经可以稳定在 97% 以上，而且端到端的延迟控制在 800 毫秒以内，基本能做到“边说边出字”。',
-  '热词库对专业术语的识别准确率有明显提升。',
-  '麦克风录音和系统内录两种方式都可以稳定工作，不过在多人同时发言、会议室回声较大的场景下，系统内录的信噪比会更好一点。',
-  '接下来讨论一下下个版本的迭代计划：第一优先级是把实时转写沉淀成会议纪要，第二优先级是多语种混合识别，第三优先级是离线模式，方便在没有网络的现场会议里也能用。',
-  '说话人分离的效果比预期要好很多，五人以内的会议基本能准确区分每个人，但超过八人之后偶发会串音，后续需要引入声纹聚类来做兜底。',
-  '建议在会议结束后自动生成结构化纪要，包含议程、决议、待办、负责人和截止时间五个板块，并支持一键导出成 Markdown 和 Word。',
-  '用户反馈希望支持更多方言的实时识别，比如粤语、四川话、闽南语，这部分我们和算法团队约了下周做一次可行性评估。',
-  '关于权限这块，建议区分“查看者 / 编辑者 / 管理员”三种角色，查看者只能浏览转写结果，编辑者可以修正文本和说话人，管理员可以管理热词和参会人员。',
-  '数据安全的同学提了一个点：转写音频默认在本地处理、不上传云端，只有用户主动开启“云端增强识别”时才会上传，而且上传的内容要做脱敏和加密。',
-  '短句。',
-  '性能方面，单场会议累积到上千条转写时，普通列表会出现明显卡顿，所以我们打算换成虚拟滚动来只渲染可视区域，理论上列表再长也不会掉帧。',
-  '还有一件小事——很多同事习惯在会议里用缩写，比如把“客户成功”叫成“客成”，这类内部黑话我们可以维护一份同义词热词，识别之后再自动展开成完整表述。',
-  '最后同步一个排期：灰度会在下周二先对内部 20 人开放，收集一轮反馈后，月底再对全公司开放，正式 GA 预计在季度末。',
-];
 
 function nowTime(base?: Date) {
   const d = base ?? new Date();
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
-function makeSegment(at?: Date): Segment {
-  const sp = speakers.value.length
-    ? speakers.value[Math.floor(Math.random() * speakers.value.length)]
-    : { id: -1, name: '说话人' };
-  const text = sampleTexts[Math.floor(Math.random() * sampleTexts.length)];
-  return {
-    id: segId++,
-    speakerId: sp.id,
-    speakerName: sp.name,
-    text,
-    time: nowTime(at),
-  };
+/* ------------------------- 音频采集 -> Socket.IO 上行 ------------------------- */
+
+/** 转写服务要求的采样率 */
+const TARGET_SAMPLE_RATE = 16000;
+/** 每帧上行的 PCM 采样点数 */
+const PCM_CHUNK_SIZE = 512;
+
+let audioContext: AudioContext | null = null;
+let mediaStream: MediaStream | null = null;
+let sourceNode: MediaStreamAudioSourceNode | null = null;
+let workletNode: AudioWorkletNode | null = null;
+/** 零增益节点：保证 worklet 处于渲染图中被驱动，同时避免本机回放造成啸叫 */
+let muteNode: GainNode | null = null;
+/** 系统内录的释放函数（含内部占位视频轨） */
+let stopSystemCapture: (() => void) | null = null;
+let workletReady = false;
+/** 未满一帧的 PCM 余量 */
+let pcmBuffer = new Int16Array(0);
+let volumeTick = 0;
+
+/** 懒初始化 16kHz AudioContext 并注册 audio-processor 模块 */
+async function ensureAudioGraph() {
+  if (!audioContext || audioContext.state === 'closed') {
+    audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+    workletReady = false;
+  }
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+  if (!workletReady) {
+    const blob = new Blob([audioProcessorCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    try {
+      await audioContext.audioWorklet.addModule(url);
+      workletReady = true;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
 }
 
-function pushSegment() {
-  if (speakers.value.length === 0) return;
-  segments.value.push(makeSegment());
-  scrollToBottom();
+/** worklet 回传 16bit PCM：累积成固定长度分片后经 Socket.IO 上行 */
+function handleWorkletMessage(event: MessageEvent) {
+  const chunk = new Int16Array(event.data as ArrayBuffer);
+
+  // 音量指示（降频更新，避免高频渲染）
+  if (++volumeTick % 4 === 0) {
+    let sum = 0;
+    for (let i = 0; i < chunk.length; i++) {
+      const v = chunk[i] / 32768;
+      sum += v * v;
+    }
+    currentVolume.value = chunk.length ? Math.min(1, Math.sqrt(sum / chunk.length) * 3) : 0;
+  }
+
+  // 暂停期间不上行音频，仅保留采集链路
+  if (!recording.value || !running.value) return;
+
+  const merged = new Int16Array(pcmBuffer.length + chunk.length);
+  merged.set(pcmBuffer);
+  merged.set(chunk, pcmBuffer.length);
+  pcmBuffer = merged;
+
+  while (pcmBuffer.length >= PCM_CHUNK_SIZE) {
+    const frame = pcmBuffer.slice(0, PCM_CHUNK_SIZE);
+    pcmBuffer = pcmBuffer.slice(PCM_CHUNK_SIZE);
+    try {
+      socketioService.emit('with-binary', frame.buffer, 1);
+    } catch (err) {
+      console.error('发送音频数据失败:', err);
+      captureError.value = '音频上行失败，请检查转写服务连接';
+      void stopCapture(false);
+      return;
+    }
+  }
+}
+
+/** 按会议配置的录音方式开始采集 */
+async function startCapture() {
+  if (recording.value) return;
+  captureError.value = '';
+  pcmBuffer = new Int16Array(0);
+
+  try {
+    await ensureAudioGraph();
+
+    if (recordMode.value === 'mic') {
+      mediaStream = await createMicrophoneStream();
+    } else {
+      const capture = await createSystemAudioStream({ silent: false });
+      mediaStream = capture.stream;
+      stopSystemCapture = capture.stop;
+    }
+
+    sourceNode = audioContext!.createMediaStreamSource(mediaStream);
+    workletNode = new AudioWorkletNode(audioContext!, 'audio-processor');
+    workletNode.port.onmessage = handleWorkletMessage;
+    muteNode = audioContext!.createGain();
+    muteNode.gain.value = 0;
+
+    sourceNode.connect(workletNode);
+    workletNode.connect(muteNode);
+    muteNode.connect(audioContext!.destination);
+
+    // 用户在系统层结束共享 / 拔出设备时同步收尾
+    const track = mediaStream.getAudioTracks()[0];
+    if (track) track.onended = () => void stopCapture();
+
+    recording.value = true;
+  } catch (err) {
+    captureError.value = (err as Error)?.message || '音频采集启动失败';
+    message.error(captureError.value);
+    await stopCapture(false);
+  }
+}
+
+/**
+ * 结束采集并释放音频链路。
+ * @param sendFinal 是否向后端发送结束帧（flag=0），用于触发最后一段文本定稿
+ */
+async function stopCapture(sendFinal = true) {
+  const wasRecording = recording.value;
+  recording.value = false;
+
+  if (mediaStream) {
+    mediaStream.getTracks().forEach((t) => t.stop());
+    mediaStream = null;
+  }
+  if (stopSystemCapture) {
+    stopSystemCapture();
+    stopSystemCapture = null;
+  }
+  if (workletNode) {
+    workletNode.port.onmessage = null;
+    workletNode.disconnect();
+    workletNode = null;
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
+  }
+  if (muteNode) {
+    muteNode.disconnect();
+    muteNode = null;
+  }
+
+  pcmBuffer = new Int16Array(0);
+  currentVolume.value = 0;
+
+  if (wasRecording && sendFinal && socketioService.isConnected()) {
+    socketioService.emit('with-binary', new ArrayBuffer(0), 0);
+    // 等待结束帧发出，便于后端定稿最后一段文本
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
+
+/** 释放 AudioContext（仅在离开页面时调用） */
+function closeAudioContext() {
+  if (audioContext && audioContext.state !== 'closed') {
+    void audioContext.close();
+  }
+  audioContext = null;
+  workletReady = false;
+}
+
+/* ------------------------- Socket.IO 下行转写结果 ------------------------- */
+
+/** 将后端下发的说话人信息映射到本地说话人库 */
+function resolveSpeaker(payload: TranscriptPayload): { id: number; name: string } {
+  const rawId = payload.speakerId ?? payload.speaker_id;
+  if (rawId !== undefined && rawId !== null && rawId !== '') {
+    const id = Number(rawId);
+    if (!Number.isNaN(id)) {
+      const matched = speakers.value.find((s) => s.id === id) ?? speakerStore.getById(id);
+      if (matched) return { id: matched.id, name: matched.name };
+      return { id, name: payload.speakerName || payload.speaker || `说话人 ${id}` };
+    }
+  }
+
+  const name = payload.speakerName || payload.speaker;
+  if (name) {
+    const matched = speakers.value.find((s) => s.name === name);
+    return matched ? { id: matched.id, name: matched.name } : { id: -1, name };
+  }
+
+  // 后端未做说话人分离：仅配置一位说话人时归属该人
+  if (speakers.value.length === 1) {
+    return { id: speakers.value[0].id, name: speakers.value[0].name };
+  }
+  return { id: -1, name: '未识别说话人' };
+}
+
+function clearInterim() {
+  interimText.value = '';
+  interimSpeakerId.value = -1;
+  interimSpeakerName.value = '';
+}
+
+function handleTranscript(payload: TranscriptPayload) {
+  const text = (payload?.text ?? '').trim();
+  if (!text) return;
+
+  const isFinal = payload.isFinal ?? payload.is_final ?? false;
+  const speaker = resolveSpeaker(payload);
+
+  if (isFinal) {
+    segments.value.push({
+      id: segId++,
+      speakerId: speaker.id,
+      speakerName: speaker.name,
+      text,
+      time: nowTime(),
+    });
+    clearInterim();
+    scrollToBottom();
+  } else {
+    interimText.value = text;
+    interimSpeakerId.value = speaker.id;
+    interimSpeakerName.value = speaker.name;
+    scrollToBottom();
+  }
+}
+
+function handleConnect() {
+  connected.value = true;
+}
+
+function handleDisconnect(reason: string) {
+  connected.value = false;
+  console.warn('转写服务连接断开:', reason);
+  if (recording.value) {
+    message.warning('转写服务连接断开，正在尝试重连');
+  }
+}
+
+function handleSocketError(error: unknown) {
+  connected.value = false;
+  console.error('转写服务异常:', error);
+}
+
+/** 建立转写连接并注册事件 */
+function setupSocket() {
+  socketioService.connect();
+  connected.value = socketioService.isConnected();
+  socketioService.on('connect', handleConnect);
+  socketioService.on('disconnect', handleDisconnect);
+  socketioService.on('connect_error', handleSocketError);
+  socketioService.on('error', handleSocketError);
+  socketioService.on('transcript', handleTranscript);
+}
+
+/** 结束采集、断开连接（返回上一页 / 结束会议 / 卸载时统一收尾） */
+async function teardown(sendFinal = true) {
+  stopTimer();
+  await stopCapture(sendFinal);
+  socketioService.disconnect();
+  connected.value = false;
+  closeAudioContext();
 }
 
 const transcriptScrollerRef = ref<{ scrollToBottom: () => void } | null>(null);
@@ -174,7 +413,6 @@ function scrollToBottom() {
 function tick() {
   if (!running.value) return;
   elapsed.value += 1;
-  if (elapsed.value % 3 === 0) pushSegment();
 }
 
 function startTimer() {
@@ -190,10 +428,18 @@ function stopTimer() {
 
 function togglePause() {
   running.value = !running.value;
+  if (running.value) {
+    // 恢复上行前清掉暂停期间的残留音频
+    pcmBuffer = new Int16Array(0);
+    void audioContext?.resume();
+  } else {
+    clearInterim();
+  }
   message.info(running.value ? '已继续转写' : '已暂停转写');
 }
 
-function backToCreate() {
+async function backToCreate() {
+  await teardown();
   router.push({ name: 'liveCreate' });
 }
 
@@ -205,7 +451,7 @@ function stopMeeting() {
     cancelText: '取消',
     onOk: async () => {
       running.value = false;
-      stopTimer();
+      await teardown();
       if (meetingId.value) {
         try {
           await meetingApi.finishMeeting(Number(meetingId.value));
@@ -325,6 +571,22 @@ const visibleSegments = computed(() =>
     : segments.value.filter((s) => s.speakerId === focusSpeakerId.value),
 );
 
+/** 中间结果是否需要展示（受“只看某人”筛选影响） */
+const showInterim = computed(
+  () =>
+    !!interimText.value &&
+    (focusSpeakerId.value === null || focusSpeakerId.value === interimSpeakerId.value),
+);
+
+/** 顶部转写状态标签 */
+const statusTag = computed(() => {
+  if (captureError.value) return { color: 'error', text: '采集异常' };
+  if (!connected.value) return { color: 'warning', text: '连接中' };
+  if (!recording.value) return { color: 'default', text: '未采集' };
+  if (!running.value) return { color: 'warning', text: '已暂停' };
+  return { color: 'success', text: '转写中' };
+});
+
 const elapsedText = computed(() => {
   const m = Math.floor(elapsed.value / 60);
   const s = elapsed.value % 60;
@@ -355,7 +617,9 @@ async function loadMeetingDetail() {
 // 切换会议时重置
 watch(
   () => route.query,
-  (q) => {
+  async (q) => {
+    // 先结束上一场会议的采集，避免音频链路串场
+    await stopCapture();
     meetingName.value = (q.name as string) || '未命名会议';
     recordMode.value = (q.recordMode as 'mic' | 'system') || 'mic';
     participantNames.value =
@@ -367,6 +631,7 @@ watch(
     startTime.value = (q.startTime as string) || '';
     endTime.value = (q.endTime as string) || '';
     segments.value = [];
+    clearInterim();
     elapsed.value = 0;
     segId = 0;
     running.value = true;
@@ -374,6 +639,7 @@ watch(
     startTimer();
     loadHotWords();
     markMeetingOngoing();
+    await startCapture();
   },
 );
 
@@ -381,11 +647,15 @@ onMounted(async () => {
   startTimer();
   // 加载说话人列表，供 getById 检索转写参与者
   speakerStore.load();
+  // 建立转写长连接并注册下行事件
+  setupSocket();
   // 优先从后端 API 获取会议详情
   await loadMeetingDetail();
   // 加载所选热词库及其热词
   loadHotWords();
   markMeetingOngoing();
+  // 按会议配置的录音方式开始采集并上行 PCM
+  await startCapture();
 });
 
 /** 进入转写页即标记会议为进行中（实时会议）。 */
@@ -396,7 +666,7 @@ function markMeetingOngoing() {
     .catch((err) => message.warning((err as Error)?.message || '标记会议进行中失败'));
 }
 onBeforeUnmount(() => {
-  stopTimer();
+  void teardown();
 });
 </script>
 
@@ -424,6 +694,11 @@ onBeforeUnmount(() => {
             <span v-if="meetingTimeLabel" class="meta-item">
               <CalendarOutlined /> {{ meetingTimeLabel }}
             </span>
+            <span class="meta-item volume-meta" :title="`输入音量 ${Math.round(currentVolume * 100)}%`">
+              <span class="volume-meter">
+                <span class="volume-meter-fill" :style="{ width: `${Math.round(currentVolume * 100)}%` }"></span>
+              </span>
+            </span>
           </div>
         </div>
       </div>
@@ -440,11 +715,15 @@ onBeforeUnmount(() => {
           <template #icon><TagsOutlined /></template>
           热词库
         </a-button>
-        <a-button @click="togglePause">
+        <a-button :disabled="!recording" @click="togglePause">
           <template #icon>
             <component :is="running ? PauseCircleOutlined : PlayCircleOutlined" />
           </template>
           {{ running ? '暂停' : '继续' }}
+        </a-button>
+        <a-button v-if="!recording" type="primary" @click="startCapture">
+          <template #icon><AudioOutlined /></template>
+          重新采集
         </a-button>
         <a-button danger @click="stopMeeting"><StopOutlined />结束</a-button>
       </div>
@@ -453,8 +732,9 @@ onBeforeUnmount(() => {
     <a-card class="transcript-card" variant="borderless">
       <template #title>
         <span class="live-title">
-          <span class="live-dot" :class="{ paused: !running }"></span>
+          <span class="live-dot" :class="{ paused: !running || !recording }"></span>
           实时转写
+          <a-tag :color="statusTag.color">{{ statusTag.text }}</a-tag>
           <a-tag
             v-if="focusSpeakerId !== null"
             color="processing"
@@ -465,14 +745,22 @@ onBeforeUnmount(() => {
           </a-tag>
         </span>
       </template>
+      <a-alert
+        v-if="captureError"
+        class="capture-alert"
+        type="error"
+        show-icon
+        :message="captureError"
+      />
       <div class="transcript-list">
-        <div v-if="visibleSegments.length === 0" class="transcript-empty">
+        <div v-if="visibleSegments.length === 0 && !showInterim" class="transcript-empty">
           <AudioOutlined />
           <p v-if="focusSpeakerId !== null">该说话人暂无发言内容</p>
+          <p v-else-if="!recording">音频采集未开启，点击「重新采集」后开始转写</p>
           <p v-else>正在聆听… 转写内容将实时显示在这里</p>
         </div>
         <DynamicScroller
-          v-else
+          v-if="visibleSegments.length > 0"
           ref="transcriptScrollerRef"
           class="transcript-scroller"
           :items="visibleSegments"
@@ -500,6 +788,18 @@ onBeforeUnmount(() => {
             </DynamicScrollerItem>
           </template>
         </DynamicScroller>
+
+        <!-- 后端下发的中间结果：定稿前实时刷新 -->
+        <div v-if="showInterim" class="transcript-item interim-item">
+          <div class="seg-head">
+            <a-avatar :size="24" :style="{ backgroundColor: 'var(--color-warning)' }">
+              {{ interimSpeakerName.charAt(0) }}
+            </a-avatar>
+            <span class="seg-speaker interim-speaker">{{ interimSpeakerName }}</span>
+            <span class="seg-time">识别中…</span>
+          </div>
+          <div class="seg-text interim-text" v-html="highlight(interimText)"></div>
+        </div>
       </div>
     </a-card>
 
@@ -701,6 +1001,27 @@ onBeforeUnmount(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
+.volume-meta {
+  min-width: 72px;
+}
+.volume-meter {
+  display: inline-block;
+  width: 64px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-surface-2);
+  overflow: hidden;
+}
+.volume-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-success);
+  transition: width 0.12s linear;
+}
+.capture-alert {
+  margin-bottom: 12px;
+}
 .transcript-card :deep(.ant-card-head-title) {
   color: var(--color-text);
 }
@@ -899,6 +1220,26 @@ onBeforeUnmount(() => {
   color: var(--color-text);
   line-height: 1.7;
   font-size: 14px;
+}
+.interim-item {
+  border-bottom: none;
+  background: var(--color-surface-2);
+}
+.interim-speaker {
+  color: var(--color-warning);
+}
+.interim-text {
+  color: var(--color-text-secondary);
+  animation: interim-blink 1.5s ease-in-out infinite;
+}
+@keyframes interim-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.65;
+  }
 }
 .seg-text :deep(.hot-word) {
   background: rgba(250, 173, 20, 0.18);

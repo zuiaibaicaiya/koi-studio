@@ -141,4 +141,29 @@ export const createSystemAudioStream = async (
   return { stream: new MediaStream(audioTracks), stop: stopAll };
 };
 
+/**
+ * 创建麦克风音频流。
+ *
+ * macOS 下若系统层已明确拒绝麦克风权限，getUserMedia 会静默失败，
+ * 因此先读取主进程的权限快照给出可读的错误提示。
+ */
+export const createMicrophoneStream = async (
+  constraints: MediaTrackConstraints = {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  },
+): Promise<MediaStream> => {
+  try {
+    const permissions = await captureApi.getPermissionStatus();
+    if (permissions.microphone === 'denied' || permissions.microphone === 'restricted') {
+      throw new Error('麦克风权限未授权，请在系统设置 - 隐私与安全性 - 麦克风中开启后重试。');
+    }
+  } catch (error) {
+    // 非 Electron 环境读取不到权限快照，直接交给 getUserMedia 自行申请
+    if (error instanceof Error && error.message.includes('麦克风权限未授权')) throw error;
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: constraints });
+};
+
 export default captureApi;
