@@ -3,7 +3,6 @@ import { ref, computed } from 'vue';
 import userApi, {
   type UserDTO,
   type LoginPayload,
-  type RegisterPayload,
   type UpdateProfilePayload,
   type ChangePasswordPayload,
   type AuthResult,
@@ -12,7 +11,7 @@ import userApi, {
 /** 用户信息（与后端 User 模型对齐） */
 export { type UserDTO as UserInfo };
 
-export { type LoginPayload, type RegisterPayload, type UpdateProfilePayload, type ChangePasswordPayload };
+export { type LoginPayload, type UpdateProfilePayload, type ChangePasswordPayload };
 
 export const useAuthStore = defineStore(
   'auth',
@@ -34,19 +33,6 @@ export const useAuthStore = defineStore(
       loading.value = true;
       try {
         const result: AuthResult = await userApi.login(payload);
-        token.value = result.token;
-        user.value = result.user;
-        return true;
-      } finally {
-        loading.value = false;
-      }
-    }
-
-    /** 注册，并自动登录 */
-    async function register(payload: RegisterPayload) {
-      loading.value = true;
-      try {
-        const result: AuthResult = await userApi.register(payload);
         token.value = result.token;
         user.value = result.user;
         return true;
@@ -99,7 +85,6 @@ export const useAuthStore = defineStore(
       isAuthenticated,
       userRole,
       login,
-      register,
       refreshToken,
       fetchCurrentUser,
       updateProfile,
