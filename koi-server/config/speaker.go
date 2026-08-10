@@ -44,6 +44,22 @@ func init() {
 			"max_file_size": config.Env("SPEAKER_AUDIO_MAX_FILE_SIZE", 20*1024*1024),
 		},
 
+		// Valid Speech
+		//
+		// 注册说话人时要求的有效语音（去除静音后的实际说话）最短时长（秒）。
+		// 低于该值说明语音不足，无法注册出稳定声纹，接口会直接给出提示。
+		"min_valid_duration": config.Env("SPEAKER_MIN_VALID_DURATION", 5.0),
+
+		// Voice Activity Detection (VAD)
+		//
+		// 语音活动检测模型，用于从音频中切出有效语音、剔除静音段，
+		// 从而统计“实际说话时长”而非“文件总时长”。模型缺失时退化为
+		// 以整段音频时长作为有效语音时长。
+		"vad": map[string]any{
+			"model":     config.Env("SPEAKER_VAD_MODEL", "models/speaker/silero_vad.onnx"),
+			"threshold": config.Env("SPEAKER_VAD_THRESHOLD", 0.5),
+		},
+
 		// Voiceprint Storage
 		//
 		// 注册音频的落盘方式。disk 需在 config/filesystems.go 的 disks 中定义，

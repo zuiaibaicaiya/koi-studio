@@ -11,6 +11,7 @@ import (
 
 	"github.com/goravel/framework/contracts/filesystem"
 	"github.com/goravel/framework/support/str"
+	"github.com/spf13/cast"
 
 	contractsspeaker "koi-server/app/contracts/speaker"
 	"koi-server/app/facades"
@@ -25,6 +26,8 @@ var (
 	ErrAudioTooLarge = errors.New("音频文件超出大小限制")
 	// ErrSpeakerInactive 说话人已禁用，无法参与声纹检索。
 	ErrSpeakerInactive = errors.New("说话人已禁用")
+	// ErrValidSpeechTooShort 有效语音（去除静音）时长不足，无法注册稳定声纹。
+	ErrValidSpeechTooShort = errors.New("有效语音时长不足")
 )
 
 // supportedAudioExtensions 允许上传的音频扩展名。
@@ -75,19 +78,30 @@ func (voiceprintService *SpeakerVoiceprintService) RegisterAudio(speaker *models
 		return audio, err
 	}
 
+	// 注册说话人要求足够长的有效语音（去除静音后的实际说话时长），
+	// 不足时直接提示用户补录，避免注册出不稳定的声纹。
+	minValid := cast.ToFloat64(facades.Config().Get("speaker.min_valid_duration", 5.0))
+	if feature.ValidDuration < minValid {
+		return audio, fmt.Errorf(
+			"%w: 有效语音时长仅 %.2f 秒，至少需要 %.0f 秒，请录制更长、更连贯的语音",
+			ErrValidSpeechTooShort, feature.ValidDuration, minValid,
+		)
+	}
+
 	filePath, err := voiceprintService.store(speaker.ID, file, data)
 	if err != nil {
 		return audio, err
 	}
 
 	audio = models.SpeakerAudio{
-		SpeakerID:  speaker.ID,
-		FileName:   file.GetClientOriginalName(),
-		FilePath:   filePath,
-		FileSize:   int64(len(data)),
-		SampleRate: feature.SampleRate,
-		Duration:   feature.Duration,
-		Remark:     remark,
+		SpeakerID:     speaker.ID,
+		FileName:      file.GetClientOriginalName(),
+		FilePath:      filePath,
+		FileSize:      int64(len(data)),
+		SampleRate:    feature.SampleRate,
+		Duration:      feature.Duration,
+		ValidDuration: feature.ValidDuration,
+		Remark:        remark,
 	}
 	if err := audio.SetVector(feature.Vector); err != nil {
 		voiceprintService.removeFile(filePath)

@@ -30,6 +30,13 @@ type Config struct {
 	MaxDuration float64
 	MaxFileSize int64
 
+	// 有效语音
+	MinValidDuration float64
+
+	// 语音活动检测（VAD）
+	VadModel     string
+	VadThreshold float32
+
 	// 存储
 	Disk string
 	Dir  string
@@ -51,6 +58,11 @@ func NewConfig(cfg config.Config) Config {
 		MinDuration: cast.ToFloat64(cfg.Get("speaker.audio.min_duration", 0.5)),
 		MaxDuration: cast.ToFloat64(cfg.Get("speaker.audio.max_duration", 60.0)),
 		MaxFileSize: cast.ToInt64(cfg.Get("speaker.audio.max_file_size", 20*1024*1024)),
+
+		MinValidDuration: cast.ToFloat64(cfg.Get("speaker.min_valid_duration", 5.0)),
+
+		VadModel:     cfg.GetString("speaker.vad.model"),
+		VadThreshold: cast.ToFloat32(cfg.Get("speaker.vad.threshold", 0.5)),
 
 		Disk: cfg.GetString("speaker.storage.disk", "speaker"),
 		Dir:  cfg.GetString("speaker.storage.dir", "speakers"),
@@ -88,6 +100,14 @@ func (c Config) normalized() Config {
 	}
 	if c.MaxFileSize <= 0 {
 		c.MaxFileSize = 20 * 1024 * 1024
+	}
+	// 注册所需的有效语音最短时长，至少 1 秒才有意义。
+	if c.MinValidDuration <= 0 {
+		c.MinValidDuration = 5.0
+	}
+	// 余弦阈值取值区间 (0, 1]，超过该范围按默认值处理。
+	if c.VadThreshold <= 0 || c.VadThreshold > 1 {
+		c.VadThreshold = 0.5
 	}
 	if c.Disk == "" {
 		c.Disk = "speaker"

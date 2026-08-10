@@ -26,6 +26,9 @@ type SpeakerAudio struct {
 	SampleRate int `json:"sample_rate" example:"16000"`
 	// Duration 音频时长（秒）
 	Duration float64 `json:"duration" example:"10.5"`
+	// ValidDuration 去除静音后的有效语音时长（秒），由 VAD 统计；
+	// 未启用 VAD 时等于整段音频时长。
+	ValidDuration float64 `json:"valid_duration" example:"8.3"`
 	// Dim 声纹特征维度
 	Dim int `json:"dim" example:"192"`
 	// Embedding 声纹特征向量，序列化为 JSON 数组文本存储。

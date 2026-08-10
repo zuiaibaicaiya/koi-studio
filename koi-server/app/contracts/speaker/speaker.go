@@ -30,6 +30,9 @@ type Feature struct {
 	SampleRate int `json:"sample_rate"`
 	// Duration 参与提取的音频时长（秒）。
 	Duration float64 `json:"duration"`
+	// ValidDuration 去除静音后的有效语音累计时长（秒）；
+	// 未启用 VAD 时退化为整段音频时长。
+	ValidDuration float64 `json:"valid_duration"`
 }
 
 // Match 表示一次声纹检索的命中结果。

@@ -39,7 +39,12 @@ var (
 	ErrDimMismatch = errors.New("speaker: embedding dimension mismatch")
 	// ErrAudioTooShort 有效音频时长不足。
 	ErrAudioTooShort = errors.New("speaker: audio is too short")
+	// ErrValidSpeechTooShort 有效语音（去除静音）时长不足。
+	ErrValidSpeechTooShort = errors.New("speaker: valid speech is too short")
 )
+
+// VADSampleRate 是 Silero VAD 模型固定要求的采样率。
+const VADSampleRate = 16000
 
 // Dependencies 声纹服务的外部依赖，以接口注入，便于替换与单元测试。
 type Dependencies struct {
@@ -70,6 +75,8 @@ type Service struct {
 	mu        sync.RWMutex
 	extractor *sherpa.SpeakerEmbeddingExtractor
 	manager   *sherpa.SpeakerEmbeddingManager
+	// vad 语音活动检测器，用于统计有效语音时长；为 nil 表示未启用。
+	vad *sherpa.VoiceActivityDetector
 	// vectors 保存已注册说话人的向量副本，用于计算相似度分值。
 	vectors map[string][][]float32
 	closed  bool
@@ -148,6 +155,41 @@ func (s *Service) load() {
 	s.mu.Unlock()
 
 	s.log.Info(fmt.Sprintf("speaker: embedding model loaded from %s, dim=%d", modelPath, dim))
+
+	// 语音活动检测模型为可选项：配置缺失或加载失败时退化为“整段音频时长”，
+	// 不影响声纹提取本身，仅会失去有效语音时长的精确统计。
+	if s.cfg.VadModel != "" {
+		vad := sherpa.NewVoiceActivityDetector(&sherpa.VadModelConfig{
+			SileroVad: sherpa.SileroVadModelConfig{
+				Model:              s.cfg.VadModel,
+				Threshold:          s.cfg.VadThreshold,
+				MinSilenceDuration: 0.5,
+				MinSpeechDuration:  0.25,
+				WindowSize:         512,
+			},
+			SampleRate: VADSampleRate,
+			NumThreads: s.cfg.NumThreads,
+			Provider:   s.cfg.Provider,
+			Debug:      boolToInt(s.cfg.Debug),
+		}, 60)
+		if vad == nil {
+			s.log.Warning(fmt.Sprintf("speaker: failed to load VAD model %q, valid-speech detection disabled", s.cfg.VadModel))
+
+			return
+		}
+
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			sherpa.DeleteVoiceActivityDetector(vad)
+
+			return
+		}
+		s.vad = vad
+		s.mu.Unlock()
+
+		s.log.Info(fmt.Sprintf("speaker: VAD model loaded from %s", s.cfg.VadModel))
+	}
 }
 
 // wait 阻塞等待模型加载完成，超时或加载失败时返回错误。
@@ -247,17 +289,72 @@ func (s *Service) Extract(data []byte) (contracts.Feature, error) {
 		duration = pcm.Duration()
 	}
 
+	// 检测有效语音（去除静音）累计时长，用于注册时校验语音是否充足。
+	validDuration := s.detectSpeechDuration(pcm)
+
 	vector, err := s.compute(pcm)
 	if err != nil {
 		return contracts.Feature{}, err
 	}
 
 	return contracts.Feature{
-		Vector:     vector,
-		Dim:        len(vector),
-		SampleRate: pcm.SampleRate,
-		Duration:   duration,
+		Vector:        vector,
+		Dim:           len(vector),
+		SampleRate:    pcm.SampleRate,
+		Duration:      duration,
+		ValidDuration: validDuration,
 	}, nil
+}
+
+// detectSpeechDuration 返回音频中有效语音（去除静音段）的累计时长（秒）。
+//
+// 在锁保护下运行 VAD，因此与本服务的其他 C 对象访问串行化；若未配置 VAD
+// 模型或服务已关闭，则退化为整段音频时长，保证调用方始终能拿到一个数值。
+func (s *Service) detectSpeechDuration(pcm PCM) float64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.vad == nil {
+		return pcm.Duration()
+	}
+
+	s.vad.Reset()
+
+	// VAD 模型固定要求 16k 单声道输入，先重采样到目标采样率。
+	samples := Resample(pcm, VADSampleRate).Samples
+	if len(samples) == 0 {
+		return pcm.Duration()
+	}
+
+	// 以 10ms 为帧送入检测器，每送一帧就取走已完成的语音段。
+	frameSize := VADSampleRate / 100
+	var total float64
+	for i := 0; i < len(samples); i += frameSize {
+		end := i + frameSize
+		var frame []float32
+		if end > len(samples) {
+			frame = samples[i:]
+		} else {
+			frame = samples[i:end]
+		}
+
+		s.vad.AcceptWaveform(frame)
+		for !s.vad.IsEmpty() {
+			seg := s.vad.Front()
+			total += float64(len(seg.Samples)) / float64(VADSampleRate)
+			s.vad.Pop()
+		}
+	}
+
+	// 收尾，把缓冲区里最后一段语音也取出来。
+	s.vad.Flush()
+	for !s.vad.IsEmpty() {
+		seg := s.vad.Front()
+		total += float64(len(seg.Samples)) / float64(VADSampleRate)
+		s.vad.Pop()
+	}
+
+	return total
 }
 
 // compute 调用 sherpa-onnx 提取声纹特征。
@@ -506,6 +603,10 @@ func (s *Service) Close() error {
 	if s.extractor != nil {
 		sherpa.DeleteSpeakerEmbeddingExtractor(s.extractor)
 		s.extractor = nil
+	}
+	if s.vad != nil {
+		sherpa.DeleteVoiceActivityDetector(s.vad)
+		s.vad = nil
 	}
 	s.vectors = nil
 

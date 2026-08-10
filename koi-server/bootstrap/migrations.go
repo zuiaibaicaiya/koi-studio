@@ -14,5 +14,6 @@ func Migrations() []schema.Migration {
 		&migrations.M20260809100002CreateHotWordsTable{},
 		&migrations.M20260809100003CreateSpeakersTable{},
 		&migrations.M20260809100004CreateSpeakerAudiosTable{},
+		&migrations.M20260809100005AddValidDurationToSpeakerAudiosTable{},
 	}
 }
