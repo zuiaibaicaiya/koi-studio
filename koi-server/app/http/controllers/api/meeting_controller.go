@@ -1,0 +1,232 @@
+package api
+
+import (
+	"github.com/goravel/framework/contracts/http"
+	"github.com/goravel/framework/facades"
+
+	"koi-server/app/http/requests/meetings"
+	"koi-server/app/models"
+	"koi-server/app/services"
+)
+
+// MeetingController 实时会议控制器
+type MeetingController struct {
+	BaseController
+	meetingService *services.MeetingService
+}
+
+// NewMeetingController 创建控制器实例
+func NewMeetingController() *MeetingController {
+	return &MeetingController{
+		meetingService: services.NewMeetingService(),
+	}
+}
+
+// ListMeetings 会议列表
+// @Route GET /meeting
+func (ctrl *MeetingController) ListMeetings(ctx http.Context) http.Response {
+	var req meetings.MeetingListRequest
+	errors, err := ctx.Request().ValidateRequest(&req)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	page, pageSize := normalizePagination(req.Page, req.PageSize)
+	list, total, err := ctrl.meetingService.GetMeetingList(page, pageSize, req.Keyword, req.Status)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("查询会议列表失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "查询失败")
+	}
+
+	return ctrl.ApiPaginate(ctx, list, total, page, pageSize)
+}
+
+// GetMeeting 会议详情
+// @Route GET /meeting/{id}
+func (ctrl *MeetingController) GetMeeting(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	meeting, err := ctrl.meetingService.GetMeetingById(id)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+
+	return ctrl.ApiSuccess(ctx, meeting)
+}
+
+// CreateMeeting 创建会议
+// @Route POST /meeting
+func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
+	var req meetings.MeetingPostRequest
+	errors, err := ctx.Request().ValidateRequest(&req)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	startTime, perr := services.ParseMeetingTime(req.StartTime)
+	if perr != nil {
+		return ctrl.ApiErrorMsg(ctx, perr.Error())
+	}
+	endTime, perr := services.ParseMeetingTime(req.EndTime)
+	if perr != nil {
+		return ctrl.ApiErrorMsg(ctx, perr.Error())
+	}
+	if !endTime.After(startTime) {
+		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
+	}
+
+	meeting := models.Meeting{
+		Name:         req.Name,
+		Participants: req.Participants,
+		SpeakerIds:   req.SpeakerIds,
+		StartTime:    startTime,
+		EndTime:      endTime,
+		Status:       models.MeetingStatusCreated,
+	}
+
+	meeting.HotWordLibraryIds = req.HotWordLibraryIds
+
+	// 记录创建人
+	if user, uerr := ctrl.GetCurrentUser(ctx); uerr == nil {
+		meeting.CreatedBy = user.ID
+	}
+
+	if err := ctrl.meetingService.CreateMeeting(&meeting); err != nil {
+		facades.Log().WithContext(ctx).Error("创建会议失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "创建会议失败")
+	}
+
+	return ctrl.ApiSuccess(ctx, meeting)
+}
+
+// UpdateMeeting 更新会议
+// @Route PUT /meeting/{id}
+func (ctrl *MeetingController) UpdateMeeting(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	var req meetings.MeetingUpdateRequest
+	errors, err := ctx.Request().ValidateRequest(&req)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+	if errors != nil {
+		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
+	}
+
+	meeting, err := ctrl.meetingService.GetMeetingById(id)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+
+	if req.Name != "" {
+		meeting.Name = req.Name
+	}
+	if req.Participants != "" {
+		meeting.Participants = req.Participants
+	}
+	if req.SpeakerIds != "" {
+		meeting.SpeakerIds = req.SpeakerIds
+	}
+	if req.Status != "" {
+		meeting.Status = req.Status
+	}
+
+	// 热词库：空字符串表示不修改
+	if req.HotWordLibraryIds != "" {
+		meeting.HotWordLibraryIds = req.HotWordLibraryIds
+	}
+
+	if req.StartTime != "" {
+		t, perr := services.ParseMeetingTime(req.StartTime)
+		if perr != nil {
+			return ctrl.ApiErrorMsg(ctx, perr.Error())
+		}
+		meeting.StartTime = t
+	}
+	if req.EndTime != "" {
+		t, perr := services.ParseMeetingTime(req.EndTime)
+		if perr != nil {
+			return ctrl.ApiErrorMsg(ctx, perr.Error())
+		}
+		meeting.EndTime = t
+	}
+
+	if !meeting.EndTime.After(meeting.StartTime) {
+		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
+	}
+
+	if err := ctrl.meetingService.UpdateMeeting(&meeting); err != nil {
+		facades.Log().WithContext(ctx).Error("更新会议失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "更新会议失败")
+	}
+
+	return ctrl.ApiSuccess(ctx, meeting)
+}
+
+// DeleteMeeting 删除会议
+// @Route DELETE /meeting/{id}
+func (ctrl *MeetingController) DeleteMeeting(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	if _, err := ctrl.meetingService.DeleteMeetingById(id); err != nil {
+		facades.Log().WithContext(ctx).Error("删除会议失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "删除会议失败")
+	}
+
+	return ctrl.ApiSuccess(ctx, nil)
+}
+
+// StartMeeting 开始会议（标记为进行中）
+// @Route POST /meeting/{id}/start
+func (ctrl *MeetingController) StartMeeting(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	if _, err := ctrl.meetingService.GetMeetingById(id); err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+
+	if err := ctrl.meetingService.SetMeetingStatus(id, models.MeetingStatusOngoing); err != nil {
+		facades.Log().WithContext(ctx).Error("开始会议失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "开始会议失败")
+	}
+
+	return ctrl.ApiSuccess(ctx, nil)
+}
+
+// FinishMeeting 结束会议（标记为已结束）
+// @Route POST /meeting/{id}/finish
+func (ctrl *MeetingController) FinishMeeting(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	if _, err := ctrl.meetingService.GetMeetingById(id); err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+
+	if err := ctrl.meetingService.SetMeetingStatus(id, models.MeetingStatusFinished); err != nil {
+		facades.Log().WithContext(ctx).Error("结束会议失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "结束会议失败")
+	}
+
+	return ctrl.ApiSuccess(ctx, nil)
+}

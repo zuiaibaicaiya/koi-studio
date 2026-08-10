@@ -30,6 +30,7 @@ func Api() {
 	hotWordController := api.NewHotWordController()
 	speakerController := api.NewSpeakerController()
 	speakerAudioController := api.NewSpeakerAudioController()
+	meetingController := api.NewMeetingController()
 
 	// 登录和注册接口，无需认证。
 	facades.Route().Post("/api/user/login", userController.Login)
@@ -79,5 +80,14 @@ func Api() {
 		router.Post("/speaker/{id}/audio", speakerAudioController.UploadAudio)
 		router.Delete("/speaker/{id}/audio/{audioId}", speakerAudioController.DeleteAudio)
 		router.Post("/speaker/{id}/verify", speakerAudioController.VerifySpeaker)
+
+		// 实时会议管理接口。
+		router.Get("/meeting", meetingController.ListMeetings)
+		router.Post("/meeting", meetingController.CreateMeeting)
+		router.Get("/meeting/{id}", meetingController.GetMeeting)
+		router.Put("/meeting/{id}", meetingController.UpdateMeeting)
+		router.Delete("/meeting/{id}", meetingController.DeleteMeeting)
+		router.Post("/meeting/{id}/start", meetingController.StartMeeting)
+		router.Post("/meeting/{id}/finish", meetingController.FinishMeeting)
 	})
 }
