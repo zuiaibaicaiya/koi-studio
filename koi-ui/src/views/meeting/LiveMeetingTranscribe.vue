@@ -5,7 +5,7 @@ import { message, Modal } from 'antdv-next';
 import { useSpeakerStore, type Speaker } from '../../store/speaker';
 import { hotWordApi } from '../../services/hotWordApi';
 import type { HotWordDTO } from '../../services/hotWordApi';
-import { meetingApi } from '../../services/meetingApi';
+import { meetingApi, type MeetingDTO } from '../../services/meetingApi';
 import {
   AudioOutlined,
   PauseCircleOutlined,
@@ -37,14 +37,20 @@ interface Segment {
 // 会议配置（来自创建页 query）
 const meetingName = ref((route.query.name as string) || '未命名会议');
 const recordMode = ref<'mic' | 'system'>((route.query.recordMode as 'mic' | 'system') || 'mic');
-const participantNames = (route.query.participants as string)?.split(',').filter(Boolean) || [];
-const speakerIds = (route.query.speakers as string)?.split(',').filter(Boolean).map(Number) || [];
-const hotWordIds = (route.query.hotWords as string)?.split(',').filter(Boolean).map(Number) || [];
-const startTime = (route.query.startTime as string) || '';
-const endTime = (route.query.endTime as string) || '';
-const meetingId = (route.query.meetingId as string) || '';
+const participantNames = ref<string[]>(
+  (route.query.participants as string)?.split(',').filter(Boolean) || [],
+);
+const speakerIds = ref<number[]>(
+  (route.query.speakers as string)?.split(',').filter(Boolean).map(Number) || [],
+);
+const hotWordIds = ref<number[]>(
+  (route.query.hotWords as string)?.split(',').filter(Boolean).map(Number) || [],
+);
+const startTime = ref((route.query.startTime as string) || '');
+const endTime = ref((route.query.endTime as string) || '');
+const meetingId = computed(() => (route.query.meetingId as string) || '');
 const meetingTimeLabel = computed(() => {
-  if (!startTime) return '';
+  if (!startTime.value) return '';
   const fmt = (s: string) =>
     new Date(s).toLocaleString('zh-CN', {
       month: '2-digit',
@@ -52,12 +58,12 @@ const meetingTimeLabel = computed(() => {
       hour: '2-digit',
       minute: '2-digit',
     });
-  return endTime ? `${fmt(startTime)} ~ ${fmt(endTime)}` : fmt(startTime);
+  return endTime.value ? `${fmt(startTime.value)} ~ ${fmt(endTime.value)}` : fmt(startTime.value);
 });
 
-const participants = computed(() => participantNames);
+const participants = computed(() => participantNames.value);
 const speakers = computed<Speaker[]>(() =>
-  speakerIds.map((id) => speakerStore.getById(id)).filter((s): s is Speaker => !!s),
+  speakerIds.value.map((id) => speakerStore.getById(id)).filter((s): s is Speaker => !!s),
 );
 
 // 热词库：根据选中的库 id，通过热词库接口加载库及其热词
@@ -70,14 +76,14 @@ const selectedLibraries = ref<SelectedLibrary[]>([]);
 const hotWordLoading = ref(false);
 
 async function loadHotWords() {
-  if (hotWordIds.length === 0) {
+  if (hotWordIds.value.length === 0) {
     selectedLibraries.value = [];
     return;
   }
   hotWordLoading.value = true;
   try {
     const res = await hotWordApi.listLibraries({ pageSize: 1000 });
-    const chosen = res.items.filter((lib) => hotWordIds.includes(lib.id));
+    const chosen = res.items.filter((lib) => hotWordIds.value.includes(lib.id));
     const libs: SelectedLibrary[] = await Promise.all(
       chosen.map(async (lib) => {
         let words: HotWordDTO[] = [];
@@ -200,9 +206,9 @@ function stopMeeting() {
     onOk: async () => {
       running.value = false;
       stopTimer();
-      if (meetingId) {
+      if (meetingId.value) {
         try {
-          await meetingApi.finishMeeting(Number(meetingId));
+          await meetingApi.finishMeeting(Number(meetingId.value));
         } catch (err) {
           message.warning((err as Error)?.message || '标记会议结束失败');
         }
@@ -325,12 +331,41 @@ const elapsedText = computed(() => {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 });
 
+/** 从会议详情接口返回值填充页面状态。 */
+function applyMeetingData(meeting: MeetingDTO) {
+  meetingName.value = meeting.name || '未命名会议';
+  participantNames.value = meeting.participants?.split(',').filter(Boolean) || [];
+  speakerIds.value = meeting.speaker_ids?.split(',').filter(Boolean).map(Number) || [];
+  hotWordIds.value = meeting.hot_word_library_ids?.split(',').filter(Boolean).map(Number) || [];
+  startTime.value = meeting.start_time || '';
+  endTime.value = meeting.end_time || '';
+}
+
+/** 通过 meetingId 从后端获取会议详细信息。 */
+async function loadMeetingDetail() {
+  if (!meetingId.value) return;
+  try {
+    const meeting = await meetingApi.getMeeting(Number(meetingId.value));
+    applyMeetingData(meeting);
+  } catch (err) {
+    console.error('获取会议详情失败，使用 query 参数兜底:', err);
+  }
+}
+
 // 切换会议时重置
 watch(
   () => route.query,
   (q) => {
     meetingName.value = (q.name as string) || '未命名会议';
     recordMode.value = (q.recordMode as 'mic' | 'system') || 'mic';
+    participantNames.value =
+      (q.participants as string)?.split(',').filter(Boolean) || [];
+    speakerIds.value =
+      (q.speakers as string)?.split(',').filter(Boolean).map(Number) || [];
+    hotWordIds.value =
+      (q.hotWords as string)?.split(',').filter(Boolean).map(Number) || [];
+    startTime.value = (q.startTime as string) || '';
+    endTime.value = (q.endTime as string) || '';
     segments.value = [];
     elapsed.value = 0;
     segId = 0;
@@ -342,10 +377,12 @@ watch(
   },
 );
 
-onMounted(() => {
+onMounted(async () => {
   startTimer();
   // 加载说话人列表，供 getById 检索转写参与者
   speakerStore.load();
+  // 优先从后端 API 获取会议详情
+  await loadMeetingDetail();
   // 加载所选热词库及其热词
   loadHotWords();
   markMeetingOngoing();
@@ -353,9 +390,9 @@ onMounted(() => {
 
 /** 进入转写页即标记会议为进行中（实时会议）。 */
 function markMeetingOngoing() {
-  if (!meetingId) return;
+  if (!meetingId.value) return;
   meetingApi
-    .startMeeting(Number(meetingId))
+    .startMeeting(Number(meetingId.value))
     .catch((err) => message.warning((err as Error)?.message || '标记会议进行中失败'));
 }
 onBeforeUnmount(() => {
