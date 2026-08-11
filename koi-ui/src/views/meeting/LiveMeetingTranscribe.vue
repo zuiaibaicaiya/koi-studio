@@ -116,6 +116,8 @@ const hotWordSet = computed(() => new Set(hotWords.value.map((w) => w.word)));
 
 /** 转写会话是否已由用户主动开始 */
 const started = ref(false);
+/** 正在初始化：建立连接、等待模型就绪 */
+const starting = ref(false);
 /** 正在采集音频 */
 const recording = ref(false);
 /** 转写服务连接状态 */
@@ -494,13 +496,24 @@ function togglePause() {
  * 页面加载后不会自动调用，需用户点击「开始转写」按钮触发。
  */
 async function startTranscription() {
-  if (started.value) return;
-  started.value = true;
-  running.value = true;
-  startTimer();
-  markMeetingOngoing();
-  setupSocket();
-  await startCapture();
+  if (started.value || starting.value) return;
+  starting.value = true;
+  try {
+    started.value = true;
+    running.value = true;
+    startTimer();
+    markMeetingOngoing();
+    setupSocket();
+    await startCapture();
+  } catch (err) {
+    captureError.value = (err as Error)?.message || '启动转写失败';
+    message.error(captureError.value);
+    started.value = false;
+    running.value = false;
+    stopTimer();
+  } finally {
+    starting.value = false;
+  }
 }
 
 /**
@@ -677,6 +690,7 @@ const showInterim = computed(
 /** 顶部转写状态标签 */
 const statusTag = computed(() => {
   if (captureError.value) return { color: 'error', text: '采集异常' };
+  if (starting.value) return { color: 'processing', text: '准备中' };
   if (!started.value) return { color: 'default', text: '未开始' };
   if (!connected.value) return { color: 'warning', text: '连接中' };
   if (!recording.value) return { color: 'default', text: '未采集' };
@@ -805,20 +819,16 @@ onBeforeUnmount(() => {
           <template #icon><TagsOutlined /></template>
           热词库
         </a-button>
-        <a-button v-if="!started" type="primary" @click="startTranscription">
+        <a-button v-if="!started || starting" type="primary" :loading="starting" @click="startTranscription">
           <template #icon><PlayCircleOutlined /></template>
-          开始转写
+          {{ starting ? '正在准备…' : '开始转写' }}
         </a-button>
-        <template v-else>
+        <template v-if="started && !starting">
           <a-button :disabled="!recording" @click="togglePause">
             <template #icon>
               <component :is="running ? PauseCircleOutlined : PlayCircleOutlined" />
             </template>
             {{ running ? '暂停' : '继续' }}
-          </a-button>
-          <a-button v-if="!recording" type="primary" @click="startCapture">
-            <template #icon><AudioOutlined /></template>
-            重新采集
           </a-button>
           <a-button danger @click="stopMeeting"><StopOutlined />结束</a-button>
         </template>
@@ -1057,7 +1067,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  flex-wrap: wrap;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -1068,6 +1077,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-shrink: 1;
 }
 .back-btn {
   color: var(--color-text-secondary);
@@ -1096,7 +1107,7 @@ onBeforeUnmount(() => {
 .top-actions {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 .volume-meta {
   min-width: 72px;
