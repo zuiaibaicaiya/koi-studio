@@ -27,6 +27,22 @@ type Result struct {
 	// IsFinal 为 true 表示识别到句子端点，该文本已确定不再变化；
 	// 为 false 表示这是仍可能被修正的中间结果。
 	IsFinal bool `json:"isFinal"`
+	// StartMs 语句起始时间（毫秒，相对音频开头）。
+	StartMs int64 `json:"startMs"`
+	// EndMs 语句结束时间（毫秒，相对音频开头）。
+	EndMs int64 `json:"endMs"`
+	// SpeakerName 识别的说话人名称，未识别时为"未知说话人"。
+	SpeakerName string `json:"speakerName"`
+	// SpeakerID 识别的说话人ID，未识别时为 nil。
+	SpeakerID *uint `json:"speakerId"`
+	// SpeakerGender 说话人性別（male / female / unknown），仅在识别到说话人时填充。
+	SpeakerGender string `json:"speakerGender"`
+	// SpeakerDescription 说话人描述（如"技术部产品经理"），仅在识别到说话人时填充。
+	SpeakerDescription string `json:"speakerDescription"`
+	// MeetingID 关联的会议ID，未绑定会议时为 0。
+	MeetingID uint `json:"meetingId"`
+	// WordTimestamps 词级时间戳 JSON。
+	WordTimestamps string `json:"wordTimestamps"`
 }
 
 // Publisher 转写结果发布器契约。
@@ -43,9 +59,10 @@ type Publisher interface {
 // 会话结束时，转写服务把原始 PCM 临时文件交给归档器，由其负责转码落盘。
 // 默认实现通过 Goravel 队列异步执行，避免阻塞转写工作协程。
 type RecordingArchiver interface {
-	// Archive 归档指定客户端的录音临时文件。
+	// Archive 归档指定客户端的录音临时文件，并关联到会议。
+	// meetingID 为 0 表示未绑定会议（仅归档，不关联）。
 	// 实现负责在成功后删除临时文件；失败时应保留文件以便重试。
-	Archive(clientID, tempFile string) error
+	Archive(clientID, tempFile string, meetingID uint) error
 }
 
 // Transcriber 音频实时转写服务契约。

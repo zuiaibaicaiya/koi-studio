@@ -3,10 +3,12 @@
 // 设计要点：
 //   - 服务只依赖 app/contracts/audio 中的接口与注入的依赖，不感知 Socket.IO；
 //   - Socket.IO 事件协程只做「复制 + 入队」，解码在每个客户端专属协程中进行；
-//   - 转写结果通过 Publisher 发布，录音归档通过 RecordingArchiver 交给队列。
+//   - 转写结果通过 Publisher 发布，录音归档通过 RecordingArchiver 交给队列；
+//   - 每句结束后立即入库（meeting_transcripts），含相对时间戳与说话人信息。
 package audio
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,12 +17,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/goravel/framework/contracts/filesystem"
 	"github.com/goravel/framework/contracts/log"
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
 	contracts "koi-server/app/contracts/audio"
+	contractsspeaker "koi-server/app/contracts/speaker"
+	"koi-server/app/models"
+	"koi-server/app/services"
 )
 
 const (
@@ -48,6 +54,11 @@ type Dependencies struct {
 	Storage   filesystem.Driver
 	Publisher contracts.Publisher
 	Archiver  contracts.RecordingArchiver
+	// --- 新增依赖 ---
+	SessionMgr        *services.MeetingSessionManager
+	TranscriptService *services.MeetingTranscriptService
+	SpeakerService    *services.SpeakerService
+	Voiceprint        contractsspeaker.Voiceprint
 }
 
 // validate 校验依赖完整性。
@@ -242,9 +253,6 @@ func (s *Service) Hotwords() (string, float32) {
 }
 
 // CleanupInactive 回收空闲超时的会话。
-//
-// 只在读锁内挑选待回收会话，真正的收尾在锁外触发，
-// 避免在持锁状态下调用会重新加锁的清理逻辑而造成死锁。
 func (s *Service) CleanupInactive(timeout time.Duration) int {
 	if timeout <= 0 {
 		return 0
@@ -497,12 +505,18 @@ func (s *Service) consume(sess *session, data []byte) {
 		return
 	}
 
+	// 累计采样计数，用于相对时间戳计算。16bit PCM = 2 bytes per sample
+	sess.addSamples(len(data) / 2)
+
 	if sess.tempFile != nil {
 		// 不逐帧 fsync：由操作系统统一刷盘，显著降低高频写入的 I/O 开销。
 		if _, err := sess.tempFile.Write(data); err != nil {
 			s.deps.Log.Warning(fmt.Sprintf("audio: failed to write temp file for client %s: %v", sess.clientID, err))
 		}
 	}
+
+	// 缓冲当前语音段的 PCM，用于说话人识别。
+	sess.collectUtterancePCM(data)
 
 	sess.samples = PCMToSamples(data, sess.samples)
 	s.decode(sess)
@@ -521,11 +535,16 @@ func (s *Service) decode(sess *session) {
 			partial = sess.recognizer.GetResult(sess.stream).Text
 		}
 
+		// 文本出现时标记语音段起始。
+		if partial != "" {
+			sess.markUtteranceStart()
+		}
+
 		// 限流下发：文本无变化或距上次下发不足间隔时跳过。
 		if partial != "" && partial != sess.lastSentText && time.Since(sess.lastSentAt) > s.cfg.EmitInterval {
 			sess.lastSentText = partial
 			sess.lastSentAt = time.Now()
-			s.publish(sess.clientID, partial, false)
+			s.publishIntermediate(sess, partial)
 		}
 		sess.batch = 0
 	}
@@ -545,14 +564,233 @@ func (s *Service) decode(sess *session) {
 	}
 }
 
-// commitUtterance 输出一句已确定的文本并重置识别流。
+// commitUtterance 输出一句已确定的文本，同时执行说话人识别、入库存储、发布增强结果。
 func (s *Service) commitUtterance(sess *session) {
-	if text := sess.recognizer.GetResult(sess.stream).Text; text != "" {
-		sess.appendTranscript(text + " ")
-		s.publish(sess.clientID, text, true)
+	text := sess.recognizer.GetResult(sess.stream).Text
+	if text == "" {
+		sess.recognizer.Reset(sess.stream)
+		sess.resetUtterance()
+		sess.resetUtteranceTracking()
+		return
 	}
+
+	sess.markUtteranceStart()
+
+	// 1. 计算时间戳
+	startMs := sess.utteranceStartMs(s.cfg.SampleRate)
+	endMs := sess.commitEndMs(s.cfg.SampleRate)
+
+	// 2. 计算词级时间戳
+	wordTimestamps := computeWordTimestamps(text, startMs, endMs)
+	wordTimestampsJSON, _ := json.Marshal(wordTimestamps)
+
+	// 3. 说话人识别
+	speakerName, speakerID, speaker := s.identifySpeaker(sess)
+
+	// 4. 入库存储
+	s.storeTranscript(sess, text, startMs, endMs, string(wordTimestampsJSON), speakerName, speakerID)
+
+	// 5. 发布增强结果
+	s.publishFinalResult(sess, text, startMs, endMs, speakerName, speakerID, speaker, string(wordTimestampsJSON))
+
+	// 6. 单独推送说话人识别事件（客户端可据此更新说话人指示器）
+	s.publishSpeakerIdentified(sess, speakerName, speakerID, speaker)
+
+	// 7. 更新累积文本并重置状态
+	sess.appendTranscript(text + " ")
 	sess.recognizer.Reset(sess.stream)
 	sess.resetUtterance()
+	sess.resetUtteranceTracking()
+}
+
+// identifySpeaker 从当前语音段提取声纹并在会议选择的说话人中检索。
+//
+// 返回说话人名称、ID与完整模型；语音段过短、未绑定会议或无匹配时返回"未知说话人"。
+func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker) {
+	if !s.cfg.SpeakerIdentifyEnabled {
+		return "未知说话人", nil, nil
+	}
+
+	if s.deps.Voiceprint == nil || !s.deps.Voiceprint.Ready() {
+		return "未知说话人", nil, nil
+	}
+
+	// 获取会议上下文
+	if s.deps.SessionMgr == nil {
+		return "未知说话人", nil, nil
+	}
+	ctx := s.deps.SessionMgr.Context(sess.clientID)
+	if ctx == nil || len(ctx.SpeakerIDs) == 0 {
+		return "未知说话人", nil, nil
+	}
+
+	// 检查语音段时长是否足够
+	minDuration := s.cfg.SpeakerIdentifyMinDuration
+	if sess.utteranceDuration(s.cfg.SampleRate) < minDuration {
+		return "未知说话人", nil, nil
+	}
+
+	// 检查 PCM 缓冲是否超限
+	maxBufferDuration := s.cfg.SpeakerIdentifyMaxBuffer
+	if maxBufferDuration > 0 && sess.utteranceDuration(s.cfg.SampleRate) > maxBufferDuration {
+		return "未知说话人", nil, nil
+	}
+
+	// 取出当前语音段的 PCM 数据
+	pcmData := sess.flushUtterancePCM()
+	if len(pcmData) < 1600 { // < 100ms at 16kHz 16bit
+		return "未知说话人", nil, nil
+	}
+
+	// 转为 WAV 字节流
+	wavData, err := PCMToWAV(pcmData, s.cfg.SampleRate)
+	if err != nil {
+		s.deps.Log.Warning(fmt.Sprintf("audio: failed to convert utterance to WAV for speaker ID: %v", err))
+		return "未知说话人", nil, nil
+	}
+
+	// 提取声纹
+	feature, err := s.deps.Voiceprint.Extract(wavData)
+	if err != nil {
+		s.deps.Log.Debug(fmt.Sprintf("audio: voiceprint extraction failed for client %s: %v", sess.clientID, err))
+		return "未知说话人", nil, nil
+	}
+
+	// 1:N 检索
+	match, err := s.deps.Voiceprint.Search(feature.Vector, 0)
+	if err != nil || !match.Matched {
+		return "未知说话人", nil, nil
+	}
+
+	// 检查命中者是否在会议选择的说话人列表中
+	speaker, found := s.findSpeakerByName(match.Name, ctx.SpeakerIDs)
+	if !found {
+		return "未知说话人", nil, nil
+	}
+
+	return speaker.Name, &speaker.ID, &speaker
+}
+
+// findSpeakerByName 在会议选择的说话人列表中按名称查找说话人，返回完整模型。
+func (s *Service) findSpeakerByName(name string, speakerIDs []uint) (models.Speaker, bool) {
+	if s.deps.SpeakerService == nil {
+		return models.Speaker{}, false
+	}
+
+	for _, id := range speakerIDs {
+		speaker, err := s.deps.SpeakerService.GetSpeakerById(int(id))
+		if err != nil {
+			continue
+		}
+		if speaker.Name == name {
+			return speaker, true
+		}
+	}
+
+	return models.Speaker{}, false
+}
+
+// storeTranscript 将一条转写记录写入数据库。
+func (s *Service) storeTranscript(sess *session, text string, startMs, endMs int64, wordTimestampsJSON, speakerName string, speakerID *uint) {
+	if s.deps.TranscriptService == nil {
+		return
+	}
+
+	var meetingID uint
+	if s.deps.SessionMgr != nil {
+		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
+			meetingID = ctx.MeetingID
+		}
+	}
+
+	transcript := &models.MeetingTranscript{
+		MeetingID:      meetingID,
+		SpeakerID:      speakerID,
+		SpeakerName:    speakerName,
+		Text:           text,
+		StartMs:        startMs,
+		EndMs:          endMs,
+		WordTimestamps: wordTimestampsJSON,
+		IsFinal:        true,
+	}
+
+	if err := s.deps.TranscriptService.Create(transcript); err != nil {
+		s.deps.Log.Warning(fmt.Sprintf("audio: failed to store transcript for client %s: %v", sess.clientID, err))
+	}
+}
+
+// publishFinalResult 发布最终转写结果（含说话人与时间戳）。
+func (s *Service) publishFinalResult(sess *session, text string, startMs, endMs int64, speakerName string, speakerID *uint, speaker *models.Speaker, wordTimestampsJSON string) {
+	var meetingID uint
+	if s.deps.SessionMgr != nil {
+		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
+			meetingID = ctx.MeetingID
+		}
+	}
+
+	result := contracts.Result{
+		ClientID:       sess.clientID,
+		Text:           text,
+		IsFinal:        true,
+		StartMs:        startMs,
+		EndMs:          endMs,
+		SpeakerName:    speakerName,
+		SpeakerID:      speakerID,
+		MeetingID:      meetingID,
+		WordTimestamps: wordTimestampsJSON,
+	}
+
+	// 附上说话人详细信息（性别、描述等），供前端渲染说话人标签。
+	if speaker != nil {
+		result.SpeakerGender = speaker.Gender
+		result.SpeakerDescription = speaker.Description
+	}
+
+	s.deps.Publisher.Publish(result)
+}
+
+// publishSpeakerIdentified 单独推送说话人识别事件，用于前端更新说话人指示器。
+func (s *Service) publishSpeakerIdentified(sess *session, speakerName string, speakerID *uint, speaker *models.Speaker) {
+	if speakerName == "未知说话人" || speakerID == nil {
+		return
+	}
+
+	var meetingID uint
+	if s.deps.SessionMgr != nil {
+		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
+			meetingID = ctx.MeetingID
+		}
+	}
+
+	result := contracts.Result{
+		ClientID:    sess.clientID,
+		SpeakerName: speakerName,
+		SpeakerID:   speakerID,
+		MeetingID:   meetingID,
+	}
+	if speaker != nil {
+		result.SpeakerGender = speaker.Gender
+		result.SpeakerDescription = speaker.Description
+	}
+
+	s.deps.Publisher.Publish(result)
+}
+
+// publishIntermediate 发布中间（仍可能变化）的转写结果。
+func (s *Service) publishIntermediate(sess *session, text string) {
+	var meetingID uint
+	if s.deps.SessionMgr != nil {
+		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
+			meetingID = ctx.MeetingID
+		}
+	}
+
+	s.deps.Publisher.Publish(contracts.Result{
+		ClientID:  sess.clientID,
+		Text:      text,
+		IsFinal:   false,
+		MeetingID: meetingID,
+	})
 }
 
 // finalize 完成会话收尾：冲刷解码残留、移交录音归档、释放资源。
@@ -572,6 +810,14 @@ func (s *Service) finalize(sess *session) {
 		sess.appendTranscript(text)
 	}
 
+	// 获取 meetingID 用于归档
+	var meetingID uint
+	if s.deps.SessionMgr != nil {
+		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
+			meetingID = ctx.MeetingID
+		}
+	}
+
 	// 先移交临时文件所有权再释放会话，避免归档任务与资源回收争抢同一文件。
 	tempName := sess.tempName
 	sess.tempName = ""
@@ -580,7 +826,7 @@ func (s *Service) finalize(sess *session) {
 	if tempName == "" {
 		return
 	}
-	if err := s.deps.Archiver.Archive(sess.clientID, tempName); err != nil {
+	if err := s.deps.Archiver.Archive(sess.clientID, tempName, meetingID); err != nil {
 		s.deps.Log.Error(fmt.Sprintf("audio: failed to archive recording for client %s, temp file preserved: %v", sess.clientID, err))
 	}
 }
@@ -611,7 +857,7 @@ func (s *Service) discard(sess *session) {
 	}
 }
 
-// publish 发布一条转写结果。
+// publish 发布一条转写结果（保留用于现有代码兼容）。
 func (s *Service) publish(clientID, text string, isFinal bool) {
 	s.deps.Publisher.Publish(contracts.Result{
 		ClientID: clientID,
@@ -667,4 +913,111 @@ func (s *Service) cleanupOrphanedTempFiles() {
 		}
 		s.deps.Log.Info(fmt.Sprintf("audio: removed orphaned temp file %s", entry.Name()))
 	}
+}
+
+// --- 词级时间戳计算 ---
+
+// computeWordTimestamps 根据文本和起止毫秒偏移，估算每个词/字的起止时间。
+//
+// 中文按字均分，英文按空格分词均分。这是近似方案，精度 ±100ms。
+func computeWordTimestamps(text string, startMs, endMs int64) []models.WordTimestamp {
+	if text == "" || endMs <= startMs {
+		return nil
+	}
+
+	// 按规则分词
+	words := splitWords(text)
+	if len(words) == 0 {
+		return nil
+	}
+
+	totalDur := endMs - startMs
+	charTotal := 0
+	for _, w := range words {
+		charTotal += charCount(w)
+	}
+	if charTotal == 0 {
+		return nil
+	}
+
+	timestamps := make([]models.WordTimestamp, 0, len(words))
+	cursor := startMs
+
+	for _, w := range words {
+		wc := charCount(w)
+		if wc == 0 {
+			continue
+		}
+		dur := int64(float64(totalDur) * float64(wc) / float64(charTotal))
+		wordEnd := cursor + dur
+		if wordEnd > endMs {
+			wordEnd = endMs
+		}
+
+		timestamps = append(timestamps, models.WordTimestamp{
+			Word:    w,
+			StartMs: cursor,
+			EndMs:   wordEnd,
+		})
+		cursor = wordEnd
+	}
+
+	return timestamps
+}
+
+// splitWords 将文本分词（中文按字，英文按空格分词）。
+func splitWords(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+
+	// 检测是否包含中文字符
+	hasCJK := false
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			hasCJK = true
+			break
+		}
+	}
+
+	if hasCJK {
+		// 中文为主的文本，按字切分，英文单词作为整体
+		var words []string
+		var current strings.Builder
+		for _, r := range text {
+			if unicode.Is(unicode.Han, r) {
+				if current.Len() > 0 {
+					words = append(words, current.String())
+					current.Reset()
+				}
+				words = append(words, string(r))
+			} else if r == ' ' {
+				if current.Len() > 0 {
+					words = append(words, current.String())
+					current.Reset()
+				}
+				continue
+			} else {
+				current.WriteRune(r)
+			}
+		}
+		if current.Len() > 0 {
+			words = append(words, current.String())
+		}
+		return words
+	}
+
+	// 纯英文/数字文本，按空格分词
+	parts := strings.Fields(text)
+	return parts
+}
+
+// charCount 计算词中字符数。
+func charCount(word string) int {
+	count := 0
+	for range word {
+		count++
+	}
+	return count
 }

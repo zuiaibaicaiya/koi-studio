@@ -3,6 +3,9 @@ package api
 import (
 	"fmt"
 	"runtime/debug"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/contracts/log"
@@ -10,6 +13,7 @@ import (
 
 	"koi-server/app/broadcasting"
 	contractsaudio "koi-server/app/contracts/audio"
+	"koi-server/app/services"
 	"koi-server/packages/socketio/contracts"
 )
 
@@ -29,18 +33,36 @@ type socketHandler func(socket *socketiolib.Socket, args ...any) error
 // 控制器只做协议适配：解析入站参数、调用领域服务、回写响应；
 // 转写结果的下行由 events/listeners 完成，控制器不参与。
 type SocketioController struct {
-	socketio contracts.Socketio
-	audio    contractsaudio.Transcriber
-	log      log.Log
+	socketio          contracts.Socketio
+	audio             contractsaudio.Transcriber
+	log               log.Log
+	meetingService    *services.MeetingService
+	sessionMgr        *services.MeetingSessionManager
+	voiceprintSvc     *services.SpeakerVoiceprintService
+	hotWordService    *services.HotWordService
+	hotWordLibService *services.HotWordLibraryService
 }
 
 // NewSocketioController 通过依赖注入构造控制器。
-// 依赖在组合根（routes/api.go）中从容器解析，便于测试时替换为替身。
-func NewSocketioController(socketio contracts.Socketio, transcriber contractsaudio.Transcriber, logger log.Log) *SocketioController {
+func NewSocketioController(
+	socketio contracts.Socketio,
+	transcriber contractsaudio.Transcriber,
+	logger log.Log,
+	meetingService *services.MeetingService,
+	sessionMgr *services.MeetingSessionManager,
+	voiceprintSvc *services.SpeakerVoiceprintService,
+	hotWordService *services.HotWordService,
+	hotWordLibService *services.HotWordLibraryService,
+) *SocketioController {
 	return &SocketioController{
-		socketio: socketio,
-		audio:    transcriber,
-		log:      logger,
+		socketio:          socketio,
+		audio:             transcriber,
+		log:               logger,
+		meetingService:    meetingService,
+		sessionMgr:        sessionMgr,
+		voiceprintSvc:     voiceprintSvc,
+		hotWordService:    hotWordService,
+		hotWordLibService: hotWordLibService,
 	}
 }
 
@@ -77,6 +99,8 @@ func (r *SocketioController) handleConnection(socket *socketiolib.Socket, _ ...a
 	r.on(socket, broadcasting.EventMessage, r.handleMessage)
 	r.on(socket, broadcasting.EventSetHotwords, r.handleSetHotwords)
 	r.on(socket, broadcasting.EventGetHotwords, r.handleGetHotwords)
+	r.on(socket, broadcasting.EventJoinMeeting, r.handleJoinMeeting)
+	r.on(socket, broadcasting.EventLeaveMeeting, r.handleLeaveMeeting)
 	r.onDisconnect(socket, clientID, channel)
 
 	r.log.Info(fmt.Sprintf("socketio: client %s joined channel %s", clientID, channel))
@@ -85,7 +109,7 @@ func (r *SocketioController) handleConnection(socket *socketiolib.Socket, _ ...a
 	return nil
 }
 
-// onDisconnect 连接断开时释放会话并退出频道。
+// onDisconnect 连接断开时释放会话、退出频道、清理会议绑定。
 func (r *SocketioController) onDisconnect(socket *socketiolib.Socket, clientID, channel string) {
 	socket.On(broadcasting.EventDisconnect, func(args ...any) {
 		defer r.recoverHandler(broadcasting.EventDisconnect, clientID)
@@ -94,6 +118,9 @@ func (r *SocketioController) onDisconnect(socket *socketiolib.Socket, clientID, 
 
 		// 触发转写收尾：冲刷解码残留、归档录音、回收识别流与协程。
 		r.audio.Release(clientID)
+
+		// 清理会议绑定
+		r.sessionMgr.Unbind(clientID)
 
 		if err := r.socketio.LeaveRoom(socket, channel); err != nil {
 			r.log.Warning(fmt.Sprintf("socketio: failed to leave channel %s: %v", channel, err))
@@ -117,9 +144,6 @@ func (r *SocketioController) handleMessage(socket *socketiolib.Socket, args ...a
 }
 
 // handleAudioFrame 接收音频分片并交给转写服务。
-//
-// 该方法运行在 Socket.IO 事件循环上，必须保持轻量：
-// 仅做参数解析与入队，解码在转写服务的客户端专属协程中完成。
 func (r *SocketioController) handleAudioFrame(socket *socketiolib.Socket, args ...any) error {
 	if len(args) < 2 {
 		return fmt.Errorf("insufficient arguments for %s event", broadcasting.EventWithBinary)
@@ -163,7 +187,6 @@ func (r *SocketioController) handleSetHotwords(socket *socketiolib.Socket, args 
 		return fmt.Errorf("hotwords must be a string, got %T", args[0])
 	}
 
-	// 权重可选，缺省时由转写服务回落到配置中的默认值。
 	var score float32
 	if len(args) >= 2 {
 		switch v := args[1].(type) {
@@ -199,10 +222,182 @@ func (r *SocketioController) handleGetHotwords(socket *socketiolib.Socket, _ ...
 	return nil
 }
 
-// on 注册事件处理器，统一承担 panic 恢复、错误日志与错误回执。
+// handleJoinMeeting 客户端加入会议转写。
 //
-// 事件回调运行在库的内部协程中，未捕获的 panic 会直接终止整个进程，
-// 因此所有处理器都必须经过这一层包装。
+// 客户端发送 {meeting_id}，服务端加载会议信息，自动配置热词与说话人识别上下文。
+func (r *SocketioController) handleJoinMeeting(socket *socketiolib.Socket, args ...any) error {
+	clientID := string(socket.Id())
+
+	meetingID, err := r.parseMeetingID(args)
+	if err != nil {
+		r.emit(socket, broadcasting.EventError, fmt.Sprintf("Invalid meeting_id: %v", err))
+		return err
+	}
+
+	// 加载会议信息
+	meeting, err := r.meetingService.GetMeetingById(meetingID)
+	if err != nil {
+		r.emit(socket, broadcasting.EventError, "Meeting not found")
+		return fmt.Errorf("meeting %d not found: %w", meetingID, err)
+	}
+
+	// 解析说话人ID列表
+	speakerIDs := parseCommaSeparatedIDs(meeting.SpeakerIds)
+
+	// 解析热词库ID列表
+	hotWordLibIDs := parseCommaSeparatedIDs(meeting.HotWordLibraryIds)
+
+	// 构建会议上下文
+	ctx := &services.MeetingContext{
+		MeetingID:         meeting.ID,
+		SpeakerIDs:        speakerIDs,
+		HotWordLibraryIDs: hotWordLibIDs,
+		AudioStartTime:    time.Now(),
+	}
+
+	// 加载热词并应用到识别器
+	hotwordsStr := r.buildHotwordsString(hotWordLibIDs)
+	ctx.HotwordsStr = hotwordsStr
+	if hotwordsStr != "" {
+		if err := r.audio.SetHotwords(hotwordsStr, 0); err != nil {
+			r.log.Warning(fmt.Sprintf("socketio: failed to set hotwords for meeting %d: %v", meetingID, err))
+		}
+	}
+
+	// 预热说话人声纹库（确保会议选择的说话人在内存中）
+	if len(speakerIDs) > 0 {
+		if err := r.voiceprintSvc.Warmup(); err != nil {
+			r.log.Warning(fmt.Sprintf("socketio: voiceprint warmup failed: %v", err))
+		}
+	}
+
+	// 绑定客户端到会议
+	r.sessionMgr.Bind(clientID, ctx)
+
+	r.log.Info(fmt.Sprintf("socketio: client %s joined meeting %d (%s), speakers=%d, hotword_libs=%d",
+		clientID, meetingID, meeting.Name, len(speakerIDs), len(hotWordLibIDs)))
+
+	r.emit(socket, broadcasting.EventJoinMeetingResponse, map[string]any{
+		"meetingId":        meeting.ID,
+		"meetingName":      meeting.Name,
+		"speakerCount":     len(speakerIDs),
+		"hotwordLibCount":  len(hotWordLibIDs),
+		"hotwordsApplied":  hotwordsStr != "",
+	})
+	return nil
+}
+
+// handleLeaveMeeting 客户端离开会议转写。
+func (r *SocketioController) handleLeaveMeeting(socket *socketiolib.Socket, _ ...any) error {
+	clientID := string(socket.Id())
+	r.sessionMgr.Unbind(clientID)
+
+	r.log.Info(fmt.Sprintf("socketio: client %s left meeting", clientID))
+	r.emit(socket, broadcasting.EventLeaveMeeting, "left")
+	return nil
+}
+
+// parseMeetingID 从事件参数中解析会议ID。
+func (r *SocketioController) parseMeetingID(args []any) (int, error) {
+	if len(args) == 0 {
+		return 0, fmt.Errorf("missing meeting_id")
+	}
+
+	switch v := args[0].(type) {
+	case float64:
+		return int(v), nil
+	case int:
+		return v, nil
+	case string:
+		return strconv.Atoi(v)
+	case map[string]any:
+		if id, ok := v["meeting_id"]; ok {
+			switch idv := id.(type) {
+			case float64:
+				return int(idv), nil
+			case string:
+				return strconv.Atoi(idv)
+			case int:
+				return idv, nil
+			}
+		}
+		return 0, fmt.Errorf("meeting_id not found in object")
+	default:
+		return 0, fmt.Errorf("unexpected type for meeting_id: %T", v)
+	}
+}
+
+// buildHotwordsString 从指定的热词库ID列表中加载所有热词，格式化为 sherpa-onnx 格式。
+//
+// 输出格式：每行 "word weight"，行与行之间以 \n 分隔。
+func (r *SocketioController) buildHotwordsString(libraryIDs []uint) string {
+	if len(libraryIDs) == 0 {
+		return ""
+	}
+
+	var lines []string
+
+	for _, libID := range libraryIDs {
+		// 先获取热词库信息（验证是否存在）
+		library, err := r.hotWordLibService.GetLibraryById(int(libID))
+		if err != nil {
+			r.log.Warning(fmt.Sprintf("socketio: hotword library %d not found, skipping: %v", libID, err))
+			continue
+		}
+		_ = library
+
+		// 分页加载该库中的全部热词
+		page, pageSize := 1, 500
+		for {
+			words, total, err := r.hotWordService.GetHotWordList(libID, page, pageSize, "")
+			if err != nil {
+				r.log.Warning(fmt.Sprintf("socketio: failed to load hotwords from library %d: %v", libID, err))
+				break
+			}
+
+			for _, hw := range words {
+				weight := hw.Weight
+				if weight <= 0 {
+					weight = 10
+				}
+				lines = append(lines, fmt.Sprintf("%s %d", hw.Word, weight))
+			}
+
+			if int64(page*pageSize) >= total {
+				break
+			}
+			page++
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// parseCommaSeparatedIDs 解析逗号分隔的ID字符串为 uint 切片。
+func parseCommaSeparatedIDs(ids string) []uint {
+	if ids == "" {
+		return nil
+	}
+
+	parts := strings.Split(ids, ",")
+	result := make([]uint, 0, len(parts))
+
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(p, 10, 64)
+		if err != nil {
+			continue
+		}
+		result = append(result, uint(id))
+	}
+
+	return result
+}
+
+// on 注册事件处理器，统一承担 panic 恢复、错误日志与错误回执。
 func (r *SocketioController) on(socket *socketiolib.Socket, event string, handler socketHandler) {
 	clientID := string(socket.Id())
 

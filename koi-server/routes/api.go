@@ -6,6 +6,7 @@ import (
 	"koi-server/app/facades"
 	"koi-server/app/http/controllers/api"
 	"koi-server/app/http/middleware"
+	"koi-server/app/services"
 )
 
 // Api 注册 API 与实时通信路由。
@@ -13,10 +14,28 @@ import (
 // 这里同时充当组合根：从容器解析各项依赖并显式注入控制器，
 // 使控制器本身不依赖 facades，便于单元测试。
 func Api() {
+	// 解析共享依赖
+	sessionMgrRaw, err := facades.App().Make("meeting.session_manager")
+	if err != nil {
+		panic("Failed to resolve meeting session manager: " + err.Error())
+	}
+	sessionMgr := sessionMgrRaw.(*services.MeetingSessionManager)
+
+	meetingService := services.NewMeetingService()
+	transcriptService := services.NewMeetingTranscriptService()
+	hotWordService := services.NewHotWordService()
+	hotWordLibService := services.NewHotWordLibraryService()
+	speakerVoiceprintService := services.NewSpeakerVoiceprintService()
+
 	socketioController := api.NewSocketioController(
 		facades.Socketio(),
 		facades.Audio(),
 		facades.Log(),
+		meetingService,
+		sessionMgr,
+		speakerVoiceprintService,
+		hotWordService,
+		hotWordLibService,
 	)
 
 	// 注册 Socket.IO 事件处理器。
@@ -30,7 +49,7 @@ func Api() {
 	hotWordController := api.NewHotWordController()
 	speakerController := api.NewSpeakerController()
 	speakerAudioController := api.NewSpeakerAudioController()
-	meetingController := api.NewMeetingController()
+	meetingController := api.NewMeetingController(meetingService, transcriptService, sessionMgr)
 
 	// 登录和注册接口，无需认证。
 	facades.Route().Post("/api/user/login", userController.Login)
@@ -89,5 +108,7 @@ func Api() {
 		router.Delete("/meeting/{id}", meetingController.DeleteMeeting)
 		router.Post("/meeting/{id}/start", meetingController.StartMeeting)
 		router.Post("/meeting/{id}/finish", meetingController.FinishMeeting)
+		// 会议转写记录查询。
+		router.Get("/meeting/{id}/transcripts", meetingController.GetMeetingTranscripts)
 	})
 }

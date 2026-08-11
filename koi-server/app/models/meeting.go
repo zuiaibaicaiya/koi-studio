@@ -31,6 +31,8 @@ type Meeting struct {
 	EndTime time.Time `json:"end_time" gorm:"column:end_time" example:"2026-08-10 10:00:00"`
 	// Status 会议状态：created-已创建，ongoing-进行中，finished-已结束
 	Status string `json:"status" gorm:"column:status" example:"created"`
+	// AudioFilePath 会议录音文件路径，会议结束后由归档任务写入
+	AudioFilePath string `json:"audio_file_path" gorm:"column:audio_file_path"`
 	// CreatedBy 创建人ID，关联 users 表
 	CreatedBy uint `json:"created_by" gorm:"column:created_by" example:"1"`
 }

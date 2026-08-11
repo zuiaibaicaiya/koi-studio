@@ -12,6 +12,7 @@ import (
 	"koi-server/app/events"
 	"koi-server/app/facades"
 	"koi-server/app/jobs"
+	"koi-server/app/services"
 	"koi-server/app/services/audio"
 )
 
@@ -29,12 +30,26 @@ func (r *AudioServiceProvider) Register(app foundation.Application) {
 	app.Singleton(contractsaudio.Binding, func(app foundation.Application) (any, error) {
 		config := audio.NewConfig(app.MakeConfig())
 
+		sessionMgrRaw, err := app.Make("meeting.session_manager")
+		if err != nil {
+			return nil, fmt.Errorf("audio: failed to resolve session manager: %w", err)
+		}
+
 		return audio.NewService(config, audio.Dependencies{
-			Log:       app.MakeLog(),
-			Storage:   app.MakeStorage().Disk(config.Disk),
-			Publisher: &eventPublisher{},
-			Archiver:  &queueArchiver{},
+			Log:               app.MakeLog(),
+			Storage:           app.MakeStorage().Disk(config.Disk),
+			Publisher:         &eventPublisher{},
+			Archiver:          &queueArchiver{},
+			SessionMgr:        sessionMgrRaw.(*services.MeetingSessionManager),
+			TranscriptService: services.NewMeetingTranscriptService(),
+			SpeakerService:    services.NewSpeakerService(),
+			Voiceprint:        facades.Speaker(),
 		})
+	})
+
+	// 注册 MeetingSessionManager 为单例，使转写服务与控制器共享同一实例
+	app.Singleton("meeting.session_manager", func(app foundation.Application) (any, error) {
+		return services.NewMeetingSessionManager(), nil
 	})
 }
 
@@ -53,13 +68,22 @@ type eventPublisher struct{}
 
 var _ contractsaudio.Publisher = (*eventPublisher)(nil)
 
-// Publish 派发 TranscriptGenerated 事件。
+// Publish 派发 TranscriptGenerated 事件（含说话人与时间戳）。
 func (p *eventPublisher) Publish(result contractsaudio.Result) {
-	err := facades.Event().Job(&events.TranscriptGenerated{}, []event.Arg{
+	args := []event.Arg{
 		{Type: "string", Value: result.ClientID},
 		{Type: "string", Value: result.Text},
 		{Type: "bool", Value: result.IsFinal},
-	}).Dispatch()
+		{Type: "int64", Value: result.StartMs},
+		{Type: "int64", Value: result.EndMs},
+		{Type: "string", Value: result.SpeakerName},
+		{Type: "uintptr", Value: result.SpeakerID},
+		{Type: "uint", Value: result.MeetingID},
+		{Type: "string", Value: result.WordTimestamps},
+		{Type: "string", Value: result.SpeakerGender},
+		{Type: "string", Value: result.SpeakerDescription},
+	}
+	err := facades.Event().Job(&events.TranscriptGenerated{}, args).Dispatch()
 	if err != nil {
 		facades.Log().Error(fmt.Sprintf("audio: failed to dispatch transcript event for client %s: %v", result.ClientID, err))
 	}
@@ -70,16 +94,17 @@ type queueArchiver struct{}
 
 var _ contractsaudio.RecordingArchiver = (*queueArchiver)(nil)
 
-// Archive 派发 ArchiveRecording 任务。
+// Archive 派发 ArchiveRecording 任务，携带可选的 meetingID。
 //
 // 连接与队列名可通过 audio.storage.connection / audio.storage.queue 配置，
 // 留空时使用 queue.default 指定的默认连接。
-func (a *queueArchiver) Archive(clientID, tempFile string) error {
+func (a *queueArchiver) Archive(clientID, tempFile string, meetingID uint) error {
 	config := facades.Config()
 
 	pending := facades.Queue().Job(&jobs.ArchiveRecording{}, []queue.Arg{
 		{Type: "string", Value: clientID},
 		{Type: "string", Value: tempFile},
+		{Type: "uint", Value: meetingID},
 	})
 
 	if connection := config.GetString("audio.storage.connection"); connection != "" {

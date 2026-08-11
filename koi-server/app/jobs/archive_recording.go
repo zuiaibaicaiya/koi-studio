@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"koi-server/app/facades"
+	"koi-server/app/models"
 	"koi-server/app/services/audio"
 )
 
@@ -25,10 +26,10 @@ func (r *ArchiveRecording) Signature() string {
 
 // Handle 执行归档。
 //
-// 参数约定：args[0] string 客户端 ID，args[1] string 临时文件名。
+// 参数约定：args[0] string 客户端 ID，args[1] string 临时文件名，args[2] uint meetingID（可选，0 表示不关联会议）。
 func (r *ArchiveRecording) Handle(args ...any) error {
 	if len(args) < 2 {
-		return fmt.Errorf("archive recording: expected 2 arguments, got %d", len(args))
+		return fmt.Errorf("archive recording: expected at least 2 arguments, got %d", len(args))
 	}
 
 	clientID, ok := args[0].(string)
@@ -41,6 +42,19 @@ func (r *ArchiveRecording) Handle(args ...any) error {
 	}
 	if err := validTempName(tempName); err != nil {
 		return err
+	}
+
+	// 可选参数：会议ID
+	var meetingID uint
+	if len(args) >= 3 {
+		switch v := args[2].(type) {
+		case uint:
+			meetingID = v
+		case int:
+			meetingID = uint(v)
+		case int64:
+			meetingID = uint(v)
+		}
 	}
 
 	config := facades.Config()
@@ -73,6 +87,19 @@ func (r *ArchiveRecording) Handle(args ...any) error {
 	}
 
 	facades.Log().Info(fmt.Sprintf("archive recording: saved %s (%d bytes)", filename, len(wav)))
+
+	// 关联会议：若提供了 meetingID，更新会议记录中的音频文件路径
+	if meetingID > 0 {
+		if _, err := facades.Orm().Query().
+			Model(&models.Meeting{}).
+			Where("id = ?", meetingID).
+			Update("audio_file_path", filename); err != nil {
+			facades.Log().Warning(fmt.Sprintf("archive recording: failed to update meeting %d audio_file_path: %v", meetingID, err))
+		} else {
+			facades.Log().Info(fmt.Sprintf("archive recording: linked %s to meeting %d", filename, meetingID))
+		}
+	}
+
 	return removeTemp(tempPath)
 }
 

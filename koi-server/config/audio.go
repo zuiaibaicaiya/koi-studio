@@ -81,5 +81,17 @@ func init() {
 			// 会话空闲超过该分钟数即被回收。
 			"idle_timeout": config.Env("AUDIO_IDLE_TIMEOUT", 10),
 		},
+
+		// Speaker Identification
+		//
+		// 实时转写中的说话人识别参数。在每句结束后提取声纹做 1:N 检索。
+		"speaker_identify": map[string]any{
+			// 是否启用说话人识别。
+			"enabled": config.Env("AUDIO_SPEAKER_IDENTIFY_ENABLED", true),
+			// 语音段最短时长（秒），过短时说话人识别准确率低，跳过识别。
+			"min_duration": config.Env("AUDIO_SPEAKER_MIN_DURATION", 1.0),
+			// PCM 缓冲区最大时长（秒），超限时放弃识别仅入库文本。
+			"max_buffer_duration": config.Env("AUDIO_SPEAKER_MAX_BUFFER_DURATION", 30),
+		},
 	})
 }

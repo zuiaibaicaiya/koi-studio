@@ -10,3 +10,4 @@ models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
 forge
 *.sqlite
 *.onnx
+*.wav

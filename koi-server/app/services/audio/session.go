@@ -47,6 +47,20 @@ type session struct {
 	transcript string
 	activity   time.Time
 	pending    *sherpa.OnlineRecognizer
+
+	// --- 时间戳追踪（仅工作协程访问，无需加锁）---
+	// totalSamples 自会话开始累计的 PCM 采样数（用于计算相对时间）。
+	totalSamples int64
+	// utteranceStart 当前语音段的起始采样位置。
+	utteranceStart int64
+	// lastCommitEnd 上一次提交结束的采样位置。
+	lastCommitEnd int64
+	// utteranceHasText 当前语音段是否已有文本内容。
+	utteranceHasText bool
+
+	// --- 说话人识别（仅工作协程访问，无需加锁）---
+	// utterancePCM 当前语音段的原始 PCM 缓冲（16bit 小端），用于说话人识别。
+	utterancePCM []byte
 }
 
 // newSession 创建会话，队列容量由配置决定。
@@ -126,4 +140,71 @@ func (s *session) requestStop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 	})
+}
+
+// --- 时间戳追踪 ---
+
+// addSamples 累计采样计数。
+func (s *session) addSamples(n int) {
+	s.totalSamples += int64(n)
+}
+
+// currentOffsetMs 返回当前时间偏移（毫秒），基于累计采样数和采样率。
+func (s *session) currentOffsetMs(sampleRate int) int64 {
+	if sampleRate <= 0 {
+		return 0
+	}
+	return s.totalSamples * 1000 / int64(sampleRate)
+}
+
+// markUtteranceStart 标记当前语音段起始采样位置。
+func (s *session) markUtteranceStart() {
+	if !s.utteranceHasText {
+		s.utteranceStart = s.totalSamples
+		s.utteranceHasText = true
+	}
+}
+
+// utteranceStartMs 返回当前语音段起始时间的毫秒偏移。
+func (s *session) utteranceStartMs(sampleRate int) int64 {
+	if sampleRate <= 0 {
+		return 0
+	}
+	return s.utteranceStart * 1000 / int64(sampleRate)
+}
+
+// commitEndMs 返回当前语音段结束时间的毫秒偏移。
+func (s *session) commitEndMs(sampleRate int) int64 {
+	return s.currentOffsetMs(sampleRate)
+}
+
+// resetUtteranceTracking 重置单个语音段的追踪状态。
+func (s *session) resetUtteranceTracking() {
+	s.utteranceStart = s.totalSamples
+	s.lastCommitEnd = s.totalSamples
+	s.utteranceHasText = false
+	s.utterancePCM = s.utterancePCM[:0]
+}
+
+// --- 说话人识别 PCM 缓冲 ---
+
+// collectUtterancePCM 积累当前语音段的 PCM 数据。
+func (s *session) collectUtterancePCM(data []byte) {
+	s.utterancePCM = append(s.utterancePCM, data...)
+}
+
+// flushUtterancePCM 取出并清空当前语音段的 PCM 缓冲区。
+func (s *session) flushUtterancePCM() []byte {
+	data := s.utterancePCM
+	s.utterancePCM = nil
+	return data
+}
+
+// utteranceDuration 返回当前缓冲的语音段时长（秒）。
+func (s *session) utteranceDuration(sampleRate int) float64 {
+	if sampleRate <= 0 {
+		return 0
+	}
+	// 16bit PCM: 每个采样占 2 字节
+	return float64(len(s.utterancePCM)/2) / float64(sampleRate)
 }

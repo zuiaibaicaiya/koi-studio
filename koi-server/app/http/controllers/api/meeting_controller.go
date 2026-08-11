@@ -1,6 +1,8 @@
 package api
 
 import (
+	"time"
+
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
 
@@ -12,13 +14,21 @@ import (
 // MeetingController 实时会议控制器
 type MeetingController struct {
 	BaseController
-	meetingService *services.MeetingService
+	meetingService          *services.MeetingService
+	transcriptService       *services.MeetingTranscriptService
+	sessionMgr              *services.MeetingSessionManager
 }
 
 // NewMeetingController 创建控制器实例
-func NewMeetingController() *MeetingController {
+func NewMeetingController(
+	meetingService *services.MeetingService,
+	transcriptService *services.MeetingTranscriptService,
+	sessionMgr *services.MeetingSessionManager,
+) *MeetingController {
 	return &MeetingController{
-		meetingService: services.NewMeetingService(),
+		meetingService:    meetingService,
+		transcriptService: transcriptService,
+		sessionMgr:        sessionMgr,
 	}
 }
 
@@ -72,14 +82,25 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
 	}
 
-	startTime, perr := services.ParseMeetingTime(req.StartTime)
-	if perr != nil {
-		return ctrl.ApiErrorMsg(ctx, perr.Error())
+	now := time.Now()
+	startTime := now
+	endTime := now.Add(1 * time.Hour)
+
+	if req.StartTime != "" {
+		parsed, perr := services.ParseMeetingTime(req.StartTime)
+		if perr != nil {
+			return ctrl.ApiErrorMsg(ctx, perr.Error())
+		}
+		startTime = parsed
 	}
-	endTime, perr := services.ParseMeetingTime(req.EndTime)
-	if perr != nil {
-		return ctrl.ApiErrorMsg(ctx, perr.Error())
+	if req.EndTime != "" {
+		parsed, perr := services.ParseMeetingTime(req.EndTime)
+		if perr != nil {
+			return ctrl.ApiErrorMsg(ctx, perr.Error())
+		}
+		endTime = parsed
 	}
+
 	if !endTime.After(startTime) {
 		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
 	}
@@ -211,7 +232,7 @@ func (ctrl *MeetingController) StartMeeting(ctx http.Context) http.Response {
 	return ctrl.ApiSuccess(ctx, nil)
 }
 
-// FinishMeeting 结束会议（标记为已结束）
+// FinishMeeting 结束会议（标记为已结束，释放所有活跃的转写会话）
 // @Route POST /meeting/{id}/finish
 func (ctrl *MeetingController) FinishMeeting(ctx http.Context) http.Response {
 	id := ctx.Request().RouteInt("id")
@@ -223,10 +244,47 @@ func (ctrl *MeetingController) FinishMeeting(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "会议不存在")
 	}
 
+	// 查找该会议的所有活跃客户端并释放会话
+	for _, clientID := range ctrl.sessionMgr.ClientsByMeetingID(uint(id)) {
+		// 通过 facade 获取 transcriber 释放会话
+		ctrl.sessionMgr.Unbind(clientID)
+	}
+
 	if err := ctrl.meetingService.SetMeetingStatus(id, models.MeetingStatusFinished); err != nil {
 		facades.Log().WithContext(ctx).Error("结束会议失败: " + err.Error())
 		return ctrl.ApiErrorMsg(ctx, "结束会议失败")
 	}
 
 	return ctrl.ApiSuccess(ctx, nil)
+}
+
+// GetMeetingTranscripts 分页查询会议转写记录
+// @Route GET /meeting/{id}/transcripts
+func (ctrl *MeetingController) GetMeetingTranscripts(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	// 验证会议存在
+	if _, err := ctrl.meetingService.GetMeetingById(id); err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+
+	page := ctx.Request().QueryInt("page", 1)
+	pageSize := ctx.Request().QueryInt("pageSize", 50)
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 50
+	}
+
+	transcripts, total, err := ctrl.transcriptService.GetByMeetingID(uint(id), page, pageSize)
+	if err != nil {
+		facades.Log().WithContext(ctx).Error("查询转写记录失败: " + err.Error())
+		return ctrl.ApiErrorMsg(ctx, "查询转写记录失败")
+	}
+
+	return ctrl.ApiPaginate(ctx, transcripts, total, page, pageSize)
 }

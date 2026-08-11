@@ -45,6 +45,11 @@ type Config struct {
 
 	// 存储
 	Disk string
+
+	// 说话人识别
+	SpeakerIdentifyEnabled      bool
+	SpeakerIdentifyMinDuration  float64
+	SpeakerIdentifyMaxBuffer    float64
 }
 
 // NewConfig 从 config/audio.go 读取配置并归一化。
@@ -77,6 +82,10 @@ func NewConfig(cfg config.Config) Config {
 		HotwordsScore: cast.ToFloat32(cfg.Get("audio.hotwords.score", 2.0)),
 
 		Disk: cfg.GetString("audio.storage.disk", "audio"),
+
+		SpeakerIdentifyEnabled:     cfg.GetBool("audio.speaker_identify.enabled", true),
+		SpeakerIdentifyMinDuration: cast.ToFloat64(cfg.Get("audio.speaker_identify.min_duration", 1.0)),
+		SpeakerIdentifyMaxBuffer:   cast.ToFloat64(cfg.Get("audio.speaker_identify.max_buffer_duration", 30)),
 	}
 
 	return c.normalized()

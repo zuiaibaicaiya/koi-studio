@@ -25,6 +25,10 @@ const (
 	EventSetHotwords = "set-hotwords"
 	// EventGetHotwords 查询当前热词。
 	EventGetHotwords = "get-hotwords"
+	// EventJoinMeeting 客户端加入会议转写，参数 {meeting_id}。
+	EventJoinMeeting = "join-meeting"
+	// EventLeaveMeeting 客户端离开会议转写。
+	EventLeaveMeeting = "leave-meeting"
 )
 
 // 出站事件（服务端 -> 客户端）。
@@ -35,14 +39,20 @@ const (
 	EventHelloResponse = "hello-response"
 	// EventWithBinaryResponse 音频分片接收确认。
 	EventWithBinaryResponse = "with-binary-response"
-	// EventTranscript 实时转写结果，负载为 {text, isFinal}。
-	EventTranscript = "transcript"
 	// EventHotwordsSet 热词设置成功，负载为 {hotwords, score}。
 	EventHotwordsSet = "hotwords-set"
 	// EventHotwordsData 热词查询结果，负载为 {hotwords, score}。
 	EventHotwordsData = "hotwords-data"
 	// EventHotwordsError 热词相关错误。
 	EventHotwordsError = "hotwords-error"
+	// EventTranscript 实时转写结果，负载为 {text, isFinal}（保留兼容）。
+	EventTranscript = "transcript"
+	// EventTranscriptEnhanced 增强版转写结果，含说话人、时间戳。
+	EventTranscriptEnhanced = "transcript-enhanced"
+	// EventSpeakerIdentified 说话人识别结果通知。
+	EventSpeakerIdentified = "speaker-identified"
+	// EventJoinMeetingResponse 加入会议响应。
+	EventJoinMeetingResponse = "join-meeting-response"
 	// EventError 通用错误通知。
 	EventError = "error"
 )

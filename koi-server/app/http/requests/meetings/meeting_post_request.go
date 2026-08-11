@@ -26,20 +26,19 @@ func (r *MeetingPostRequest) Authorize(ctx http.Context) error {
 
 func (r *MeetingPostRequest) Filters(ctx http.Context) map[string]any {
 	return map[string]any{
-		"name":         "trim",
-		"participants": "trim",
-		"speaker_ids":  "trim",
+		"name":                  "trim",
+		"participants":          "trim",
+		"speaker_ids":           "trim",
+		"hot_word_library_ids":  "trim",
 	}
 }
 
 func (r *MeetingPostRequest) Rules(ctx http.Context) map[string]any {
 	return map[string]any{
-		"name":               "required|max_len:100",
-		"participants":       "max_len:500",
-		"speaker_ids":        "max_len:500",
-		"hot_word_library_ids": "max_len:500",
-		"start_time":         "required",
-		"end_time":           "required",
+		"name":                  "required|max_len:100",
+		"participants":          "max_len:500",
+		"speaker_ids":           "max_len:500",
+		"hot_word_library_ids":  "max_len:500",
 	}
 }
 
@@ -48,8 +47,6 @@ func (r *MeetingPostRequest) Messages(ctx http.Context) map[string]string {
 		"name.required":       ":attribute不可以为空",
 		"name.max_len":        ":attribute长度最多%d位",
 		"participants.max_len": ":attribute长度最多%d位",
-		"start_time.required": ":attribute不可以为空",
-		"end_time.required":   ":attribute不可以为空",
 	}
 }
 
