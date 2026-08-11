@@ -40,7 +40,7 @@ func init() {
 			// 中间结果最小下发间隔（毫秒），用于限流，降低网络开销。
 			"emit_interval": config.Env("AUDIO_EMIT_INTERVAL", 200),
 			// 单句最长时长（秒），超过后强制断句，防止长时间无端点导致结果不下发。
-			"max_utterance": config.Env("AUDIO_MAX_UTTERANCE", 20),
+			"max_utterance": config.Env("AUDIO_MAX_UTTERANCE", 30),
 		},
 
 		// Endpoint Detection
@@ -49,11 +49,12 @@ func init() {
 		"endpoint": map[string]any{
 			"enable": config.Env("AUDIO_ENDPOINT_ENABLE", true),
 			// 检测到尾部静音超过该秒数且已识别出内容时断句。
-			"rule1_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE1", 0.5),
+			// 设得稍长以避免正常说话中的自然停顿被误判为断句。
+			"rule1_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE1", 1.5),
 			// 检测到尾部静音超过该秒数（无论是否识别出内容）时断句。
-			"rule2_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE2", 1.0),
+			"rule2_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE2", 2.5),
 			// 语音段超过该秒数时强制断句。
-			"rule3_min_utterance_length": config.Env("AUDIO_ENDPOINT_RULE3", 15.0),
+			"rule3_min_utterance_length": config.Env("AUDIO_ENDPOINT_RULE3", 30.0),
 		},
 
 		// Hotwords
