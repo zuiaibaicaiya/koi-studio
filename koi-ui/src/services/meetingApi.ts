@@ -21,8 +21,8 @@ export interface CreateMeetingPayload {
   participants?: string;
   speaker_ids?: string;
   hot_word_library_ids?: string;
-  start_time: string;
-  end_time: string;
+  start_time?: string;
+  end_time?: string;
 }
 
 /** 更新实时会议请求体（见 MeetingUpdateRequest）。 */

@@ -181,20 +181,23 @@ async function handleStart() {
 
   submitting.value = true;
   try {
-    const payload = {
+    const payload: {
+      name: string;
+      participants: string;
+      speaker_ids: string;
+      hot_word_library_ids: string;
+      start_time?: string;
+      end_time?: string;
+    } = {
       name: formState.name.trim(),
       participants: selectedParticipants.value.join('、'),
       speaker_ids: formState.speakers.join(','),
       hot_word_library_ids: formState.hotWords.join(','),
-      start_time:
-        formState.meetingTime.length === 2
-          ? formState.meetingTime[0].format('YYYY-MM-DD HH:mm:ss')
-          : undefined,
-      end_time:
-        formState.meetingTime.length === 2
-          ? formState.meetingTime[1].format('YYYY-MM-DD HH:mm:ss')
-          : undefined,
-    } as const;
+    };
+    if (formState.meetingTime.length === 2) {
+      payload.start_time = formState.meetingTime[0].format('YYYY-MM-DD HH:mm:ss');
+      payload.end_time = formState.meetingTime[1].format('YYYY-MM-DD HH:mm:ss');
+    }
 
     const meeting = await meetingApi.createMeeting(payload);
 

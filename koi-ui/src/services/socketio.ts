@@ -11,6 +11,14 @@ const SOCKET_URL =
 /** 事件回调：参数类型由具体调用方声明 */
 export type SocketHandler<T extends unknown[] = unknown[]> = (...args: T) => void;
 
+/** 后端推送的说话人子对象 */
+export interface SpeakerBrief {
+  name?: string;
+  id?: number;
+  gender?: string;
+  description?: string;
+}
+
 /** 后端推送的转写结果（兼容驼峰 / 下划线两种字段风格） */
 export interface TranscriptPayload {
   text?: string;
@@ -21,7 +29,8 @@ export interface TranscriptPayload {
   speaker_id?: number | string;
   /** 说话人名称，后端已完成声纹匹配时下发 */
   speakerName?: string;
-  speaker?: string;
+  /** speaker 在后端新版协议中是嵌套对象 {name, id, ...}，旧版是纯字符串 */
+  speaker?: string | SpeakerBrief;
 }
 
 /**

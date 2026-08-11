@@ -306,23 +306,44 @@ function closeAudioContext() {
 
 /** 将后端下发的说话人信息映射到本地说话人库 */
 function resolveSpeaker(payload: TranscriptPayload): { id: number; name: string } {
-  const rawId = payload.speakerId ?? payload.speaker_id;
+  // 规范化 speaker 字段：后端新版协议下 speaker 为嵌套对象 {name, id, ...}
+  const speakerObj = typeof payload.speaker === 'object' && payload.speaker !== null
+    ? payload.speaker
+    : null;
+  const speakerName: string | undefined =
+    payload.speakerName ||
+    (speakerObj ? speakerObj.name : undefined) ||
+    (typeof payload.speaker === 'string' ? payload.speaker : undefined);
+  const speakerObjId = speakerObj?.id != null ? Number(speakerObj.id) : undefined;
+
+  // 优先使用 speaker 对象中的 id，其次使用顶层 speakerId / speaker_id
+  const rawId = speakerObjId ?? payload.speakerId ?? payload.speaker_id;
   if (rawId !== undefined && rawId !== null && rawId !== '') {
     const id = Number(rawId);
     if (!Number.isNaN(id)) {
       const matched = speakers.value.find((s) => s.id === id) ?? speakerStore.getById(id);
       if (matched) return { id: matched.id, name: matched.name };
-      return { id, name: payload.speakerName || payload.speaker || `说话人 ${id}` };
+      return { id, name: speakerName || `说话人 ${id}` };
     }
   }
 
-  const name = payload.speakerName || payload.speaker;
-  if (name) {
-    const matched = speakers.value.find((s) => s.name === name);
-    return matched ? { id: matched.id, name: matched.name } : { id: -1, name };
+  // 后端显式下发了 speaker 对象 → 后端已做声纹识别，必须尊重其结果
+  // 无 id 的 speaker 对象（如 {name: "未知说话人"}）意味着未匹配到已知说话人，
+  // 不应跳过此结果进入客户端的"配置仅一位→归给该人"兜底逻辑
+  if (speakerObj) {
+    if (speakerName && speakerName !== '未知说话人') {
+      const matched = speakers.value.find((s) => s.name === speakerName);
+      return matched ? { id: matched.id, name: matched.name } : { id: -1, name: speakerName };
+    }
+    return { id: -1, name: '未知说话人' };
   }
 
-  // 后端未做说话人分离：仅配置一位说话人时归属该人
+  if (speakerName && speakerName !== '未知说话人') {
+    const matched = speakers.value.find((s) => s.name === speakerName);
+    return matched ? { id: matched.id, name: matched.name } : { id: -1, name: speakerName };
+  }
+
+  // 后端未做说话人分离或识别失败：仅配置一位说话人时归属该人
   if (speakers.value.length === 1) {
     return { id: speakers.value[0].id, name: speakers.value[0].name };
   }
@@ -354,14 +375,25 @@ function handleTranscript(payload: TranscriptPayload) {
     scrollToBottom();
   } else {
     interimText.value = text;
-    interimSpeakerId.value = speaker.id;
-    interimSpeakerName.value = speaker.name;
+    // 中间结果：后端只下发 text + isFinal，不包含 speaker 信息（此时
+    // 说话人识别尚未完成）。仅当后端显式提供了 speaker 时才更新说话人，
+    // 避免客户端猜测覆盖正确的说话人显示。
+    if (payload.speaker != null || payload.speakerName || payload.speakerId) {
+      interimSpeakerId.value = speaker.id;
+      interimSpeakerName.value = speaker.name;
+    } else if (!interimSpeakerName.value) {
+      interimSpeakerName.value = '识别中…';
+    }
     scrollToBottom();
   }
 }
 
 function handleConnect() {
   connected.value = true;
+  // 通知后端当前客户端所属会议，触发声纹预热、热词加载、session 绑定
+  if (meetingId.value) {
+    socketioService.emit('join-meeting', { meeting_id: Number(meetingId.value) });
+  }
 }
 
 function handleDisconnect(reason: string) {
