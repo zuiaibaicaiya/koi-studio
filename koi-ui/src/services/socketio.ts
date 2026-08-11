@@ -31,6 +31,12 @@ export interface TranscriptPayload {
   speakerName?: string;
   /** speaker 在后端新版协议中是嵌套对象 {name, id, ...}，旧版是纯字符串 */
   speaker?: string | SpeakerBrief;
+  /** 语音段起始毫秒（相对音频开头），仅最终结果携带 */
+  startMs?: number;
+  start_ms?: number;
+  /** 语音段结束毫秒（相对音频开头），仅最终结果携带 */
+  endMs?: number;
+  end_ms?: number;
 }
 
 /**

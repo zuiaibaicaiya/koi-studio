@@ -137,6 +137,22 @@ function nowTime(base?: Date) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
+/** 毫秒时间戳 → 相对音频开头的偏移（支持天/小时） */
+function formatTimestamp(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const remain = totalSeconds % 86400;
+  const hours = Math.floor(remain / 3600);
+  const minutes = Math.floor((remain % 3600) / 60);
+  const seconds = remain % 60;
+  const hms = [
+    String(hours).padStart(2, '0'),
+    String(minutes).padStart(2, '0'),
+    String(seconds).padStart(2, '0'),
+  ].join(':');
+  return days > 0 ? `${days}天 ${hms}` : hms;
+}
+
 /* ------------------------- 音频采集 -> Socket.IO 上行 ------------------------- */
 
 /** 转写服务要求的采样率 */
@@ -364,12 +380,13 @@ function handleTranscript(payload: TranscriptPayload) {
   const speaker = resolveSpeaker(payload);
 
   if (isFinal) {
+    const startMs: number = payload.startMs ?? payload.start_ms ?? 0;
     segments.value.push({
       id: segId++,
       speakerId: speaker.id,
       speakerName: speaker.name,
       text,
-      time: nowTime(),
+      time: formatTimestamp(startMs),
     });
     clearInterim();
     scrollToBottom();
