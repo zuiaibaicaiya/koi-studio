@@ -1,21 +1,18 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, watch } from 'vue';
 import { App } from 'antdv-next';
-import type { UploadProps } from 'antdv-next';
 import {
   useMeetingStore,
   type Meeting,
   type UIMeetingStatus,
 } from '../../store/meeting';
-import { exportToCsv, rowsFromCsv, type CsvColumn } from '../../utils/csv';
+import { exportToCsv, type CsvColumn } from '../../utils/csv';
 import {
   EditOutlined,
   DeleteOutlined,
-  ReloadOutlined,
   SearchOutlined,
+  ReloadOutlined,
   DownloadOutlined,
-  UploadOutlined,
-  FileExcelOutlined,
   VideoCameraOutlined,
   AudioOutlined,
   EyeOutlined,
@@ -57,7 +54,7 @@ const meetingCsvColumns: CsvColumn[] = [
 
 /* ---- 搜索与分页 ---- */
 const meetingKeyword = ref('');
-const meetingStatusFilter = ref<UIMeetingStatus | undefined>();
+const meetingTimeRange = ref<[string, string] | null>(null);
 
 const meetingPagination = reactive({
   current: 1,
@@ -72,18 +69,31 @@ function doSearchMeeting() {
     page: 1,
     pageSize: meetingPagination.pageSize,
     keyword: meetingKeyword.value || undefined,
-    status: meetingStatusFilter.value || undefined,
+    startTime: meetingTimeRange.value?.[0] || undefined,
+    endTime: meetingTimeRange.value?.[1] || undefined,
   });
+}
+
+function handleMeetingReset() {
+  meetingKeyword.value = '';
+  meetingTimeRange.value = null;
+  doSearchMeeting();
 }
 
 function onMeetingPageChange(page: number, pageSize: number) {
   meetingPagination.current = page;
   meetingPagination.pageSize = pageSize;
-  store.load({ page, pageSize, keyword: meetingKeyword.value || undefined, status: meetingStatusFilter.value || undefined });
+  store.load({
+    page,
+    pageSize,
+    keyword: meetingKeyword.value || undefined,
+    startTime: meetingTimeRange.value?.[0] || undefined,
+    endTime: meetingTimeRange.value?.[1] || undefined,
+  });
 }
 
 watch(meetingKeyword, doSearchMeeting);
-watch(meetingStatusFilter, doSearchMeeting);
+watch(meetingTimeRange, doSearchMeeting);
 
 /* ---- 会议弹窗 ---- */
 const meetingModalVisible = ref(false);
@@ -139,52 +149,11 @@ async function handleMeetingDelete(record: Meeting) {
   }
 }
 
-function handleMeetingRefresh() {
-  meetingKeyword.value = '';
-  meetingStatusFilter.value = undefined;
-  store.load({ page: 1, pageSize: meetingPagination.pageSize });
-  message.success('已刷新');
-}
-
-function handleMeetingExport() {
-  exportToCsv('会议数据.csv', meetingCsvColumns, store.list as unknown as Record<string, unknown>[]);
-  message.success(`已导出 ${store.list.length} 条数据`);
-}
-
 function handleMeetingExportOne(record: Meeting) {
   exportToCsv(`会议-${record.id}.csv`, meetingCsvColumns, [record as unknown as Record<string, unknown>]);
   message.success(`已导出会议 ${record.id}`);
 }
 
-const meetingBeforeUpload: UploadProps['beforeUpload'] = (file) => {
-  const reader = new FileReader();
-  reader.onload = () => {
-    const text = String(reader.result || '');
-    const rows = rowsFromCsv<Record<string, string>>(text, meetingCsvColumns);
-    if (rows.length === 0) { message.warning('未解析到有效数据'); return; }
-    let imported = 0;
-    const doImport = async () => {
-      for (const r of rows) {
-        if (!r.name) continue;
-        try {
-          await store.add({
-            name: r.name,
-            participants: r.participants || undefined,
-            speakerIds: r.speakerIds || undefined,
-            hotWordLibraryIds: r.hotWordLibraryIds || undefined,
-            startTime: r.startTime || '',
-            endTime: r.endTime || '',
-          });
-          imported++;
-        } catch { /* skip */ }
-      }
-      message.success(`成功导入 ${imported} 条数据`);
-    };
-    doImport();
-  };
-  reader.readAsText(file);
-  return false;
-};
 
 function confirmDeleteMeeting(record: Meeting) {
   modal.confirm({
@@ -316,20 +285,27 @@ onMounted(() => {
               <template #prefix><SearchOutlined /></template>
             </a-input>
           </a-form-item>
-          <a-form-item label="状态">
-            <a-select v-model:value="meetingStatusFilter" placeholder="全部" allow-clear style="width: 130px">
-              <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-            </a-select>
+          <a-form-item label="时间段">
+            <a-range-picker
+              v-model:value="meetingTimeRange"
+              :show-time="{ format: 'HH:mm:ss' }"
+              format="YYYY-MM-DD HH:mm:ss"
+              value-format="YYYY-MM-DD HH:mm:ss"
+              :placeholder="['开始时间', '结束时间']"
+              style="width: 380px"
+            />
+          </a-form-item>
+          <a-form-item>
+            <a-space>
+              <a-button type="primary" @click="doSearchMeeting">
+                <SearchOutlined />搜索
+              </a-button>
+              <a-button @click="handleMeetingReset">
+                <ReloadOutlined />重置
+              </a-button>
+            </a-space>
           </a-form-item>
         </a-form>
-        <a-space wrap class="actions">
-          <a-upload :before-upload="meetingBeforeUpload" :show-upload-list="false" accept=".csv">
-            <a-button><UploadOutlined />导入</a-button>
-          </a-upload>
-          <a-button @click="handleMeetingExport"><DownloadOutlined />导出</a-button>
-          <a-button @click="handleMeetingRefresh"><ReloadOutlined />刷新</a-button>
-          <a-button type="link" @click="handleMeetingExport"><FileExcelOutlined />下载模板</a-button>
-        </a-space>
       </a-card>
 
       <!-- 数据表格 -->
@@ -544,11 +520,6 @@ onMounted(() => {
 }
 .filter-form {
   margin-bottom: 12px;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 /* ---- 表格 ---- */

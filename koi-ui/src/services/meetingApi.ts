@@ -43,6 +43,8 @@ export interface MeetingListParams {
   pageSize?: number;
   keyword?: string;
   status?: string;
+  start_time?: string;
+  end_time?: string;
 }
 
 /** 分页响应 */

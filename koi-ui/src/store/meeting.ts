@@ -80,12 +80,14 @@ export const useMeetingStore = defineStore('meeting', () => {
     return list.value.find((m) => m.id === id);
   }
 
-  /** 拉取会议列表（分页 + 关键词 / 状态筛选） */
+  /** 拉取会议列表（分页 + 关键词 / 状态 / 时间段筛选） */
   async function load(params?: {
     page?: number;
     pageSize?: number;
     keyword?: string;
     status?: UIMeetingStatus | '';
+    startTime?: string;
+    endTime?: string;
   }) {
     loading.value = true;
     try {
@@ -94,6 +96,8 @@ export const useMeetingStore = defineStore('meeting', () => {
         pageSize: params?.pageSize ?? pageSize.value,
         keyword: params?.keyword || undefined,
         status: params?.status ? statusMapInv[params.status] : undefined,
+        start_time: params?.startTime || undefined,
+        end_time: params?.endTime || undefined,
       };
       const res = await meetingApi.listMeetings(apiParams);
       list.value = res.items.map(fromDTO);
