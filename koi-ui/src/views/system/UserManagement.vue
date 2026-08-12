@@ -17,7 +17,6 @@ import {
   StopOutlined,
   CheckCircleOutlined,
   KeyOutlined,
-  DownOutlined,
 } from '@antdv-next/icons';
 
 const auth = useAuthStore();
@@ -56,7 +55,7 @@ const columns = [
   { title: '手机号', dataIndex: 'phone', key: 'phone', width: 130 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
   { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' },
+  { title: '操作', key: 'action', width: 340, fixed: 'right' },
 ];
 
 const csvColumns: CsvColumn[] = [
@@ -418,29 +417,21 @@ const beforeUpload: UploadProps['beforeUpload'] = async (file) => {
             </a-tag>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-dropdown :trigger="['click']" placement="bottomRight">
-              <a-button type="link" size="small">
-                操作<DownOutlined />
+            <a-space size="small">
+              <a-button type="link" size="small" @click="openEdit(record)">
+                <EditOutlined />编辑
               </a-button>
-              <template #popupRender>
-                <a-menu class="action-menu">
-                  <a-menu-item key="edit" @click="openEdit(record)">
-                    <EditOutlined />编辑
-                  </a-menu-item>
-                  <a-menu-item key="toggle" :disabled="auth.user?.id === record.id" @click="handleToggleStatus(record)">
-                    <template v-if="record.status === 'active'"><StopOutlined />禁用</template>
-                    <template v-else><CheckCircleOutlined />启用</template>
-                  </a-menu-item>
-                  <a-menu-item key="resetpwd" :disabled="auth.user?.id === record.id" @click="openResetPwd(record)">
-                    <KeyOutlined />重置密码
-                  </a-menu-item>
-                  <a-menu-divider />
-                  <a-menu-item key="delete" danger :disabled="auth.user?.id === record.id" @click="confirmDelete(record)">
-                    <DeleteOutlined />删除
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
+              <a-button type="link" size="small" :disabled="auth.user?.id === record.id" @click="handleToggleStatus(record)">
+                <template v-if="record.status === 'active'"><StopOutlined />禁用</template>
+                <template v-else><CheckCircleOutlined />启用</template>
+              </a-button>
+              <a-button type="link" size="small" :disabled="auth.user?.id === record.id" @click="openResetPwd(record)">
+                <KeyOutlined />重置密码
+              </a-button>
+              <a-button type="link" size="small" danger :disabled="auth.user?.id === record.id" @click="confirmDelete(record)">
+                <DeleteOutlined />删除
+              </a-button>
+            </a-space>
           </template>
         </template>
       </a-table>
@@ -531,13 +522,5 @@ const beforeUpload: UploadProps['beforeUpload'] = async (file) => {
 }
 .modal-form :deep(.ant-form-item-label > label) {
   color: var(--color-text);
-}
-.action-menu {
-  min-width: 140px;
-}
-.action-menu :deep(.ant-dropdown-menu-item) {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 </style>

@@ -45,6 +45,7 @@ declare module 'vue' {
     ARow: typeof import('antdv-next')['Row']
     ASelect: typeof import('antdv-next')['Select']
     ASelectOption: typeof import('antdv-next')['SelectOption']
+    ASpace: typeof import('antdv-next')['Space']
     ASpin: typeof import('antdv-next')['Spin']
     ATable: typeof import('antdv-next')['Table']
     ATabPane: typeof import('antdv-next')['TabPane']

@@ -22,7 +22,6 @@ import {
   UploadOutlined,
   AudioOutlined,
   StopOutlined,
-  DownOutlined,
 } from '@antdv-next/icons';
 
 const store = useSpeakerStore();
@@ -33,7 +32,7 @@ const columns = [
   { title: '音频样本', key: 'audio', width: 280 },
   { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 120 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' },
+  { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ];
 
 const csvColumns: CsvColumn[] = [
@@ -582,21 +581,14 @@ function confirmDelete(record: Speaker) {
             <span v-else class="row-empty">—</span>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-dropdown :trigger="['click']" placement="bottomRight">
-              <a-button type="link" size="small">
-                操作<DownOutlined />
+            <a-space size="small">
+              <a-button type="link" size="small" @click="openEdit(record)">
+                <EditOutlined />编辑
               </a-button>
-              <template #popupRender>
-                <a-menu class="action-menu">
-                  <a-menu-item key="edit" @click="openEdit(record)">
-                    <EditOutlined />编辑
-                  </a-menu-item>
-                  <a-menu-item key="delete" danger @click="confirmDelete(record)">
-                    <DeleteOutlined />删除
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
+              <a-button type="link" size="small" danger @click="confirmDelete(record)">
+                <DeleteOutlined />删除
+              </a-button>
+            </a-space>
           </template>
         </template>
       </a-table>
@@ -834,13 +826,5 @@ function confirmDelete(record: Speaker) {
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-muted);
-}
-.action-menu {
-  min-width: 140px;
-}
-.action-menu :deep(.ant-dropdown-menu-item) {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 </style>

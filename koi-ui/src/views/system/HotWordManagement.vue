@@ -12,7 +12,6 @@ import {
   UploadOutlined,
   FileExcelOutlined,
   EyeOutlined,
-  DownOutlined,
 } from '@antdv-next/icons';
 import { useHotWordLibraryStore } from '../../store/hotWordLibrary';
 import type { HotWordLibrary, LibraryWord, LibraryStatus } from '../../store/hotWordLibrary';
@@ -184,7 +183,7 @@ const drawerWords = ref<LibraryWord[]>([]);
 const drawerWordColumns: TableColumnsType<LibraryWord> = [
   { title: '热词', dataIndex: 'word', key: 'word', width: 180 },
   { title: '权重', key: 'weight', width: 200 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' },
+  { title: '操作', key: 'action', width: 270, fixed: 'right' },
 ];
 
 /** 从后端拉取当前库的热词分页 */
@@ -307,7 +306,7 @@ const libColumns: TableColumnsType<HotWordLibrary> = [
   },
   { title: '热词数量', key: 'wordCount', width: 110, align: 'center' },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 130 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' },
+  { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ];
 
 onMounted(loadLibraries);
@@ -383,24 +382,17 @@ function confirmRemoveWord(record: LibraryWord) {
             <span class="count-text">{{ record.wordCount }} 条</span>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-dropdown :trigger="['click']" placement="bottomRight">
-              <a-button type="link" size="small">
-                操作<DownOutlined />
+            <a-space size="small">
+              <a-button type="link" size="small" @click="openDrawer(record)">
+                <EyeOutlined />查看热词
               </a-button>
-              <template #popupRender>
-                <a-menu class="action-menu">
-                  <a-menu-item key="view" @click="openDrawer(record)">
-                    <EyeOutlined />查看热词
-                  </a-menu-item>
-                  <a-menu-item key="edit" @click="openEditLib(record)">
-                    <EditOutlined />编辑
-                  </a-menu-item>
-                  <a-menu-item key="delete" danger @click="confirmRemoveLib(record)">
-                    <DeleteOutlined />删除
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
+              <a-button type="link" size="small" @click="openEditLib(record)">
+                <EditOutlined />编辑
+              </a-button>
+              <a-button type="link" size="small" danger @click="confirmRemoveLib(record)">
+                <DeleteOutlined />删除
+              </a-button>
+            </a-space>
           </template>
           <template v-else>{{ record[column.dataIndex] }}</template>
         </template>
@@ -509,21 +501,14 @@ function confirmRemoveWord(record: LibraryWord) {
             <span class="weight-num">{{ record.weight }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
-            <a-dropdown :trigger="['click']" placement="bottomRight">
-              <a-button type="link" size="small">
-                操作<DownOutlined />
+            <a-space size="small">
+              <a-button type="link" size="small" @click="openEditWord(record)">
+                <EditOutlined />编辑
               </a-button>
-              <template #popupRender>
-                <a-menu class="action-menu">
-                  <a-menu-item key="edit" @click="openEditWord(record)">
-                    <EditOutlined />编辑
-                  </a-menu-item>
-                  <a-menu-item key="delete" danger @click="confirmRemoveWord(record)">
-                    <DeleteOutlined />删除
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
+              <a-button type="link" size="small" danger @click="confirmRemoveWord(record)">
+                <DeleteOutlined />删除
+              </a-button>
+            </a-space>
           </template>
           <template v-else>{{ record[column.dataIndex] }}</template>
         </template>
@@ -627,13 +612,5 @@ function confirmRemoveWord(record: LibraryWord) {
 }
 .full {
   width: 100%;
-}
-.action-menu {
-  min-width: 140px;
-}
-.action-menu :deep(.ant-dropdown-menu-item) {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 </style>

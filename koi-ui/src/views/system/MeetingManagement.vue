@@ -19,7 +19,6 @@ import {
   VideoCameraOutlined,
   AudioOutlined,
   EyeOutlined,
-  DownOutlined,
   PlayCircleOutlined,
   StopOutlined,
 } from '@antdv-next/icons';
@@ -35,14 +34,14 @@ const activeTab = ref<'live' | 'transcription'>('live');
 
 /* ==================== 实时会议（对接后端） ==================== */
 const meetingColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: (a: Meeting, b: Meeting) => a.id - b.id },
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
   { title: '会议名称', dataIndex: 'name', key: 'name', ellipsis: true },
   { title: '参会人员', dataIndex: 'participants', key: 'participants', ellipsis: true },
   { title: '开始时间', dataIndex: 'startTime', key: 'startTime', width: 170 },
   { title: '结束时间', dataIndex: 'endTime', key: 'endTime', width: 170 },
   { title: '音频', dataIndex: 'audioUrl', key: 'audioUrl', width: 280 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' as const },
+  { title: '操作', key: 'action', width: 150, fixed: 'right' as const },
 ];
 
 const meetingCsvColumns: CsvColumn[] = [
@@ -152,6 +151,11 @@ function handleMeetingExport() {
   message.success(`已导出 ${store.list.length} 条数据`);
 }
 
+function handleMeetingExportOne(record: Meeting) {
+  exportToCsv(`会议-${record.id}.csv`, meetingCsvColumns, [record as unknown as Record<string, unknown>]);
+  message.success(`已导出会议 ${record.id}`);
+}
+
 const meetingBeforeUpload: UploadProps['beforeUpload'] = (file) => {
   const reader = new FileReader();
   reader.onload = () => {
@@ -249,11 +253,11 @@ const transcriptionList = computed<LocalTranscription[]>(() =>
 );
 
 const transcriptionColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: (a: LocalTranscription, b: LocalTranscription) => a.id - b.id },
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
   { title: '说话人', dataIndex: 'meetingTitle', key: 'meetingTitle', ellipsis: true },
   { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 160 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
-  { title: '操作', key: 'action', width: 90, fixed: 'right' as const },
+  { title: '操作', key: 'action', width: 110, fixed: 'right' as const },
 ];
 
 const transcriptionKeyword = ref('');
@@ -318,14 +322,14 @@ onMounted(() => {
             </a-select>
           </a-form-item>
         </a-form>
-        <div class="actions">
+        <a-space wrap class="actions">
           <a-upload :before-upload="meetingBeforeUpload" :show-upload-list="false" accept=".csv">
             <a-button><UploadOutlined />导入</a-button>
           </a-upload>
           <a-button @click="handleMeetingExport"><DownloadOutlined />导出</a-button>
           <a-button @click="handleMeetingRefresh"><ReloadOutlined />刷新</a-button>
           <a-button type="link" @click="handleMeetingExport"><FileExcelOutlined />下载模板</a-button>
-        </div>
+        </a-space>
       </a-card>
 
       <!-- 数据表格 -->
@@ -356,30 +360,14 @@ onMounted(() => {
                 <span v-else class="muted">--</span>
               </template>
               <template v-else-if="column.key === 'action'">
-                <a-dropdown :trigger="['click']" placement="bottomRight">
-                  <a-button type="link" size="small">
-                    操作<DownOutlined />
+                <a-space size="small">
+                  <a-button type="link" size="small" @click="handleMeetingExportOne(record)">
+                    <DownloadOutlined />导出
                   </a-button>
-                  <template #popupRender>
-                    <a-menu class="action-menu">
-                      <a-menu-item key="detail" @click="openMeetingDetail(record)">
-                        <EyeOutlined />详情
-                      </a-menu-item>
-                      <a-menu-item key="edit" @click="openMeetingEdit(record)">
-                        <EditOutlined />编辑
-                      </a-menu-item>
-                      <a-menu-item v-if="record.rawStatus === 'created'" key="start" @click="handleStartMeeting(record)">
-                        <PlayCircleOutlined />开始
-                      </a-menu-item>
-                      <a-menu-item v-if="record.rawStatus === 'ongoing'" key="finish" @click="handleFinishMeeting(record)">
-                        <StopOutlined />结束
-                      </a-menu-item>
-                      <a-menu-item key="delete" danger @click="confirmDeleteMeeting(record)">
-                        <DeleteOutlined />删除
-                      </a-menu-item>
-                    </a-menu>
-                  </template>
-                </a-dropdown>
+                  <a-button type="link" size="small" danger @click="confirmDeleteMeeting(record)">
+                    <DeleteOutlined />删除
+                  </a-button>
+                </a-space>
               </template>
             </template>
           </a-table>
@@ -488,9 +476,11 @@ onMounted(() => {
               <a-tag color="green">{{ record.status }}</a-tag>
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-button type="link" size="small" @click="openTranscriptDetail(record)">
-                <EyeOutlined />查看
-              </a-button>
+              <a-space size="small" wrap>
+                <a-button type="link" size="small" @click="openTranscriptDetail(record)">
+                  <EyeOutlined />查看
+                </a-button>
+              </a-space>
             </template>
           </template>
         </a-table>
@@ -609,9 +599,6 @@ onMounted(() => {
   padding: 12px;
   border-radius: var(--radius-md);
 }
-.action-menu {
-  min-width: 140px;
-}
 .muted {
   color: var(--color-text-secondary);
 }
@@ -622,10 +609,5 @@ onMounted(() => {
 .audio-player:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
-}
-.action-menu :deep(.ant-dropdown-menu-item) {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 </style>
