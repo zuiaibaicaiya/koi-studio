@@ -6,13 +6,11 @@ import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
-  ReloadOutlined,
   SearchOutlined,
   DownloadOutlined,
   UploadOutlined,
   FileExcelOutlined,
   EyeOutlined,
-  ExportOutlined,
   DownOutlined,
 } from '@antdv-next/icons';
 import { useHotWordLibraryStore } from '../../store/hotWordLibrary';
@@ -20,65 +18,31 @@ import type { HotWordLibrary, LibraryWord, LibraryStatus } from '../../store/hot
 import {
   exportLibraryToExcel,
   exportLibraryTemplate,
-  exportAllLibrariesToExcel,
 } from '../../utils/excel';
 import { hotWordApi } from '../../services/hotWordApi';
 
 const store = useHotWordLibraryStore();
 
 /* ----------------------------- 热词库列表 ----------------------------- */
-const selectedLibId = ref<number | null>(null);
 const searchText = ref('');
-const statusFilter = ref<'all' | LibraryStatus>('all');
-/** 已应用（点击搜索后生效）的筛选条件 */
+/** 点击搜索后生效的关键词 */
 const appliedKeyword = ref('');
-const appliedStatus = ref<'all' | LibraryStatus>('all');
 const loading = ref(false);
-
-const libOptions = computed(() =>
-  store.libraries.map((lib) => ({
-    value: lib.id,
-    label: lib.name,
-  })),
-);
-
-function filterLibOption(input: string, option: { label?: string }) {
-  return (option?.label ?? '').toLowerCase().includes(input.toLowerCase());
-}
-
-function onLibSearch(val: string) {
-  searchText.value = val;
-}
-
-function onLibChange(val: number | null) {
-  if (val != null) {
-    const lib = store.libraries.find((l) => l.id === val);
-    searchText.value = lib ? lib.name : '';
-  } else {
-    searchText.value = '';
-  }
-}
 
 function handleSearch() {
   appliedKeyword.value = searchText.value.trim();
-  appliedStatus.value = statusFilter.value;
+  loadLibraries();
 }
 
 function handleReset() {
-  selectedLibId.value = null;
   searchText.value = '';
-  statusFilter.value = 'all';
   appliedKeyword.value = '';
-  appliedStatus.value = 'all';
 }
 
+/** 按已应用的关键词过滤，点击搜索后生效 */
 const filteredLibraries = computed<HotWordLibrary[]>(() => {
   const kw = appliedKeyword.value.trim().toLowerCase();
-  return store.libraries.filter((lib) => {
-    const matchKw = !kw || lib.name.toLowerCase().includes(kw);
-    const matchStatus = appliedStatus.value === 'all' || lib.status === appliedStatus.value;
-    return matchKw && matchStatus;
-  });
+  return store.libraries.filter((lib) => !kw || lib.name.toLowerCase().includes(kw));
 });
 
 /** 仅加载热词库元数据（含 word_count），不加载热词详情。 */
@@ -102,10 +66,6 @@ async function loadLibraries() {
   } finally {
     loading.value = false;
   }
-}
-
-function refresh() {
-  loadLibraries();
 }
 
 /* ----------------------------- 热词库 增删改 ----------------------------- */
@@ -200,30 +160,6 @@ async function exportLib() {
   }
   exportLibraryToExcel(`${lib.name}.xlsx`, lib.name, lib.words);
   message.success(`已导出「${lib.name}」`);
-}
-
-async function exportAll() {
-  if (store.libraries.length === 0) {
-    message.warning('暂无可导出的热词库');
-    return;
-  }
-  // 逐库拉取全部热词用于导出
-  const all: HotWordLibrary[] = [];
-  for (const lib of store.libraries) {
-    if (lib.words.length === 0 && lib.wordCount > 0) {
-      try {
-        const res = await hotWordApi.listWords(lib.id, { page: 1, pageSize: Math.max(lib.wordCount, 1000) });
-        lib.words = res.items.map((w) => ({
-          id: w.id,
-          word: w.word,
-          weight: w.weight,
-        }));
-      } catch { /* 忽略单个库加载失败 */ }
-    }
-    all.push(lib);
-  }
-  exportAllLibrariesToExcel('热词库汇总.xlsx', all);
-  message.success(`已导出 ${all.length} 个热词库`);
 }
 
 function downloadTemplate() {
@@ -367,11 +303,6 @@ const libColumns: TableColumnsType<HotWordLibrary> = [
     title: '状态',
     key: 'status',
     width: 90,
-    filters: [
-      { text: '启用', value: 'active' },
-      { text: '禁用', value: 'inactive' },
-    ],
-    onFilter: (value, record) => record.status === value,
   },
   { title: '热词数量', key: 'wordCount', width: 110, align: 'center' },
   { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 130 },
@@ -406,31 +337,21 @@ function confirmRemoveWord(record: LibraryWord) {
     <!-- 工具栏 -->
     <a-card class="toolbar" variant="borderless">
       <div class="form-row">
-        <a-select
-          v-model:value="selectedLibId"
-          class="search-select"
+        <a-input
+          v-model:value="searchText"
+          class="search-input"
           placeholder="搜索热词库名称"
           allow-clear
-          show-search
-          :filter-option="filterLibOption"
-          :options="libOptions"
-          @search="onLibSearch"
-          @change="onLibChange"
-        />
-        <a-select v-model:value="statusFilter" class="status-select">
-          <a-select-option value="all">全部状态</a-select-option>
-          <a-select-option value="active">启用</a-select-option>
-          <a-select-option value="inactive">禁用</a-select-option>
-        </a-select>
+        >
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
         <a-button type="primary" @click="handleSearch"><SearchOutlined />搜索</a-button>
         <a-button @click="handleReset">重置</a-button>
         <div class="actions">
           <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
             <a-button :loading="importing"><UploadOutlined />导入</a-button>
           </a-upload>
-          <a-button @click="exportAll"><ExportOutlined />导出全部</a-button>
           <a-button @click="downloadTemplate"><FileExcelOutlined />模板导出</a-button>
-          <a-button @click="refresh"><ReloadOutlined />刷新</a-button>
         </div>
       </div>
     </a-card>
@@ -652,11 +573,8 @@ function confirmRemoveWord(record: LibraryWord) {
   align-items: center;
   gap: 12px;
 }
-.search-select {
-  width: 280px;
-}
-.status-select {
-  width: 140px;
+.search-input {
+  width: 220px;
 }
 .actions {
   margin-left: auto;
