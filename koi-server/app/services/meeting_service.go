@@ -3,8 +3,8 @@ package services
 import (
 	"errors"
 	"strings"
-	"time"
 
+	"github.com/dromara/carbon/v2"
 	"github.com/goravel/framework/contracts/database/db"
 
 	"koi-server/app/facades"
@@ -21,27 +21,27 @@ func NewMeetingService() *MeetingService {
 
 // meetingTimeLayouts 支持的时间字符串格式
 var meetingTimeLayouts = []string{
-	time.RFC3339,
+	carbon.RFC3339Layout,
 	"2006-01-02 15:04:05",
 	"2006-01-02T15:04:05",
 	"2006-01-02 15:04",
 	"2006-01-02",
 }
 
-// ParseMeetingTime 解析时间字符串为 time.Time
-func ParseMeetingTime(value string) (time.Time, error) {
+// ParseMeetingTime 解析时间字符串为 *carbon.DateTime
+func ParseMeetingTime(value string) (*carbon.DateTime, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return time.Time{}, errors.New("时间不能为空")
+		return nil, errors.New("时间不能为空")
 	}
 
 	for _, layout := range meetingTimeLayouts {
-		if t, err := time.ParseInLocation(layout, value, time.Local); err == nil {
-			return t, nil
+		if c := carbon.ParseByLayout(value, layout); !c.HasError() {
+			return carbon.NewDateTime(c), nil
 		}
 	}
 
-	return time.Time{}, errors.New("时间格式不正确，请使用 2006-01-02 15:04:05")
+	return nil, errors.New("时间格式不正确，请使用 2006-01-02 15:04:05")
 }
 
 // GetMeetingList 分页查询会议列表

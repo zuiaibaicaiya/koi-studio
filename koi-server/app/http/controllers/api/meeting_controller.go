@@ -1,8 +1,7 @@
 package api
 
 import (
-	"time"
-
+	"github.com/dromara/carbon/v2"
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
 
@@ -88,26 +87,26 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
 	}
 
-	now := time.Now()
+	now := carbon.Now()
 	startTime := now
-	endTime := now.Add(1 * time.Hour)
+	endTime := now.AddHour()
 
 	if req.StartTime != "" {
 		parsed, perr := services.ParseMeetingTime(req.StartTime)
 		if perr != nil {
 			return ctrl.ApiErrorMsg(ctx, perr.Error())
 		}
-		startTime = parsed
+		startTime = parsed.Carbon
 	}
 	if req.EndTime != "" {
 		parsed, perr := services.ParseMeetingTime(req.EndTime)
 		if perr != nil {
 			return ctrl.ApiErrorMsg(ctx, perr.Error())
 		}
-		endTime = parsed
+		endTime = parsed.Carbon
 	}
 
-	if !endTime.After(startTime) {
+	if !endTime.Gt(startTime) {
 		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
 	}
 
@@ -115,8 +114,8 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		Name:         req.Name,
 		Participants: req.Participants,
 		SpeakerIds:   req.SpeakerIds,
-		StartTime:    startTime,
-		EndTime:      endTime,
+		StartTime:    *carbon.NewDateTime(startTime),
+		EndTime:      *carbon.NewDateTime(endTime),
 		Status:       models.MeetingStatusCreated,
 	}
 
@@ -180,17 +179,17 @@ func (ctrl *MeetingController) UpdateMeeting(ctx http.Context) http.Response {
 		if perr != nil {
 			return ctrl.ApiErrorMsg(ctx, perr.Error())
 		}
-		meeting.StartTime = t
+		meeting.StartTime = *t
 	}
 	if req.EndTime != "" {
 		t, perr := services.ParseMeetingTime(req.EndTime)
 		if perr != nil {
 			return ctrl.ApiErrorMsg(ctx, perr.Error())
 		}
-		meeting.EndTime = t
+		meeting.EndTime = *t
 	}
 
-	if !meeting.EndTime.After(meeting.StartTime) {
+	if !meeting.EndTime.Gt(meeting.StartTime.Carbon) {
 		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
 	}
 

@@ -1,8 +1,7 @@
 package models
 
 import (
-	"time"
-
+	"github.com/dromara/carbon/v2"
 	"github.com/goravel/framework/database/orm"
 )
 
@@ -26,9 +25,9 @@ type Meeting struct {
 	// HotWordLibraryIds 关联的热词库ID列表，逗号分隔，可空
 	HotWordLibraryIds string `json:"hot_word_library_ids" gorm:"column:hot_word_library_ids" example:"1,2,3"`
 	// StartTime 开始时间
-	StartTime time.Time `json:"start_time" gorm:"column:start_time" example:"2026-08-10 09:00:00"`
+	StartTime carbon.DateTime `json:"start_time" gorm:"column:start_time" example:"2026-08-10 09:00:00"`
 	// EndTime 结束时间
-	EndTime time.Time `json:"end_time" gorm:"column:end_time" example:"2026-08-10 10:00:00"`
+	EndTime carbon.DateTime `json:"end_time" gorm:"column:end_time" example:"2026-08-10 10:00:00"`
 	// Status 会议状态：created-已创建，ongoing-进行中，finished-已结束
 	Status string `json:"status" gorm:"column:status" example:"created"`
 	// AudioFilePath 会议录音文件路径，会议结束后由归档任务写入

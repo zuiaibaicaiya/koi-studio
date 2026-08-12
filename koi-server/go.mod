@@ -3,6 +3,7 @@ module koi-server
 go 1.26.0
 
 require (
+	github.com/dromara/carbon/v2 v2.6.11
 	github.com/goravel/framework v1.18.0
 	github.com/goravel/gin v1.18.0
 	github.com/goravel/openai v1.18.0
@@ -50,7 +51,6 @@ require (
 	github.com/containerd/console v1.0.5 // indirect
 	github.com/dave/dst v0.27.4 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/dromara/carbon/v2 v2.6.11 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
