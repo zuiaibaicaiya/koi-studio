@@ -54,7 +54,7 @@ const columns = [
   { title: '邮箱', dataIndex: 'email', key: 'email' },
   { title: '手机号', dataIndex: 'phone', key: 'phone', width: 130 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
-  { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 170 },
+  { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 185 },
   { title: '操作', key: 'action', width: 340, fixed: 'right' },
 ];
 

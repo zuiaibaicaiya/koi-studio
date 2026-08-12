@@ -305,7 +305,7 @@ const libColumns: TableColumnsType<HotWordLibrary> = [
     width: 90,
   },
   { title: '热词数量', key: 'wordCount', width: 110, align: 'center' },
-  { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 130 },
+  { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 185 },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ];
 

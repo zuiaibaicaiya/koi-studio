@@ -31,7 +31,7 @@ const columns = [
   { title: '姓名', dataIndex: 'name', key: 'name' },
   { title: '音频样本', key: 'audio', width: 280 },
   { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
-  { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 120 },
+  { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', width: 185 },
   { title: '操作', key: 'action', width: 160, fixed: 'right' },
 ];
 
