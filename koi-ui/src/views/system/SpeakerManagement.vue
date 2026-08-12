@@ -10,7 +10,7 @@ import {
   type UIGender,
   type UIStatus,
 } from '../../store/speaker';
-import { exportToCsv, rowsFromCsv, type CsvColumn } from '../../utils/csv';
+import { rowsFromCsv, type CsvColumn } from '../../utils/csv';
 import { toWavFile } from '../../utils/audio';
 import {
   PlusOutlined,
@@ -18,7 +18,6 @@ import {
   DeleteOutlined,
   ReloadOutlined,
   SearchOutlined,
-  DownloadOutlined,
   UploadOutlined,
   AudioOutlined,
   StopOutlined,
@@ -54,9 +53,13 @@ const pagination = computed(() => ({
   showTotal: (t: number) => `共 ${t} 条`,
 }));
 
-/** 关键词 / 性别 / 状态筛选后重新查询 */
+/** 关键词 / 性别 / 状态筛选后重新查询（重置到第一页） */
 function doSearch() {
   store.load({ page: 1, keyword: keyword.value, gender: genderFilter.value, status: statusFilter.value });
+}
+/** 回车直接触发查询 */
+function onKeywordEnter() {
+  doSearch();
 }
 
 /** 分页切换时重新查询 */
@@ -471,16 +474,12 @@ onBeforeUnmount(() => {
   teardownRecord();
   releasePendingUrls();
 });
-async function handleRefresh() {
+async function handleReset() {
   keyword.value = '';
   genderFilter.value = '';
   statusFilter.value = '';
   await store.load({ page: 1 });
-  message.success('已刷新');
-}
-function handleExport() {
-  exportToCsv('说话人数据.csv', csvColumns, store.list as unknown as Record<string, unknown>[]);
-  message.success(`已导出 ${store.list.length} 条数据`);
+  message.success('已重置筛选');
 }
 
 const beforeUpload: UploadProps['beforeUpload'] = (file) => {
@@ -520,48 +519,56 @@ function confirmDelete(record: Speaker) {
 <template>
   <div class="page">
     <a-card class="toolbar" variant="borderless">
-      <a-form layout="inline" class="filter-form">
-        <a-form-item label="关键词">
-          <a-input-search
-            v-model:value="keyword"
-            placeholder="姓名 / 描述"
-            allow-clear
-            style="width: 220px"
-            @search="doSearch"
-          >
-            <template #prefix><SearchOutlined /></template>
-          </a-input-search>
-        </a-form-item>
-        <a-form-item label="性别">
-          <a-select
-            v-model:value="genderFilter"
-            placeholder="全部"
-            allow-clear
-            style="width: 120px"
-            @change="doSearch"
-          >
-            <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select
-            v-model:value="statusFilter"
-            placeholder="全部"
-            allow-clear
-            style="width: 120px"
-            @change="doSearch"
-          >
-            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-          </a-select>
-        </a-form-item>
-      </a-form>
-      <div class="actions">
-        <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
-        <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
-          <a-button><UploadOutlined />导入</a-button>
-        </a-upload>
-        <a-button @click="handleExport"><DownloadOutlined />导出</a-button>
-        <a-button @click="handleRefresh"><ReloadOutlined />刷新</a-button>
+      <div class="toolbar-inner">
+        <a-form layout="inline" class="filter-form" @submit.prevent>
+          <a-form-item label="关键词" class="grow-item">
+            <a-input
+              v-model:value="keyword"
+              placeholder="姓名 / 描述"
+              allow-clear
+              @press-enter="onKeywordEnter"
+              @change="doSearch"
+            >
+              <template #prefix><SearchOutlined /></template>
+            </a-input>
+          </a-form-item>
+          <a-form-item label="性别">
+            <a-select
+              v-model:value="genderFilter"
+              placeholder="全部"
+              allow-clear
+              style="width: 120px"
+              @change="doSearch"
+            >
+              <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item label="状态">
+            <a-select
+              v-model:value="statusFilter"
+              placeholder="全部"
+              allow-clear
+              style="width: 120px"
+              @change="doSearch"
+            >
+              <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item class="btn-item">
+            <a-space>
+              <a-button type="primary" @click="doSearch">
+                <SearchOutlined />查询
+              </a-button>
+              <a-button @click="handleReset">
+                <ReloadOutlined />重置
+              </a-button>
+              <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
+              <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
+                <a-button><UploadOutlined />导入</a-button>
+              </a-upload>
+            </a-space>
+          </a-form-item>
+        </a-form>
       </div>
     </a-card>
 
@@ -703,12 +710,25 @@ function confirmDelete(record: Speaker) {
   color: var(--color-text-secondary);
 }
 .filter-form {
-  margin-bottom: 12px;
-}
-.actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  gap: 4px 8px;
+}
+.filter-form .grow-item {
+  margin-right: 0;
+}
+.filter-form :deep(.grow-item .ant-form-item-control) {
+  width: 240px;
+  max-width: 100%;
+}
+.filter-form .btn-item {
+  margin-right: 0;
+}
+@media (max-width: 768px) {
+  .filter-form .grow-item {
+    flex-basis: 100%;
+  }
 }
 .table-card {
   background: var(--color-surface);

@@ -21,6 +21,7 @@ declare module 'vue' {
     AConfigProvider: typeof import('antdv-next')['ConfigProvider']
     ADescriptions: typeof import('antdv-next')['Descriptions']
     ADescriptionsItem: typeof import('antdv-next')['DescriptionsItem']
+    ADivider: typeof import('antdv-next')['Divider']
     ADrawer: typeof import('antdv-next')['Drawer']
     ADropdown: typeof import('antdv-next')['Dropdown']
     AEmpty: typeof import('antdv-next')['Empty']
