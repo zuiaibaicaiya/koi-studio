@@ -24,8 +24,6 @@ var (
 	ErrUnsupportedAudioFormat = errors.New("仅支持 wav 格式的音频文件")
 	// ErrAudioTooLarge 上传的音频文件超出大小限制。
 	ErrAudioTooLarge = errors.New("音频文件超出大小限制")
-	// ErrSpeakerInactive 说话人已禁用，无法参与声纹检索。
-	ErrSpeakerInactive = errors.New("说话人已禁用")
 	// ErrValidSpeechTooShort 有效语音（去除静音）时长不足，无法注册稳定声纹。
 	ErrValidSpeechTooShort = errors.New("有效语音时长不足")
 )
@@ -149,15 +147,7 @@ func (voiceprintService *SpeakerVoiceprintService) RemoveAudio(speaker *models.S
 }
 
 // SyncSpeaker 用数据库中的最新数据刷新该说话人在内存声纹库中的声纹。
-//
-// 说话人被禁用或名下没有有效声纹时，将其从内存声纹库中移除。
 func (voiceprintService *SpeakerVoiceprintService) SyncSpeaker(speaker *models.Speaker) error {
-	if speaker.Status != models.SpeakerStatusActive {
-		facades.Speaker().Unregister(speaker.Name)
-
-		return nil
-	}
-
 	vectors, err := voiceprintService.speakerService.GetVectorsBySpeakerId(speaker.ID)
 	if err != nil {
 		return err
@@ -222,10 +212,6 @@ func (voiceprintService *SpeakerVoiceprintService) Identify(file filesystem.File
 
 // Verify 校验上传音频是否属于指定说话人（1:1）。
 func (voiceprintService *SpeakerVoiceprintService) Verify(speaker *models.Speaker, file filesystem.File, threshold float32) (contractsspeaker.Match, error) {
-	if speaker.Status != models.SpeakerStatusActive {
-		return contractsspeaker.Match{}, ErrSpeakerInactive
-	}
-
 	// 1:1 比对只需目标说话人的声纹在库中，无需整库预热。
 	if err := voiceprintService.SyncSpeaker(speaker); err != nil {
 		return contractsspeaker.Match{}, err

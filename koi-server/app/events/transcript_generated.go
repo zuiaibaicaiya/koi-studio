@@ -21,8 +21,7 @@ import (
 //	args[6]  *uint  说话人ID（nil = 未知）
 //	args[7]  uint   会议ID（0 = 未绑定）
 //	args[8]  string 词级时间戳JSON
-//	args[9]  string 说话人性別（male/female/unknown）
-//	args[10] string 说话人描述
+//	args[9]  string 说话人描述
 type TranscriptGenerated struct{}
 
 // Handle 事件本身不做加工，原样透传给监听器。

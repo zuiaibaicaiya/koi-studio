@@ -103,7 +103,7 @@ func (s *SpeakerIdentifyTestSuite) TestSpeakerModelStatus() {
 func (s *SpeakerIdentifyTestSuite) TestSpeakerFullWorkflow() {
 	// ── 1. 创建说话人（若已存在则查询ID） ──
 	s.Run("CreateSpeaker", func() {
-		body := `{"name":"李大爷","gender":"male","description":"测试用说话人——李大爷"}`
+		body := `{"name":"李大爷","description":"测试用说话人——李大爷"}`
 		resp, err := s.Http(s.T()).WithToken(s.token).Post("/api/speaker", strings.NewReader(body))
 		s.Require().NoError(err)
 		resp.AssertOk()
@@ -114,7 +114,6 @@ func (s *SpeakerIdentifyTestSuite) TestSpeakerFullWorkflow() {
 			Data struct {
 				ID          uint   `json:"id"`
 				Name        string `json:"name"`
-				Gender      string `json:"gender"`
 				Description string `json:"description"`
 				AudioCount  int    `json:"audio_count"`
 			} `json:"data"`
@@ -223,7 +222,6 @@ func (s *SpeakerIdentifyTestSuite) TestSpeakerFullWorkflow() {
 				Speaker   *struct {
 					ID          uint   `json:"id"`
 					Name        string `json:"name"`
-					Gender      string `json:"gender"`
 					Description string `json:"description"`
 				} `json:"speaker"`
 			} `json:"data"`
@@ -236,7 +234,6 @@ func (s *SpeakerIdentifyTestSuite) TestSpeakerFullWorkflow() {
 		s.NotNil(result.Data.Speaker, "应返回完整的说话人对象")
 		if result.Data.Speaker != nil {
 			s.Equal("李大爷", result.Data.Speaker.Name)
-			s.Equal("male", result.Data.Speaker.Gender)
 		}
 		s.Greater(result.Data.Score, float32(0.5), "相似度应高于阈值 0.5")
 

@@ -22,16 +22,13 @@ func (r *M20260809100003CreateSpeakersTable) Up() error {
 	return facades.Schema().Create("speakers", func(table schema.Blueprint) {
 		table.ID()
 		table.String("name").Comment("说话人名称，同时作为声纹库检索标识")
-		table.String("gender").Default("unknown").Comment("性别：unknown-未知，male-男，female-女")
 		table.String("description").Nullable().Comment("说话人描述")
-		table.String("status").Default("active").Comment("状态：active-启用，inactive-禁用")
 		table.Integer("embedding_dim").Default(0).Comment("声纹特征维度")
 		table.Integer("audio_count").Default(0).Comment("已注册声纹音频数量")
 		table.SoftDeletes()
 		table.TimestampsTz()
 
 		table.Index("name")
-		table.Index("status")
 	})
 }
 

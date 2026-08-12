@@ -740,9 +740,8 @@ func (s *Service) publishFinalResult(sess *session, text string, startMs, endMs 
 		WordTimestamps: wordTimestampsJSON,
 	}
 
-	// 附上说话人详细信息（性别、描述等），供前端渲染说话人标签。
+	// 附上说话人详细信息（描述等），供前端渲染说话人标签。
 	if speaker != nil {
-		result.SpeakerGender = speaker.Gender
 		result.SpeakerDescription = speaker.Description
 	}
 
@@ -769,7 +768,6 @@ func (s *Service) publishSpeakerIdentified(sess *session, speakerName string, sp
 		MeetingID:   meetingID,
 	}
 	if speaker != nil {
-		result.SpeakerGender = speaker.Gender
 		result.SpeakerDescription = speaker.Description
 	}
 

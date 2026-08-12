@@ -35,8 +35,6 @@ type Result struct {
 	SpeakerName string `json:"speakerName"`
 	// SpeakerID 识别的说话人ID，未识别时为 nil。
 	SpeakerID *uint `json:"speakerId"`
-	// SpeakerGender 说话人性別（male / female / unknown），仅在识别到说话人时填充。
-	SpeakerGender string `json:"speakerGender"`
 	// SpeakerDescription 说话人描述（如"技术部产品经理"），仅在识别到说话人时填充。
 	SpeakerDescription string `json:"speakerDescription"`
 	// MeetingID 关联的会议ID，未绑定会议时为 0。

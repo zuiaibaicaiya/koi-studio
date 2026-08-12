@@ -80,7 +80,6 @@ func (p *eventPublisher) Publish(result contractsaudio.Result) {
 		{Type: "uintptr", Value: result.SpeakerID},
 		{Type: "uint", Value: result.MeetingID},
 		{Type: "string", Value: result.WordTimestamps},
-		{Type: "string", Value: result.SpeakerGender},
 		{Type: "string", Value: result.SpeakerDescription},
 	}
 	err := facades.Event().Job(&events.TranscriptGenerated{}, args).Dispatch()

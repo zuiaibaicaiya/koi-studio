@@ -320,7 +320,7 @@ func (s *RealtimeTranscribeTestSuite) TestRealtimeTranscribeMergedAudio() {
 func (s *RealtimeTranscribeTestSuite) setupSpeakerAndMeeting() {
 	// 创建说话人
 	resp, err := s.Http(s.T()).WithToken(s.token).Post("/api/speaker",
-		strings.NewReader(`{"name":"李大爷","gender":"male","description":"实时转写测试说话人"}`))
+		strings.NewReader(`{"name":"李大爷","description":"实时转写测试说话人"}`))
 	s.Require().NoError(err)
 	resp.AssertOk()
 

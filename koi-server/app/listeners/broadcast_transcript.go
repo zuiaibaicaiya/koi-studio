@@ -56,7 +56,6 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 		speakerID          *uint
 		meetingID          uint
 		wordTimestamps     string
-		speakerGender      string
 		speakerDescription string
 		hasEnhanced        bool
 	)
@@ -72,10 +71,7 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 		wordTimestamps, _ = args[8].(string)
 	}
 	if len(args) >= 10 {
-		speakerGender, _ = args[9].(string)
-	}
-	if len(args) >= 11 {
-		speakerDescription, _ = args[10].(string)
+		speakerDescription, _ = args[9].(string)
 	}
 
 	// 构建 speaker 子对象，供各事件复用。
@@ -84,7 +80,6 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 			return map[string]any{
 				"id":          *speakerID,
 				"name":        speakerName,
-				"gender":      speakerGender,
 				"description": speakerDescription,
 			}
 		}

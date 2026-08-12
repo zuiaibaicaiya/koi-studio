@@ -16,21 +16,13 @@ func NewSpeakerService() *SpeakerService {
 	return &SpeakerService{}
 }
 
-// GetSpeakerList 分页获取说话人列表，支持关键词、性别与状态筛选
-func (speakerService *SpeakerService) GetSpeakerList(page int, pageSize int, keyword string, gender string, status string) (speakers []models.Speaker, total int64, err error) {
+// GetSpeakerList 分页获取说话人列表，支持关键词筛选
+func (speakerService *SpeakerService) GetSpeakerList(page int, pageSize int, keyword string) (speakers []models.Speaker, total int64, err error) {
 	query := facades.Orm().Query()
 
 	if keyword != "" {
 		like := "%" + keyword + "%"
 		query = query.Where("name LIKE ? OR description LIKE ?", like, like)
-	}
-
-	if gender != "" {
-		query = query.Where("gender = ?", gender)
-	}
-
-	if status != "" {
-		query = query.Where("status = ?", status)
 	}
 
 	err = query.OrderByDesc("id").Paginate(page, pageSize, &speakers, &total)
@@ -201,13 +193,12 @@ func (speakerService *SpeakerService) DeleteAudioById(speakerID uint, audioID in
 	return result, err
 }
 
-// GetActiveVoiceprints 读取所有启用状态说话人的声纹向量，用于重建内存声纹库。
+// GetActiveVoiceprints 读取所有说话人的声纹向量，用于重建内存声纹库。
 //
 // 返回值以说话人名称为键，与 sherpa-onnx 声纹库中的检索标识保持一致。
 func (speakerService *SpeakerService) GetActiveVoiceprints() (map[string][][]float32, error) {
 	var speakers []models.Speaker
 	if err := facades.Orm().Query().
-		Where("status = ?", models.SpeakerStatusActive).
 		Find(&speakers); err != nil {
 		return nil, err
 	}

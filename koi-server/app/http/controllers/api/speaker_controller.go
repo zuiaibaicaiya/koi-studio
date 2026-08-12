@@ -25,7 +25,7 @@ func NewSpeakerController() *SpeakerController {
 	}
 }
 
-// ListSpeakers 说话人列表，支持分页、关键词、性别与状态筛选
+// ListSpeakers 说话人列表，支持分页与关键词筛选
 func (ctrl *SpeakerController) ListSpeakers(ctx http.Context) http.Response {
 	var listReq speakers.SpeakerListRequest
 	errors, err := ctx.Request().ValidateRequest(&listReq)
@@ -38,7 +38,7 @@ func (ctrl *SpeakerController) ListSpeakers(ctx http.Context) http.Response {
 
 	page, pageSize := normalizePagination(listReq.Page, listReq.PageSize)
 
-	list, total, err := ctrl.speakerService.GetSpeakerList(page, pageSize, listReq.Keyword, listReq.Gender, listReq.Status)
+	list, total, err := ctrl.speakerService.GetSpeakerList(page, pageSize, listReq.Keyword)
 	if err != nil {
 		facades.Log().WithContext(ctx).Error("获取说话人列表失败: " + err.Error())
 		return ctrl.ApiErrorMsg(ctx, "获取说话人列表失败")
@@ -82,21 +82,9 @@ func (ctrl *SpeakerController) CreateSpeaker(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "说话人已经存在")
 	}
 
-	gender := speakerPost.Gender
-	if gender == "" {
-		gender = models.SpeakerGenderUnknown
-	}
-
-	status := speakerPost.Status
-	if status == "" {
-		status = models.SpeakerStatusActive
-	}
-
 	speaker := models.Speaker{
 		Name:        speakerPost.Name,
-		Gender:      gender,
 		Description: speakerPost.Description,
-		Status:      status,
 	}
 
 	if err := ctrl.speakerService.AddSpeaker(&speaker); err != nil {
@@ -151,7 +139,6 @@ func (ctrl *SpeakerController) UpdateSpeaker(ctx http.Context) http.Response {
 	}
 
 	previousName := speaker.Name
-	previousStatus := speaker.Status
 
 	if speakerUpdate.Name != "" && speakerUpdate.Name != speaker.Name {
 		exists, err := ctrl.speakerService.IsSpeakerNameExists(speakerUpdate.Name, speaker.ID)
@@ -166,14 +153,8 @@ func (ctrl *SpeakerController) UpdateSpeaker(ctx http.Context) http.Response {
 		speaker.Name = speakerUpdate.Name
 	}
 
-	if speakerUpdate.Gender != "" {
-		speaker.Gender = speakerUpdate.Gender
-	}
 	if speakerUpdate.Description != "" {
 		speaker.Description = speakerUpdate.Description
-	}
-	if speakerUpdate.Status != "" {
-		speaker.Status = speakerUpdate.Status
 	}
 
 	if err := ctrl.speakerService.UpdateSpeaker(&speaker); err != nil {
@@ -181,10 +162,8 @@ func (ctrl *SpeakerController) UpdateSpeaker(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "更新说话人失败")
 	}
 
-	if speaker.Name != previousName || speaker.Status != previousStatus {
-		if speaker.Name != previousName {
-			ctrl.voiceprintService.UnregisterSpeaker(previousName)
-		}
+	if speaker.Name != previousName {
+		ctrl.voiceprintService.UnregisterSpeaker(previousName)
 		if err := ctrl.voiceprintService.SyncSpeaker(&speaker); err != nil {
 			facades.Log().WithContext(ctx).Warning("刷新内存声纹库失败: " + err.Error())
 		}
