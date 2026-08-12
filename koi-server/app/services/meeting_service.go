@@ -45,7 +45,7 @@ func ParseMeetingTime(value string) (time.Time, error) {
 }
 
 // GetMeetingList 分页查询会议列表
-func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status string) ([]models.Meeting, int64, error) {
+func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status, startTime, endTime string) ([]models.Meeting, int64, error) {
 	query := facades.Orm().Query()
 	if keyword != "" {
 		like := "%" + keyword + "%"
@@ -53,6 +53,14 @@ func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status stri
 	}
 	if status != "" {
 		query = query.Where("status = ?", status)
+	}
+	// 时间段筛选：会议与所选区间有重叠即命中
+	if startTime != "" && endTime != "" {
+		query = query.Where("start_time <= ?", endTime).Where("end_time >= ?", startTime)
+	} else if startTime != "" {
+		query = query.Where("start_time >= ?", startTime)
+	} else if endTime != "" {
+		query = query.Where("end_time <= ?", endTime)
 	}
 
 	var meetings []models.Meeting

@@ -45,7 +45,7 @@ func (ctrl *MeetingController) ListMeetings(ctx http.Context) http.Response {
 	}
 
 	page, pageSize := normalizePagination(req.Page, req.PageSize)
-	list, total, err := ctrl.meetingService.GetMeetingList(page, pageSize, req.Keyword, req.Status)
+	list, total, err := ctrl.meetingService.GetMeetingList(page, pageSize, req.Keyword, req.Status, req.StartTime, req.EndTime)
 	if err != nil {
 		facades.Log().WithContext(ctx).Error("查询会议列表失败: " + err.Error())
 		return ctrl.ApiErrorMsg(ctx, "查询失败")

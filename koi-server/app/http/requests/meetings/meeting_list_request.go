@@ -15,6 +15,10 @@ type MeetingListRequest struct {
 	Keyword string `form:"keyword" json:"keyword" example:"周会"`
 	// Status 状态筛选：created/ongoing/finished
 	Status string `form:"status" json:"status" example:"created"`
+	// StartTime 时间段起始（筛选该时间段内的会议，格式 2006-01-02 15:04:05）
+	StartTime string `form:"start_time" json:"start_time" example:"2026-08-01 00:00:00"`
+	// EndTime 时间段结束
+	EndTime string `form:"end_time" json:"end_time" example:"2026-08-31 23:59:59"`
 }
 
 func (r *MeetingListRequest) Authorize(ctx http.Context) error {
@@ -23,8 +27,10 @@ func (r *MeetingListRequest) Authorize(ctx http.Context) error {
 
 func (r *MeetingListRequest) Filters(ctx http.Context) map[string]any {
 	return map[string]any{
-		"keyword": "trim",
-		"status":  "trim",
+		"keyword":    "trim",
+		"status":     "trim",
+		"start_time": "trim",
+		"end_time":   "trim",
 	}
 }
 
@@ -46,9 +52,11 @@ func (r *MeetingListRequest) Messages(ctx http.Context) map[string]string {
 
 func (r *MeetingListRequest) Attributes(ctx http.Context) map[string]string {
 	return map[string]string{
-		"page":     "页码",
-		"pageSize": "每页数量",
-		"status":   "状态",
+		"page":       "页码",
+		"pageSize":   "每页数量",
+		"status":     "状态",
+		"start_time": "开始时间",
+		"end_time":   "结束时间",
 	}
 }
 
