@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, watch } from 'vue';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message, modal } = App.useApp();
 import type { TableColumnsType, UploadProps } from 'antdv-next';
 import {
   PlusOutlined,
@@ -106,7 +107,7 @@ async function submitLib() {
   }
 }
 function removeLib(lib: HotWordLibrary) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除',
     content: `确定删除热词库「${lib.name}」及其 ${lib.wordCount} 条热词吗？`,
     okText: '删除',
@@ -273,7 +274,7 @@ async function submitWord() {
   }
 }
 function removeWord(w: LibraryWord) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除',
     content: `确定删除热词「${w.word}」吗？`,
     okText: '删除',
@@ -312,7 +313,7 @@ const libColumns: TableColumnsType<HotWordLibrary> = [
 onMounted(loadLibraries);
 
 function confirmRemoveLib(record: HotWordLibrary) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除该热词库？',
     content: '删除后该热词库及其下所有热词将一并移除，且不可恢复。',
     okText: '删除',
@@ -322,7 +323,7 @@ function confirmRemoveLib(record: HotWordLibrary) {
   });
 }
 function confirmRemoveWord(record: LibraryWord) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除该热词？',
     okText: '删除',
     okType: 'danger',

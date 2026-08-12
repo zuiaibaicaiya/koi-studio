@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, reactive, ref } from 'vue';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message, modal } = App.useApp();
 import type { FormInstance, Rule, UploadProps } from 'antdv-next';
 import { useAuthStore } from '../../store/auth';
 import userApi, { type UserDTO, type UserListParams, type CreateUserPayload, type UpdateUserPayload, type Paginated } from '../../services/userApi';
@@ -239,7 +240,7 @@ function confirmDelete(record: UserDTO) {
     message.warning('不能删除自己');
     return;
   }
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除该用户？',
     content: `用户名：${record.username}`,
     okText: '删除',

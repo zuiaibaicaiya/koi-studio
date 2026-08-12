@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { message } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message } = App.useApp();
 import { UserOutlined, LockOutlined } from '@antdv-next/icons';
 import type { Rule } from 'antdv-next';
 import { useAuthStore } from '../store/auth';

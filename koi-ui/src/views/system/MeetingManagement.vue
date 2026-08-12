@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, watch } from 'vue';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
 import type { UploadProps } from 'antdv-next';
 import {
   useMeetingStore,
@@ -23,6 +23,10 @@ import {
   PlayCircleOutlined,
   StopOutlined,
 } from '@antdv-next/icons';
+
+// 使用 App 上下文的 message / modal 实例，使其继承 ConfigProvider 主题（暗黑模式），
+// 避免出现静态方法渲染到 body、不跟随主题变化的问题。
+const { message, modal } = App.useApp();
 
 const store = useMeetingStore();
 
@@ -179,7 +183,7 @@ const meetingBeforeUpload: UploadProps['beforeUpload'] = (file) => {
 };
 
 function confirmDeleteMeeting(record: Meeting) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除该会议？',
     okText: '删除',
     okType: 'danger',

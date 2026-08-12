@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message, modal } = App.useApp();
 import type { UploadProps } from 'antdv-next';
 import {
   useSpeakerStore,
@@ -507,7 +508,7 @@ const beforeUpload: UploadProps['beforeUpload'] = (file) => {
 };
 
 function confirmDelete(record: Speaker) {
-  Modal.confirm({
+  modal.confirm({
     title: '确认删除该说话人？',
     okText: '删除',
     okType: 'danger',

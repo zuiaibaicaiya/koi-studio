@@ -3,7 +3,8 @@ import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '../store/auth';
 import { useThemeStore } from '../store/theme';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message, modal } = App.useApp();
 import {
   HomeOutlined,
   DashboardOutlined,
@@ -50,7 +51,7 @@ let confirming = false;
 function showLogoutConfirm() {
   if (confirming) return;
   confirming = true;
-  Modal.confirm({
+  modal.confirm({
     title: '退出登录',
     content: '确认要退出当前账号吗？退出后需要重新登录才能访问系统。',
     okText: '确认退出',

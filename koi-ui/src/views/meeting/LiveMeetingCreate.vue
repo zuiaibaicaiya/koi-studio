@@ -2,7 +2,8 @@
 import { computed, reactive, ref, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Dayjs } from 'dayjs';
-import { message, type Rule } from 'antdv-next';
+import { App, type Rule } from 'antdv-next';
+const { message } = App.useApp();
 import { useSpeakerStore } from '../../store/speaker';
 import { hotWordApi } from '../../services/hotWordApi';
 import type { HotWordLibraryDTO } from '../../services/hotWordApi';

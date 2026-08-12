@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { message, Modal } from 'antdv-next';
+import { App } from 'antdv-next';
+const { message, modal } = App.useApp();
 import { useSpeakerStore, type Speaker } from '../../store/speaker';
 import { hotWordApi } from '../../services/hotWordApi';
 import type { HotWordDTO } from '../../services/hotWordApi';
@@ -550,7 +551,7 @@ async function finalizeAndLeave(leave: () => void) {
 
 /** 点击「返回」：先弹确认框，确认后自动结束会议，等待后端成功再返回创建页 */
 function backToCreate() {
-  Modal.confirm({
+    modal.confirm({
     title: '返回',
     content: '返回将结束本次实时会议，确认继续？',
     okText: '确认返回',
@@ -562,7 +563,7 @@ function backToCreate() {
 }
 
 function stopMeeting() {
-  Modal.confirm({
+    modal.confirm({
     title: '结束会议',
     content: '确认结束本次实时会议？结束后将跳转首页。',
     okText: '结束',
