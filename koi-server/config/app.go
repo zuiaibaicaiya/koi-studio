@@ -34,14 +34,14 @@ func init() {
 		// Here you may specify the default timezone for your application.
 		// Example: UTC, Asia/Shanghai
 		// More: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
-		"timezone": carbon.UTC,
+		"timezone": carbon.Shanghai,
 
 		// Application Locale Configuration
 		//
 		// The application locale determines the default locale that will be used
 		// by the translation service provider. You are free to set this value
 		// to any of the locales which will be supported by the application.
-		"locale": "en",
+		"locale": "zh_CN",
 
 		// Application Fallback Locale
 		//
