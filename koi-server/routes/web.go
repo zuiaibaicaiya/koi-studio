@@ -5,6 +5,7 @@ import (
 	"github.com/goravel/framework/support"
 
 	"koi-server/app/facades"
+	"koi-server/app/http/controllers/api"
 )
 
 func Web() {
@@ -15,4 +16,7 @@ func Web() {
 	})
 
 	facades.Route().Static("public", "./public")
+
+	// 会议录音等音频文件通过 /audio/{file} 直接访问
+	facades.Route().Get("/audio/{file}", api.NewAudioController().Serve)
 }

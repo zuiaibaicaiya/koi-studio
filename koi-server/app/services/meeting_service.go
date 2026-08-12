@@ -88,3 +88,14 @@ func (s *MeetingService) SetMeetingStatus(id int, status string) error {
 	_, err := facades.Orm().Query().Model(&models.Meeting{}).Where("id = ?", id).Update("status", status)
 	return err
 }
+
+// GetAudioURL 根据音频文件路径生成可直接访问的 URL。
+// audio_file_path 为空时返回空字符串；生成失败时记录日志并返回空字符串。
+func (s *MeetingService) GetAudioURL(audioFilePath string) string {
+	if audioFilePath == "" {
+		return ""
+	}
+
+	diskName := facades.Config().GetString("audio.storage.disk", "audio")
+	return facades.Storage().Disk(diskName).Url(audioFilePath)
+}

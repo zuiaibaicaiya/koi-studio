@@ -33,6 +33,8 @@ type Meeting struct {
 	Status string `json:"status" gorm:"column:status" example:"created"`
 	// AudioFilePath 会议录音文件路径，会议结束后由归档任务写入
 	AudioFilePath string `json:"audio_file_path" gorm:"column:audio_file_path"`
+	// AudioURL 会议录音的可直接访问 URL，由 AudioFilePath 动态生成，不落库
+	AudioURL string `json:"audio_url" gorm:"-" example:"http://localhost/audio/client123.wav"`
 	// CreatedBy 创建人ID，关联 users 表
 	CreatedBy uint `json:"created_by" gorm:"column:created_by" example:"1"`
 }

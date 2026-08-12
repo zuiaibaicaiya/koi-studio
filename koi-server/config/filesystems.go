@@ -36,6 +36,7 @@ func init() {
 			"audio": map[string]any{
 				"driver": "local",
 				"root":   path.Storage("audio"),
+				"url":    config.Env("APP_URL", "").(string) + "/audio",
 			},
 			"speaker": map[string]any{
 				"driver": "local",

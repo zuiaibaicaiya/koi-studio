@@ -51,6 +51,10 @@ func (ctrl *MeetingController) ListMeetings(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "查询失败")
 	}
 
+	for i := range list {
+		list[i].AudioURL = ctrl.meetingService.GetAudioURL(list[i].AudioFilePath)
+	}
+
 	return ctrl.ApiPaginate(ctx, list, total, page, pageSize)
 }
 
@@ -66,6 +70,8 @@ func (ctrl *MeetingController) GetMeeting(ctx http.Context) http.Response {
 	if err != nil {
 		return ctrl.ApiErrorMsg(ctx, "会议不存在")
 	}
+
+	meeting.AudioURL = ctrl.meetingService.GetAudioURL(meeting.AudioFilePath)
 
 	return ctrl.ApiSuccess(ctx, meeting)
 }

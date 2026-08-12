@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/suite"
 
+	"koi-server/app/facades"
+	"koi-server/app/models"
 	"koi-server/tests"
 )
 
@@ -199,4 +201,80 @@ func (s *MeetingTestSuite) TestCreateMeetingNameTooLong() {
 	s.Require().NoError(resp.Bind(&result))
 
 	s.NotEqual(0, result.Code, "overlong name should trigger validation error")
+}
+
+// TestMeetingListReturnsAccessibleAudioURL 验证会议列表为每条会议返回可直接访问的音频 URL。
+//
+// 同时校验该 URL 通过静态路由确实可访问（返回 200）。
+func (s *MeetingTestSuite) TestMeetingListReturnsAccessibleAudioURL() {
+	// 1. 创建会议
+	createResp, err := s.Http(s.T()).WithToken(s.token).Post("/api/meeting",
+		strings.NewReader(`{"name":"音频URL会议","participants":"张三"}`))
+	s.Require().NoError(err)
+	s.Require().NotNil(createResp)
+	createResp.AssertOk()
+
+	var created struct {
+		Code int `json:"code"`
+		Data struct {
+			ID uint `json:"id"`
+		} `json:"data"`
+	}
+	s.Require().NoError(createResp.Bind(&created))
+	s.Require().Equal(0, created.Code)
+	s.Require().NotZero(created.Data.ID)
+
+	// 2. 模拟归档任务：写入 audio_file_path 与音频文件
+	filename := "tdd-audio-test.wav"
+	_, err = facades.Orm().Query().
+		Model(&models.Meeting{}).
+		Where("id = ?", created.Data.ID).
+		Update("audio_file_path", filename)
+	s.Require().NoError(err)
+
+	disk := facades.Storage().Disk(facades.Config().GetString("audio.storage.disk", "audio"))
+	s.Require().NoError(disk.Put(filename, "RIFFfake-wav-content"))
+	defer func() { _ = disk.Delete(filename) }()
+
+	// 3. 列表请求
+	listResp, err := s.Http(s.T()).WithToken(s.token).Get("/api/meeting?keyword=音频URL会议")
+	s.Require().NoError(err)
+	s.Require().NotNil(listResp)
+	listResp.AssertOk()
+
+	var list struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []struct {
+				ID       uint   `json:"id"`
+				AudioURL string `json:"audio_url"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	s.Require().NoError(listResp.Bind(&list))
+	s.Require().Equal(0, list.Code)
+
+	// 4. 断言对应会议携带正确的音频 URL（含端口，依据 .env 的 APP_URL）
+	expectedBase := facades.Config().Env("APP_URL", "http://localhost").(string)
+	expectedURL := strings.TrimRight(expectedBase, "/") + "/audio/" + filename
+
+	var target *struct {
+		ID       uint   `json:"id"`
+		AudioURL string `json:"audio_url"`
+	}
+	for i := range list.Data.Items {
+		if list.Data.Items[i].ID == created.Data.ID {
+			target = &list.Data.Items[i]
+			break
+		}
+	}
+	s.Require().NotNil(target, "created meeting should appear in list")
+	s.Require().Equal(expectedURL, target.AudioURL,
+		"audio_url should be directly accessible absolute URL including port")
+
+	// 5. 验证 URL 可直接访问（静态路由已注册）
+	audioResp, err := s.Http(s.T()).Get("/audio/" + filename)
+	s.Require().NoError(err)
+	s.Require().NotNil(audioResp)
+	audioResp.AssertOk()
 }
