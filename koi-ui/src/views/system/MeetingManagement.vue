@@ -36,6 +36,7 @@ const meetingColumns = [
   { title: '参会人员', dataIndex: 'participants', key: 'participants', ellipsis: true },
   { title: '开始时间', dataIndex: 'startTime', key: 'startTime', width: 170 },
   { title: '结束时间', dataIndex: 'endTime', key: 'endTime', width: 170 },
+  { title: '音频', dataIndex: 'audioUrl', key: 'audioUrl', width: 280 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
   { title: '操作', key: 'action', width: 90, fixed: 'right' as const },
 ];
@@ -346,6 +347,10 @@ onMounted(() => {
               <template v-else-if="column.key === 'participants'">
                 <span>{{ record.participants || '--' }}</span>
               </template>
+              <template v-else-if="column.key === 'audioUrl'">
+                <audio v-if="record.audioUrl" :src="record.audioUrl" controls preload="metadata" class="audio-player" />
+                <span v-else class="muted">--</span>
+              </template>
               <template v-else-if="column.key === 'action'">
                 <a-dropdown :trigger="['click']" placement="bottomRight">
                   <a-button type="link" size="small">
@@ -433,6 +438,10 @@ onMounted(() => {
             <a-tag :color="meetingDetail.rawStatus === 'ongoing' ? 'green' : meetingDetail.rawStatus === 'created' ? 'blue' : 'default'">
               {{ meetingDetail.status }}
             </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="音频">
+            <audio v-if="meetingDetail.audioUrl" :src="meetingDetail.audioUrl" controls preload="metadata" class="audio-player" />
+            <span v-else class="muted">--</span>
           </a-descriptions-item>
           <a-descriptions-item label="创建者ID">{{ meetingDetail.createdBy || '--' }}</a-descriptions-item>
           <a-descriptions-item label="创建时间">{{ meetingDetail.createdAt }}</a-descriptions-item>
@@ -598,6 +607,17 @@ onMounted(() => {
 }
 .action-menu {
   min-width: 140px;
+}
+.muted {
+  color: var(--color-text-secondary);
+}
+.audio-player {
+  width: 240px;
+  height: 36px;
+}
+.audio-player:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
 }
 .action-menu :deep(.ant-dropdown-menu-item) {
   display: flex;

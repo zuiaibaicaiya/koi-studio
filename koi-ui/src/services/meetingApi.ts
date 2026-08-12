@@ -13,6 +13,7 @@ export interface MeetingDTO {
   created_by: number;
   created_at?: string;
   updated_at?: string;
+  audio_url?: string;
 }
 
 /** 创建实时会议请求体（见 MeetingPostRequest）。 */

@@ -33,6 +33,8 @@ export interface Meeting {
   createdBy: number;
   createdAt: string;
   updatedAt: string;
+  /** 会议音频地址 */
+  audioUrl?: string;
   /** 会议链接（预留） */
   meetingUrl?: string;
   /** 实时转写内容（预留） */
@@ -60,6 +62,7 @@ function fromDTO(dto: MeetingDTO): Meeting {
     createdBy: dto.created_by,
     createdAt: dto.createdAt,
     updatedAt: dto.updatedAt,
+    audioUrl: dto.audio_url || '',
   };
 }
 
