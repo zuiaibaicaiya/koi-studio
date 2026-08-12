@@ -7,8 +7,6 @@ import {
   useSpeakerStore,
   type Speaker,
   type SpeakerAudio,
-  type UIGender,
-  type UIStatus,
 } from '../../store/speaker';
 import { rowsFromCsv, type CsvColumn } from '../../utils/csv';
 import { toWavFile } from '../../utils/audio';
@@ -26,7 +24,7 @@ import {
 const store = useSpeakerStore();
 
 const columns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 70, sorter: (a: Speaker, b: Speaker) => a.id - b.id },
+  { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
   { title: '姓名', dataIndex: 'name', key: 'name' },
   { title: '音频样本', key: 'audio', width: 280 },
   { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
@@ -42,8 +40,6 @@ const csvColumns: CsvColumn[] = [
 ];
 
 const keyword = ref('');
-const genderFilter = ref<UIGender | '' | undefined>('');
-const statusFilter = ref<UIStatus | '' | undefined>('');
 
 const pagination = computed(() => ({
   current: store.page,
@@ -53,9 +49,9 @@ const pagination = computed(() => ({
   showTotal: (t: number) => `共 ${t} 条`,
 }));
 
-/** 关键词 / 性别 / 状态筛选后重新查询（重置到第一页） */
+/** 关键词筛选后重新查询（重置到第一页） */
 function doSearch() {
-  store.load({ page: 1, keyword: keyword.value, gender: genderFilter.value, status: statusFilter.value });
+  store.load({ page: 1, keyword: keyword.value });
 }
 /** 回车直接触发查询 */
 function onKeywordEnter() {
@@ -68,8 +64,6 @@ function handleTableChange(pg: { current: number; pageSize: number }) {
     page: pg.current,
     pageSize: pg.pageSize,
     keyword: keyword.value,
-    gender: genderFilter.value,
-    status: statusFilter.value,
   });
 }
 
@@ -78,9 +72,7 @@ const editingId = ref<number | null>(null);
 const submitting = ref(false);
 const formState = reactive<Omit<Speaker, 'id' | 'createdAt'>>({
   name: '',
-  gender: '未知',
   language: '中文',
-  status: '启用',
   sampleCount: 0,
   description: '',
   audio: null,
@@ -357,7 +349,7 @@ const beforeAudioUpload: UploadProps['beforeUpload'] = async (file) => {
 };
 
 function resetForm() {
-  Object.assign(formState, { name: '', gender: '未知', language: '中文', status: '启用', sampleCount: 0, description: '', audio: null });
+  Object.assign(formState, { name: '', language: '中文', sampleCount: 0, description: '', audio: null });
 }
 function openCreate() {
   if (recording.value) {
@@ -384,9 +376,7 @@ function openEdit(record: Speaker) {
   audioError.value = '';
   Object.assign(formState, {
     name: record.name,
-    gender: record.gender,
     language: record.language ?? '中文',
-    status: record.status ?? '启用',
     sampleCount: record.sampleCount ?? 0,
     description: record.description,
     audio: null,
@@ -415,9 +405,7 @@ async function handleSubmit() {
     const audio = audioSample.value;
     const payload = {
       name: formState.name.trim(),
-      gender: formState.gender,
       description: formState.description.trim(),
-      status: formState.status,
       // 录音随表单一起以 multipart/form-data 提交
       audio: audio?.blob
         ? { blob: audio.blob, fileName: audio.name, remark: audio.remark || audio.name }
@@ -476,8 +464,6 @@ onBeforeUnmount(() => {
 });
 async function handleReset() {
   keyword.value = '';
-  genderFilter.value = '';
-  statusFilter.value = '';
   await store.load({ page: 1 });
   message.success('已重置筛选');
 }
@@ -531,28 +517,6 @@ function confirmDelete(record: Speaker) {
             >
               <template #prefix><SearchOutlined /></template>
             </a-input>
-          </a-form-item>
-          <a-form-item label="性别">
-            <a-select
-              v-model:value="genderFilter"
-              placeholder="全部"
-              allow-clear
-              style="width: 120px"
-              @change="doSearch"
-            >
-              <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
-            </a-select>
-          </a-form-item>
-          <a-form-item label="状态">
-            <a-select
-              v-model:value="statusFilter"
-              placeholder="全部"
-              allow-clear
-              style="width: 120px"
-              @change="doSearch"
-            >
-              <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-            </a-select>
           </a-form-item>
           <a-form-item class="btn-item">
             <a-space>
@@ -615,16 +579,6 @@ function confirmDelete(record: Speaker) {
       <a-form :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }" class="modal-form">
         <a-form-item label="姓名" required>
           <a-input v-model:value="formState.name" placeholder="请输入姓名" />
-        </a-form-item>
-        <a-form-item label="性别">
-          <a-select v-model:value="formState.gender" style="width: 160px">
-            <a-select-option v-for="g in store.genderOptions" :key="g" :value="g">{{ g }}</a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select v-model:value="formState.status" style="width: 160px">
-            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-          </a-select>
         </a-form-item>
         <a-form-item label="音频样本">
           <div class="audio-panel">
