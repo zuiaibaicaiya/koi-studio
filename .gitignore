@@ -1,3 +1,5 @@
 .DS_Store
+.idea
 build-electron
+koi-ui/src/components.d.ts
 koi-ui/src/components.d.ts
