@@ -54,6 +54,13 @@
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.03), 0 1px 6px -1px rgba(0, 0, 0, 0.02);
   --shadow-md: 0 6px 16px 0 rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 12px 32px 0 rgba(0, 0, 0, 0.12);
+
+  /* 首页背景：分层柔光晕，统一由页面引用 */
+  --home-bg:
+    radial-gradient(900px 520px at 88% -8%, var(--color-brand-soft), transparent 62%),
+    radial-gradient(760px 480px at 4% 108%, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 60%),
+    radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--color-brand-soft) 60%, transparent), transparent 70%),
+    var(--color-bg);
 }
 
 /* ---- 深色（对齐 antdv-next 暗色令牌） ---- */
@@ -89,6 +96,13 @@
   --shadow-sm: 0 1px 2px -2px rgba(0, 0, 0, 0.48), 0 3px 6px 0 rgba(0, 0, 0, 0.32);
   --shadow-md: 0 6px 16px 0 rgba(0, 0, 0, 0.32);
   --shadow-lg: 0 12px 32px 0 rgba(0, 0, 0, 0.4);
+
+  /* 首页背景（深色）：更深、低饱和的柔光晕 */
+  --home-bg:
+    radial-gradient(900px 520px at 88% -8%, var(--color-brand-soft), transparent 62%),
+    radial-gradient(760px 480px at 4% 108%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 60%),
+    radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--color-brand-soft) 55%, transparent), transparent 70%),
+    var(--color-bg);
 }
 
 /* ---- 暴露为 Tailwind 工具类 ---- */

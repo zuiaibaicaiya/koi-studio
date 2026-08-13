@@ -154,23 +154,7 @@ function openModule(m: { to?: string }) {
 .home {
   min-height: 100vh;
   padding: 0 24px 24px;
-  background:
-    radial-gradient(
-      900px 520px at 88% -8%,
-      var(--color-brand-soft),
-      transparent 62%
-    ),
-    radial-gradient(
-      760px 480px at 4% 108%,
-      color-mix(in srgb, var(--color-accent) 16%, transparent),
-      transparent 60%
-    ),
-    radial-gradient(
-      120% 80% at 50% 0%,
-      color-mix(in srgb, var(--color-brand-soft) 60%, transparent),
-      transparent 70%
-    ),
-    var(--color-bg);
+  background: var(--home-bg);
   color: var(--color-text);
 }
 .home-header {
@@ -182,9 +166,10 @@ function openModule(m: { to?: string }) {
   margin: 0 -24px 0;
   padding: 0 24px;
   align-items: center;
-  background: color-mix(in srgb, var(--color-bg) 80%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--home-bg) 80%, transparent);
+  background-blend-mode: normal;
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
   z-index: 10;
 }
 .header-right {
