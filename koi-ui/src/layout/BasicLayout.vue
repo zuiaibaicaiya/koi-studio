@@ -3,7 +3,6 @@ import { computed, h, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useThemeStore } from '../store/theme';
 import {
-  HomeOutlined,
   DashboardOutlined,
   TeamOutlined,
   TagsOutlined,
@@ -11,6 +10,7 @@ import {
   ScheduleOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  ArrowLeftOutlined,
 } from '@antdv-next/icons';
 
 const themeStore = useThemeStore();
@@ -25,7 +25,6 @@ const selectedKeys = computed(() => [route.name as string]);
 const currentTitle = computed(() => (route.meta.title as string) || '系统管理');
 
 const menuItems = [
-  { key: 'home', icon: () => h(HomeOutlined), label: '首页' },
   { key: 'dashboard', icon: () => h(DashboardOutlined), label: '仪表盘' },
   { key: 'users', icon: () => h(TeamOutlined), label: '用户管理' },
   { key: 'hotWords', icon: () => h(TagsOutlined), label: '热词库管理' },
@@ -35,6 +34,10 @@ const menuItems = [
 
 function handleMenuClick({ key }: { key: string }) {
   router.push({ name: key });
+}
+
+function goHome() {
+  router.push({ name: 'home' });
 }
 </script>
 
@@ -49,10 +52,10 @@ function handleMenuClick({ key }: { key: string }) {
       :class="{ 'is-dark': isDark }"
       class="sider"
     >
-      <div class="logo">
-        <span class="logo-mark">K</span>
-        <span v-show="!collapsed" class="logo-text">Koi Studio</span>
-      </div>
+      <a-button type="text" class="logo" @click="goHome">
+        <template #icon><ArrowLeftOutlined class="logo-icon" /></template>
+        <span v-show="!collapsed" class="logo-text">返回首页</span>
+      </a-button>
       <a-menu
         :theme="isDark ? 'dark' : 'light'"
         mode="inline"
@@ -131,21 +134,72 @@ function handleMenuClick({ key }: { key: string }) {
   align-items: center;
   gap: 10px;
   padding: 0 16px;
-  color: var(--color-text-inverse);
-  font-weight: 600;
+  margin: 0;
+  position: relative;
+  color: var(--color-text-secondary) !important;
+  font-weight: 500;
   font-size: 16px;
   letter-spacing: 0.5px;
+  width: 100%;
+  justify-content: flex-start;
+  border-radius: 0;
+  transition: color 0.2s ease, background 0.2s ease;
+  overflow: hidden;
 }
-.logo-mark {
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
-  background: linear-gradient(135deg, var(--color-brand), var(--color-accent));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-weight: 700;
+.logo-icon {
+  font-size: 17px;
+  line-height: 1;
+  transition: transform 0.2s ease;
+}
+.logo-text {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 0.2s ease;
+}
+.logo:hover .logo-icon {
+  transform: translateX(-2px);
+}
+/* 左侧品牌色竖条点缀，hover/聚焦时展开 */
+.logo::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 0 3px 3px 0;
+  background: var(--color-brand);
+  transform: translateY(-50%);
+  transition: height 0.2s ease;
+}
+/* 深色主题：侧边栏为深色底，按钮文字切换为更柔和的浅色 */
+.sider.is-dark .logo {
+  color: var(--color-sider-text-muted) !important;
+}
+.logo:hover,
+.logo:focus-visible,
+.sider.is-dark .logo:hover,
+.sider.is-dark .logo:focus-visible {
+  color: var(--color-brand) !important;
+  background: var(--color-surface-2);
+}
+.logo:hover::before,
+.logo:focus-visible::before,
+.sider.is-dark .logo:hover::before,
+.sider.is-dark .logo:focus-visible::before {
+  height: 22px;
+}
+.sider.is-dark .logo:hover,
+.sider.is-dark .logo:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+.logo:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: -2px;
 }
 .header {
   background: var(--color-surface);
