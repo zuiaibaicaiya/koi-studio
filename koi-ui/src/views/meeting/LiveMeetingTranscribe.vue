@@ -449,18 +449,55 @@ async function teardown(sendFinal = true) {
   closeAudioContext();
 }
 
-const transcriptScrollerRef = ref<{ scrollToBottom: () => void } | null>(null);
+// DynamicScroller 通过 expose 只暴露方法，取不到 $el，因此用容器 ref 查询
+// 真实的滚动元素（.vue-recycle-scroller 根节点，即真正可滚动的容器）。
+const transcriptPanelRef = ref<HTMLElement | null>(null);
 const autoScroll = ref(true);
+
+function getScrollerEl(): HTMLElement | null {
+  const panel = transcriptPanelRef.value;
+  if (!panel) return null;
+  return panel.querySelector<HTMLElement>('.vue-recycle-scroller');
+}
 
 function onTranscriptScroll(e: Event) {
   const el = e.target as HTMLElement;
   autoScroll.value = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
 }
+
+/**
+ * 页面重新获得焦点（或切回标签页）时，恢复“贴底跟随”并滚动到最新转写。
+ * 实时会议页面被切走再回来，用户通常想看最新内容，因此重置 autoScroll 为 true。
+ */
+function onWindowFocus() {
+  autoScroll.value = true;
+  scrollToBottom();
+}
+
+/**
+ * 将虚拟滚动条贴到底部（最新转写处）。
+ * 直接操作真实滚动元素，不依赖 DynamicScroller.scrollToBottom（其基于
+ * “全部项测量完成”的循环在平滑滚动下会提前终止，导致停在离底部差一点的位置）。
+ * 跟随期间临时关闭平滑滚动以打断与 scroll 事件的锚点漂移，并用连续几帧校正
+ * 兼容动态行高测量；一旦用户手动上滑（autoScroll=false）即停止跟随。
+ */
 function scrollToBottom() {
   nextTick(() => {
-    if (autoScroll.value && transcriptScrollerRef.value) {
-      transcriptScrollerRef.value.scrollToBottom();
-    }
+    if (!autoScroll.value) return;
+    const el = getScrollerEl();
+    if (!el) return;
+    const prevBehavior = el.style.scrollBehavior;
+    el.style.scrollBehavior = 'auto';
+    let frames = 0;
+    const stick = () => {
+      el.scrollTop = el.scrollHeight;
+      if (autoScroll.value && frames++ < 8) {
+        requestAnimationFrame(stick);
+      } else {
+        el.style.scrollBehavior = prevBehavior;
+      }
+    };
+    stick();
   });
 }
 
@@ -761,7 +798,15 @@ onMounted(async () => {
   // 加载所选热词库及其热词
   loadHotWords();
   // 注意：不在此处建立连接 / 开始采集，等待用户点击「开始转写」
+  // 页面重新获得焦点 / 切回标签页时，滚动到最新转写
+  window.addEventListener('focus', onWindowFocus);
+  document.addEventListener('visibilitychange', onVisibilityChange);
 });
+
+/** 标签页切回前台时也视为“重新获得焦点”，滚动到最新转写。 */
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') onWindowFocus();
+}
 
 /** 进入转写页即标记会议为进行中（实时会议）。 */
 function markMeetingOngoing() {
@@ -771,6 +816,8 @@ function markMeetingOngoing() {
     .catch((err) => message.warning((err as Error)?.message || '标记会议进行中失败'));
 }
 onBeforeUnmount(() => {
+  window.removeEventListener('focus', onWindowFocus);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
   void teardown();
 });
 </script>
@@ -859,7 +906,7 @@ onBeforeUnmount(() => {
         show-icon
         :message="captureError"
       />
-      <div class="transcript-list">
+      <div ref="transcriptPanelRef" class="transcript-list">
         <div v-if="visibleSegments.length === 0 && !showInterim" class="transcript-empty">
           <AudioOutlined />
           <p v-if="focusSpeakerId !== null">该说话人暂无发言内容</p>
@@ -869,7 +916,6 @@ onBeforeUnmount(() => {
         </div>
         <DynamicScroller
           v-if="visibleSegments.length > 0"
-          ref="transcriptScrollerRef"
           class="transcript-scroller"
           :items="visibleSegments"
           :min-item-size="64"
