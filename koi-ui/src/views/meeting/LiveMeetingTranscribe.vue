@@ -17,7 +17,6 @@ import {
   TagsOutlined,
   SoundOutlined,
   ArrowLeftOutlined,
-  SearchOutlined,
   CalendarOutlined,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
@@ -113,7 +112,6 @@ const hotWords = computed(() => selectedLibraries.value.flatMap((lib) => lib.wor
 const running = ref(true);
 const elapsed = ref(0); // 秒
 const segments = ref<Segment[]>([]);
-const hotWordSet = computed(() => new Set(hotWords.value.map((w) => w.word)));
 
 /** 转写会话是否已由用户主动开始 */
 const started = ref(false);
@@ -208,7 +206,7 @@ function handleWorkletMessage(event: MessageEvent) {
       const v = chunk[i] / 32768;
       sum += v * v;
     }
-    currentVolume.value = chunk.length ? Math.min(1, Math.sqrt(sum / chunk.length) * 3) : 0;
+    currentVolume.value = chunk.length ? Math.min(1, Math.sqrt(sum / chunk.length) * 5.5) : 0;
   }
 
   // 暂停期间不上行音频，仅保留采集链路
@@ -611,9 +609,7 @@ function stopMeeting() {
   });
 }
 
-// 热词高亮
-const highlightEnabled = ref(true);
-
+// 转写文本 HTML 转义（不再做热词高亮）
 function escapeHtml(text: string) {
   const map: Record<string, string> = {
     '&': '&amp;',
@@ -626,14 +622,7 @@ function escapeHtml(text: string) {
 }
 
 function highlight(text: string) {
-  let html = escapeHtml(text);
-  if (!highlightEnabled.value) return html;
-  hotWordSet.value.forEach((w) => {
-    if (!w) return;
-    const safe = escapeHtml(w);
-    html = html.split(safe).join(`<mark class="hot-word">${safe}</mark>`);
-  });
-  return html;
+  return escapeHtml(text);
 }
 
 /* ------------------------- 顶部按钮 -> 侧边抽屉 ------------------------- */
@@ -641,7 +630,6 @@ type DrawerKey = 'participants' | 'speakers' | 'hotWords';
 
 const drawerOpen = ref(false);
 const drawerKey = ref<DrawerKey>('participants');
-const keyword = ref('');
 
 const drawerTitleMap: Record<DrawerKey, string> = {
   participants: '参会人员',
@@ -652,78 +640,25 @@ const drawerTitle = computed(() => drawerTitleMap[drawerKey.value]);
 
 function openDrawer(key: DrawerKey) {
   drawerKey.value = key;
-  keyword.value = '';
   drawerOpen.value = true;
 }
 
-const lowerKeyword = computed(() => keyword.value.trim().toLowerCase());
+const filteredParticipants = computed(() => participants.value);
 
-const filteredParticipants = computed(() => {
-  const kw = lowerKeyword.value;
-  if (!kw) return participants.value;
-  return participants.value.filter((name) => name.toLowerCase().includes(kw));
-});
-
-const filteredSpeakers = computed(() => {
-  const kw = lowerKeyword.value;
-  if (!kw) return speakers.value;
-  return speakers.value.filter((s) =>
-    [s.name, s.language, s.gender, s.description].some((f) => f.toLowerCase().includes(kw)),
-  );
-});
-
-// 各说话人发言段数
-const speakerSegmentCount = computed(() => {
-  const map = new Map<number, number>();
-  segments.value.forEach((s) => map.set(s.speakerId, (map.get(s.speakerId) ?? 0) + 1));
-  return map;
-});
-
-function speakerShare(id: number) {
-  const total = segments.value.length;
-  if (!total) return 0;
-  return Math.round(((speakerSegmentCount.value.get(id) ?? 0) / total) * 100);
-}
-
-// 各热词命中次数（按词匹配，因热词库接口返回的热词仅有 word/weight）
-const hotWordHitCount = computed(() => {
-  const all = segments.value.map((s) => s.text).join('\n');
-  const map = new Map<string, number>();
-  hotWords.value.forEach((w) => {
-    map.set(w.word, w.word ? all.split(w.word).length - 1 : 0);
-  });
-  return map;
-});
+const filteredSpeakers = computed(() => speakers.value);
 
 // 按热词库分组热词
-const hotWordGroups = computed(() => {
-  const kw = lowerKeyword.value;
-  return selectedLibraries.value.map((lib) => ({
+const hotWordGroups = computed(() =>
+  selectedLibraries.value.map((lib) => ({
     name: lib.name,
-    words: kw ? lib.words.filter((w) => w.word.toLowerCase().includes(kw)) : lib.words,
-  }));
-});
-
-// 只看某位说话人的发言
-const focusSpeakerId = ref<number | null>(null);
-const focusSpeakerName = computed(
-  () => speakers.value.find((s) => s.id === focusSpeakerId.value)?.name ?? '',
-);
-function toggleFocusSpeaker(id: number) {
-  focusSpeakerId.value = focusSpeakerId.value === id ? null : id;
-}
-const visibleSegments = computed(() =>
-  focusSpeakerId.value === null
-    ? segments.value
-    : segments.value.filter((s) => s.speakerId === focusSpeakerId.value),
+    words: lib.words,
+  })),
 );
 
-/** 中间结果是否需要展示（受“只看某人”筛选影响） */
-const showInterim = computed(
-  () =>
-    !!interimText.value &&
-    (focusSpeakerId.value === null || focusSpeakerId.value === interimSpeakerId.value),
-);
+const visibleSegments = computed(() => segments.value);
+
+/** 中间结果是否需要展示 */
+const showInterim = computed(() => !!interimText.value);
 
 /** 顶部转写状态标签 */
 const statusTag = computed(() => {
@@ -785,7 +720,6 @@ watch(
     segId = 0;
     started.value = false;
     running.value = true;
-    focusSpeakerId.value = null;
     loadHotWords();
   },
 );
@@ -889,14 +823,6 @@ onBeforeUnmount(() => {
           <span class="live-dot" :class="{ paused: !started || !running || !recording }"></span>
           实时转写
           <a-tag :color="statusTag.color">{{ statusTag.text }}</a-tag>
-          <a-tag
-            v-if="focusSpeakerId !== null"
-            color="processing"
-            closable
-            @close="focusSpeakerId = null"
-          >
-            仅看 {{ focusSpeakerName }}
-          </a-tag>
         </span>
       </template>
       <a-alert
@@ -909,8 +835,7 @@ onBeforeUnmount(() => {
       <div ref="transcriptPanelRef" class="transcript-list">
         <div v-if="visibleSegments.length === 0 && !showInterim" class="transcript-empty">
           <AudioOutlined />
-          <p v-if="focusSpeakerId !== null">该说话人暂无发言内容</p>
-          <p v-else-if="!started">点击「开始转写」后，转写内容将实时显示在这里</p>
+          <p v-if="!started">点击「开始转写」后，转写内容将实时显示在这里</p>
           <p v-else-if="!recording">音频采集未开启，点击「重新采集」后继续转写</p>
           <p v-else>正在聆听… 转写内容将实时显示在这里</p>
         </div>
@@ -964,30 +889,10 @@ onBeforeUnmount(() => {
       placement="right"
     >
       <div class="drawer-body">
-        <a-input
-          v-model:value="keyword"
-          allow-clear
-          :placeholder="
-            drawerKey === 'participants'
-              ? '搜索参会人员姓名'
-              : drawerKey === 'speakers'
-                ? '搜索说话人 / 语种'
-                : '搜索热词 / 分类'
-          "
-        >
-          <template #prefix><SearchOutlined /></template>
-        </a-input>
-
         <!-- 参会人员 -->
         <template v-if="drawerKey === 'participants'">
-          <div class="drawer-summary">
-            <span>共 {{ participants.length }} 人</span>
-          </div>
           <div class="detail-list">
             <div v-for="name in filteredParticipants" :key="name" class="detail-item">
-              <a-avatar :size="38" :style="{ backgroundColor: 'var(--color-brand)' }">
-                {{ name.charAt(0) }}
-              </a-avatar>
               <div class="detail-main">
                 <div class="detail-title">
                   <span>{{ name }}</span>
@@ -1000,40 +905,12 @@ onBeforeUnmount(() => {
 
         <!-- 说话人 -->
         <template v-else-if="drawerKey === 'speakers'">
-          <div class="drawer-summary">
-            <span>共 {{ speakers.length }} 位说话人</span>
-            <span>已转写 {{ segments.length }} 段</span>
-          </div>
           <div class="detail-list">
             <div v-for="s in filteredSpeakers" :key="s.id" class="detail-item">
-              <a-avatar :size="38" :style="{ backgroundColor: 'var(--color-success)' }">
-                {{ s.name.charAt(0) }}
-              </a-avatar>
               <div class="detail-main">
                 <div class="detail-title">
                   <span>{{ s.name }}</span>
-                  <a-tag color="blue">{{ s.language }}</a-tag>
-                  <a-tag>{{ s.gender }}</a-tag>
                 </div>
-                <div class="detail-sub">{{ s.description }}</div>
-                <div class="detail-sub">
-                  声纹样本 {{ s.sampleCount }} 条
-                  <span class="dot-split">·</span>
-                  注册于 {{ s.createdAt }}
-                </div>
-                <div class="detail-metric">
-                  <span class="metric-label">
-                    本场发言 {{ speakerSegmentCount.get(s.id) || 0 }} 段（{{ speakerShare(s.id) }}%）
-                  </span>
-                  <a-progress :percent="speakerShare(s.id)" size="small" :show-info="false" />
-                </div>
-                <a-button
-                  size="small"
-                  :type="focusSpeakerId === s.id ? 'primary' : 'default'"
-                  @click="toggleFocusSpeaker(s.id)"
-                >
-                  {{ focusSpeakerId === s.id ? '取消筛选' : '只看 TA 的发言' }}
-                </a-button>
               </div>
             </div>
             <a-empty v-if="filteredSpeakers.length === 0" description="暂无匹配的说话人" />
@@ -1042,40 +919,20 @@ onBeforeUnmount(() => {
 
         <!-- 热词库 -->
         <template v-else>
-          <div class="config-row">
-            <div>
-              <div class="config-label">转写中高亮热词</div>
-              <div class="detail-sub">开启后命中的热词会在转写文本中标黄显示</div>
-            </div>
-            <a-switch v-model:checked="highlightEnabled" />
-          </div>
-          <div class="drawer-summary">
-            <span>共 {{ selectedLibraries.length }} 个热词库</span>
-            <span>{{ hotWords.length }} 个热词</span>
-          </div>
           <div class="detail-list">
             <div v-for="g in hotWordGroups" :key="g.name" class="word-group">
-              <div class="group-title">
-                {{ g.name }}
-                <span class="group-count">{{ g.words.length }}</span>
-              </div>
+              <div class="group-title">{{ g.name }}</div>
               <div v-for="w in g.words" :key="w.word" class="detail-item">
                 <div class="detail-main">
                   <div class="detail-title">
                     <span>{{ w.word }}</span>
                     <a-tag color="gold">权重 {{ w.weight }}</a-tag>
-                    <a-tag :color="(hotWordHitCount.get(w.word) || 0) > 0 ? 'green' : 'default'">
-                      命中 {{ hotWordHitCount.get(w.word) || 0 }} 次
-                    </a-tag>
-                  </div>
-                  <div class="detail-metric">
-                    <span class="metric-label">识别权重</span>
-                    <a-progress :percent="w.weight" size="small" :show-info="false" />
                   </div>
                 </div>
               </div>
+              <a-empty v-if="g.words.length === 0" description="该热词库暂无热词" />
             </div>
-            <a-empty v-if="hotWords.length === 0" description="暂无匹配的热词" />
+            <a-empty v-if="hotWordGroups.length === 0" description="暂无启用的热词库" />
           </div>
         </template>
       </div>
@@ -1196,14 +1053,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-.drawer-summary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  color: var(--color-text-secondary);
-  font-size: 12px;
 }
 .detail-list {
   display: flex;
@@ -1395,11 +1244,5 @@ onBeforeUnmount(() => {
   50% {
     opacity: 0.65;
   }
-}
-.seg-text :deep(.hot-word) {
-  background: rgba(250, 173, 20, 0.18);
-  color: #d48806;
-  padding: 0 2px;
-  border-radius: 3px;
 }
 </style>
