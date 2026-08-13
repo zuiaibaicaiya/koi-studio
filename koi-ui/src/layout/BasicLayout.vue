@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, h, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useAuthStore } from '../store/auth';
 import { useThemeStore } from '../store/theme';
-import { App } from 'antdv-next';
-const { message, modal } = App.useApp();
 import {
   HomeOutlined,
   DashboardOutlined,
@@ -12,17 +9,13 @@ import {
   TagsOutlined,
   SoundOutlined,
   ScheduleOutlined,
-  LogoutOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
-  DownOutlined,
 } from '@antdv-next/icons';
-import ThemeToggle from '../components/ThemeToggle.vue';
 
 const themeStore = useThemeStore();
 const isDark = computed(() => themeStore.isDark);
 
-const auth = useAuthStore();
 const router = useRouter();
 const route = useRoute();
 const collapsed = ref(false);
@@ -30,8 +23,6 @@ const collapsed = ref(false);
 const selectedKeys = computed(() => [route.name as string]);
 
 const currentTitle = computed(() => (route.meta.title as string) || '系统管理');
-
-const currentUser = computed(() => auth.user);
 
 const menuItems = [
   { key: 'home', icon: () => h(HomeOutlined), label: '首页' },
@@ -45,45 +36,6 @@ const menuItems = [
 function handleMenuClick({ key }: { key: string }) {
   router.push({ name: key });
 }
-
-// 退出登录：弹确认框，确认后清除会话并跳转登录页
-let confirming = false;
-function showLogoutConfirm() {
-  if (confirming) return;
-  confirming = true;
-  modal.confirm({
-    title: '退出登录',
-    content: '确认要退出当前账号吗？退出后需要重新登录才能访问系统。',
-    okText: '确认退出',
-    cancelText: '取消',
-    okType: 'danger',
-    onOk: async () => {
-      await auth.logout();
-      message.success('已退出登录');
-      router.replace('/login');
-    },
-    onClose: () => {
-      confirming = false;
-    },
-  });
-}
-
-// 键盘快捷键退出（Ctrl/Cmd + Shift + Q）
-function onKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'Q' || e.key === 'q')) {
-    e.preventDefault();
-    showLogoutConfirm();
-  }
-}
-
-onMounted(() => {
-  if (auth.isAuthenticated) {
-    window.addEventListener('keydown', onKeydown);
-  }
-});
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown);
-});
 </script>
 
 <template>
@@ -121,45 +73,6 @@ onBeforeUnmount(() => {
           <a-breadcrumb class="breadcrumb">
             <a-breadcrumb-item>{{ currentTitle }}</a-breadcrumb-item>
           </a-breadcrumb>
-        </div>
-        <div class="header-right">
-          <ThemeToggle class="theme-switch" />
-          <a-dropdown placement="bottomRight" :trigger="['click']">
-            <span class="user">
-              <a-avatar :src="currentUser?.avatar" class="user-avatar">
-                <template v-if="!currentUser?.avatar">{{ currentUser?.nickname?.charAt(0) || currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
-              </a-avatar>
-              <span class="user-meta">
-                <span class="username">{{ currentUser?.nickname || currentUser?.username || '未登录' }}</span>
-                <span class="user-role">{{ auth.userRole }}</span>
-              </span>
-              <DownOutlined class="user-caret" />
-            </span>
-            <template #popupRender>
-              <a-menu class="user-menu">
-                <a-menu-item-group>
-                  <template #title>
-                    <div class="user-card">
-                      <a-avatar :src="currentUser?.avatar" :size="40">
-                        <template v-if="!currentUser?.avatar">{{ currentUser?.nickname?.charAt(0) || currentUser?.username?.charAt(0)?.toUpperCase() || 'U' }}</template>
-                      </a-avatar>
-                      <div class="user-card-meta">
-                        <div class="user-card-name">{{ currentUser?.nickname || currentUser?.username || '未登录' }}</div>
-                        <div class="user-card-role">{{ auth.userRole }}</div>
-                        <div class="user-card-email">{{ currentUser?.email || '—' }}</div>
-                      </div>
-                    </div>
-                  </template>
-                </a-menu-item-group>
-                <a-menu-divider />
-                <a-menu-item key="logout" @click="showLogoutConfirm">
-                  <LogoutOutlined />
-                  退出登录
-                  <span class="shortcut">Ctrl/⌘ + Shift + Q</span>
-                </a-menu-item>
-              </a-menu>
-            </template>
-          </a-dropdown>
         </div>
       </a-layout-header>
 
@@ -239,7 +152,6 @@ onBeforeUnmount(() => {
   border-bottom: 1px solid var(--color-border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   padding: 0 var(--layout-gutter);
   height: 56px;
   line-height: normal;
@@ -264,86 +176,6 @@ onBeforeUnmount(() => {
 .breadcrumb :deep(.ant-breadcrumb-link),
 .breadcrumb :deep(.ant-breadcrumb-separator) {
   color: var(--color-text-secondary);
-}
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.theme-switch {
-  margin-right: 0;
-  display: inline-flex;
-  align-items: center;
-}
-.user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  color: var(--color-text);
-  padding: 4px 8px;
-  border-radius: var(--radius-md);
-  transition: background 0.2s;
-}
-.user:hover {
-  background: var(--color-surface-2);
-}
-.user-avatar {
-  background: linear-gradient(135deg, var(--color-brand), var(--color-accent));
-  flex: none;
-}
-.user-meta {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.2;
-}
-.username {
-  font-size: 14px;
-  font-weight: 500;
-}
-.user-role {
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-.user-caret {
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-.user-menu {
-  min-width: 240px;
-}
-.user-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 0;
-}
-.user-card-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.user-card-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
-}
-.user-card-role {
-  font-size: 12px;
-  color: var(--color-brand);
-}
-.user-card-email {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.shortcut {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--color-text-muted);
 }
 .content {
   width: 100%;
