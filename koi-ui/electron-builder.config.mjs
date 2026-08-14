@@ -32,10 +32,27 @@ export default {
     writeFileSync(filePath, updatedContent, 'utf8');
     return Promise.resolve();
   },
-  extraResources: [],
+  extraResources: [
+    {
+      from: join(import.meta.dirname, '..', 'koi-server', 'koi-server'),
+      to: 'koi-server',
+    },
+    {
+      from: join(import.meta.dirname, '..', 'koi-server', '.env'),
+      to: '.env',
+    },
+    {
+      from: join(import.meta.dirname, '..', 'koi-server', 'resources'),
+      to: 'resources',
+    },
+    {
+      from: join(import.meta.dirname, '..', 'koi-server', 'models'),
+      to: 'models',
+    },
+  ],
   win: {},
   mac: {
-    target: ['pkg', 'dmg'],
+    target: ['pkg'],
     category: 'public.app-category.developer-tools',
     extendInfo: {
       NSMicrophoneUsageDescription: '此应用需要访问您的麦克风以进行音频录制。',

@@ -5,8 +5,7 @@
   "type": "module",
   "main": "dist/electron/main.cjs",
   "scripts": {
-    "build": "rsbuild build && electron-builder -c electron-builder.config.mjs",
-    "build:local": "rsbuild build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.mjs",
+    "build": "rsbuild build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.mjs",
     "dev": "rsbuild",
     "format": "prettier --write .",
     "lint": "eslint .",

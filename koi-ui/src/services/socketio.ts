@@ -1,11 +1,11 @@
 import { io, type Socket } from 'socket.io-client';
 
 /**
- * 实时转写服务地址：优先 VITE_SOCKET_URL，其次复用后端基地址 VITE_API_BASE。
+ * 实时转写服务地址：优先 PUBLIC_SOCKET_URL，其次复用后端基地址 PUBLIC_API_BASE。
  */
 const SOCKET_URL =
-  (import.meta.env.VITE_SOCKET_URL as string | undefined) ??
-  (import.meta.env.VITE_API_BASE as string | undefined) ??
+  (import.meta.env.PUBLIC_SOCKET_URL as string | undefined) ??
+  (import.meta.env.PUBLIC_API_BASE as string | undefined) ??
   'http://127.0.0.1:8000';
 
 /** 事件回调：参数类型由具体调用方声明 */

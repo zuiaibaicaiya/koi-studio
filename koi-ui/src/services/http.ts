@@ -16,8 +16,8 @@ export class ApiError extends Error {
   }
 }
 
-/** 后端基地址：优先读取 VITE_API_BASE，默认指向本地后端。 */
-const BASE_URL = (import.meta.env.VITE_API_BASE as string | undefined) ?? 'http://127.0.0.1:8000';
+/** 后端基地址：优先读取 PUBLIC_API_BASE（Rsbuild 公共前缀），默认指向本地后端。 */
+const BASE_URL = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? 'http://127.0.0.1:8000';
 
 type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
 

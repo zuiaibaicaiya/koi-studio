@@ -1,10 +1,10 @@
 /// <reference types="@rsbuild/core/types" />
 
 interface ImportMetaEnv {
-  /** 后端接口基地址，例如 http://127.0.0.1:8000 */
-  readonly VITE_API_BASE?: string;
-  /** 实时转写 Socket.IO 服务地址，缺省时复用 VITE_API_BASE */
-  readonly VITE_SOCKET_URL?: string;
+  /** 后端接口基地址，例如 http://127.0.0.1:8000（Rsbuild PUBLIC_ 前缀） */
+  readonly PUBLIC_API_BASE?: string;
+  /** 实时转写 Socket.IO 服务地址，缺省时复用 PUBLIC_API_BASE */
+  readonly PUBLIC_SOCKET_URL?: string;
 }
 
 interface ImportMeta {
