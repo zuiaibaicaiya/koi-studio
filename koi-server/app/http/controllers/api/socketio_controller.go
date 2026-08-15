@@ -255,13 +255,13 @@ func (r *SocketioController) handleJoinMeeting(socket *socketiolib.Socket, args 
 		AudioStartTime:    time.Now(),
 	}
 
-	// 加载热词并应用到识别器
+	// 加载热词并应用到识别器。
+	// 无热词库时也调用 SetHotwords 传入空串，清空上一场会议残留的热词，
+	// 确保「没有热词库的会议不会错误使用之前的热词」。
 	hotwordsStr := r.buildHotwordsString(hotWordLibIDs)
 	ctx.HotwordsStr = hotwordsStr
-	if hotwordsStr != "" {
-		if err := r.audio.SetHotwords(hotwordsStr, 0); err != nil {
-			r.log.Warning(fmt.Sprintf("socketio: failed to set hotwords for meeting %d: %v", meetingID, err))
-		}
+	if err := r.audio.SetHotwords(hotwordsStr, 0); err != nil {
+		r.log.Warning(fmt.Sprintf("socketio: failed to set hotwords for meeting %d: %v", meetingID, err))
 	}
 
 	// 预热说话人声纹库（确保会议选择的说话人在内存中）
@@ -360,7 +360,10 @@ func (r *SocketioController) buildHotwordsString(libraryIDs []uint) string {
 				if weight <= 0 {
 					weight = 10
 				}
-				lines = append(lines, fmt.Sprintf("%s %d", hw.Word, weight))
+				// sherpa-onnx 热词权重格式为冒号前缀（如 "机器学习 :20"），
+				// 权重 token 必须以 ':' 开头才会被解析为 boosting score，
+				// 否则 "20" 会被当作词元参与编码而失败。
+				lines = append(lines, fmt.Sprintf("%s :%d", hw.Word, weight))
 			}
 
 			if int64(page*pageSize) >= total {

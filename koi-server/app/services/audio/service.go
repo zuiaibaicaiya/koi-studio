@@ -202,6 +202,9 @@ func (s *Service) Transcript(clientID string) string {
 }
 
 // SetHotwords 设置热词并热替换识别器。
+//
+// 传空字符串表示清空热词：重建一个不带热词的识别器，确保「没有热词库的会议
+// 不残留上一位会议的热词」。热词未变化时跳过重建，避免不必要的开销。
 func (s *Service) SetHotwords(hotwords string, score float32) error {
 	if score <= 0 {
 		score = s.cfg.HotwordsScore
@@ -214,9 +217,16 @@ func (s *Service) SetHotwords(hotwords string, score float32) error {
 		return ErrServiceClosed
 	}
 
+	// 热词与权重均未变化时无需重建识别器。
+	if hotwords == s.hotwords && score == s.score {
+		return nil
+	}
+
 	s.hotwords = hotwords
 	s.score = score
-	if !s.loaded || hotwords == "" {
+
+	// 模型尚未加载完成时仅记录热词，preloadModel 会用 s.hotwords 应用。
+	if !s.loaded {
 		return nil
 	}
 
@@ -241,7 +251,11 @@ func (s *Service) SetHotwords(hotwords string, score float32) error {
 		sess.setPending(recognizer)
 	}
 
-	s.deps.Log.Info(fmt.Sprintf("audio: hotwords updated for %d session(s), score %.1f", len(s.sessions), score))
+	if hotwords == "" {
+		s.deps.Log.Info(fmt.Sprintf("audio: hotwords cleared for %d session(s)", len(s.sessions)))
+	} else {
+		s.deps.Log.Info(fmt.Sprintf("audio: hotwords updated for %d session(s), score %.1f", len(s.sessions), score))
+	}
 	return nil
 }
 
@@ -360,7 +374,16 @@ func (s *Service) preloadModel() {
 	start := time.Now()
 	s.deps.Log.Info("audio: preloading speech recognition model...")
 
+	// 读取已在 SetHotwords 中登记的热词（可能在模型加载完成前被 join-meeting 设置）。
+	s.mu.RLock()
+	hotwords := s.hotwords
+	score := s.score
+	s.mu.RUnlock()
+
 	cfg := s.baseConfig
+	cfg.HotwordsBuf = hotwords
+	cfg.HotwordsBufSize = len(hotwords)
+	cfg.HotwordsScore = score
 	recognizer := sherpa.NewOnlineRecognizer(&cfg)
 
 	s.mu.Lock()

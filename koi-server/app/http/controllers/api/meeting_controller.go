@@ -87,9 +87,12 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, ctrl.GetFirstError(errors))
 	}
 
-	now := carbon.Now()
-	startTime := now
-	endTime := now.AddHour()
+	// carbon.Now() 返回 *Carbon 指针，且 AddHour 为指针接收者、原地修改。
+	// 若写成 startTime:=now; endTime:=now.AddHour()，两者会指向同一对象，
+	// endTime 等于 startTime，导致「结束时间必须晚于开始时间」误报。
+	// 因此两次独立调用 carbon.Now()，确保 startTime 与 endTime 各自持有独立实例。
+	startTime := carbon.Now()
+	endTime := carbon.Now().AddHour()
 
 	if req.StartTime != "" {
 		parsed, perr := services.ParseMeetingTime(req.StartTime)
