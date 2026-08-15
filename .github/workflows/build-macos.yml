@@ -32,18 +32,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 参考 electron/electron 官方 macos-publish.yml：全部使用 macos-15 系列 runner
-        # arm64 在 macos-15-xlarge (Apple Silicon) 上原生构建
-        # x64   在 macos-15-xlarge (Apple Silicon) 上用 electron-builder --x64 打包
-        #       Go 二进制利用 sherpa-onnx-go-macos 提供的双架构 fat dylib，
-        #       通过 GOARCH=amd64 输出 x86_64 二进制，运行时 Rosetta 2 保证兼容
-        # 部署目标统一为 macOS 15.0
+        # 免费 GitHub-hosted runner：macos-14 是 Apple Silicon (arm64) 公开仓库可用
+        # arm64：在 macos-14 上原生构建
+        # x64：  在 macos-14 上通过 Rosetta 2 (arch -x86_64) 原生构建 x86_64 进程（非交叉编译）
+        # 部署目标统一为 macOS 15.0（SDK 允许指定更高部署目标）
         include:
           - arch: arm64
-            os: macos-15-xlarge
+            os: macos-14
             goarch: arm64
           - arch: x64
-            os: macos-15-xlarge
+            os: macos-14
             goarch: amd64
     runs-on: ${{ matrix.os }}
     steps:
