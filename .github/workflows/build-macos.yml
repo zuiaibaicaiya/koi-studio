@@ -1,0 +1,215 @@
+name: Build & Release macOS App
+
+# 触发条件：
+#   1. 推送 v* 标签 —— 自动构建并发布 GitHub Release
+#   2. 手动触发 —— 可选是否创建 Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: '构建后创建 GitHub Release 并上传产物'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20'
+  # 模型缓存 key；更换模型后递增此值以触发重新下载
+  MODELS_CACHE_KEY: 'koi-models-v1'
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # 适配 macOS 15+ 的两种架构：Apple Silicon (arm64) 与 Intel (x64)
+        # arm64 在 macos-15 原生构建；x64 在 macos-13(Intel) 原生构建，产物向下兼容 macOS 15+
+        include:
+          - arch: arm64
+            os: macos-15
+            goarch: arm64
+          - arch: x64
+            os: macos-13
+            goarch: amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: koi-server/go.mod
+          cache-dependency-path: koi-server/go.sum
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: koi-ui/package-lock.json
+
+      # ── 准备后端 extraResources：models ──────────────────────────
+      # models 目录(~558MB)被 gitignore，需从 GitHub Release(tag=models) 下载
+      - name: Restore models cache
+        id: models-cache
+        uses: actions/cache@v4
+        with:
+          path: koi-server/models
+          key: ${{ env.MODELS_CACHE_KEY }}
+
+      - name: Download models
+        if: steps.models-cache.outputs.cache-hit != 'true'
+        working-directory: koi-server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir -p models
+          # 从本仓库 tag 为 "models" 的 Release 下载 models.tar.gz
+          # 首次使用前需手动创建该 Release：
+          #   cd koi-server && tar -czf models.tar.gz models
+          #   gh release create models models.tar.gz --title "ML Models" --notes "语音识别模型"
+          if gh release download models --repo "${GITHUB_REPOSITORY}" --pattern 'models.tar.gz' --dir /tmp --clobber; then
+            echo "解压模型..."
+            tar -xzf /tmp/models.tar.gz -C .
+            echo "模型目录大小："
+            du -sh models/*
+          else
+            echo "::error::未找到 tag 为 'models' 的 Release 或其 models.tar.gz 资产。"
+            echo "::error::请执行以下命令创建："
+            echo "::error::  cd koi-server && tar -czf models.tar.gz models"
+            echo "::error::  gh release create models models.tar.gz --title 'ML Models' --notes '语音识别模型'"
+            exit 1
+          fi
+
+      # ── 准备后端 extraResources：Go 二进制 ──────────────────────
+      - name: Build Go server (darwin/${{ matrix.goarch }})
+        working-directory: koi-server
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go mod download
+          go build -trimpath -ldflags "-s -w" -o koi-server .
+          file koi-server
+
+      # ── 准备后端 extraResources：.env ────────────────────────────
+      # .env 被 gitignore，CI 中生成生产环境配置；afterPack 会再把端口改写为 5168
+      - name: Generate .env for packaging
+        working-directory: koi-server
+        run: |
+          APP_KEY=$(openssl rand -base64 32)
+          JWT_SECRET=$(openssl rand -base64 32)
+          cat > .env <<EOF
+          APP_NAME=Goravel
+          APP_ENV=production
+          APP_KEY=${APP_KEY}
+          APP_DEBUG=false
+          LOG_CHANNEL=stack
+          LOG_LEVEL=info
+          SESSION_DRIVER=file
+          SESSION_LIFETIME=120
+          APP_URL=http://localhost:5168
+          APP_HOST=127.0.0.1
+          APP_PORT=5168
+          JWT_SECRET=${JWT_SECRET}
+          AI_PROVIDER=
+          OPENAI_API_KEY=
+          OPENAI_BASE_URL=
+          DB_CONNECTION=sqlite
+          DB_HOST=
+          DB_PORT=
+          DB_DATABASE=database.sqlite
+          DB_USERNAME=
+          DB_PASSWORD=
+          GRPC_HOST=127.0.0.1
+          GRPC_PORT=50052
+          MAIL_HOST=
+          MAIL_PORT=
+          MAIL_USERNAME=
+          MAIL_PASSWORD=
+          MAIL_FROM_ADDRESS=
+          MAIL_FROM_NAME=
+          EOF
+
+      # ── 校验 extraResources 四要素齐全 ──────────────────────────
+      - name: Verify extraResources
+        working-directory: koi-server
+        run: |
+          test -f koi-server   || { echo "::error::Go 二进制 koi-server 不存在"; exit 1; }
+          test -f .env         || { echo "::error::.env 不存在"; exit 1; }
+          test -d resources    || { echo "::error::resources 目录不存在"; exit 1; }
+          test -d models       || { echo "::error::models 目录不存在"; exit 1; }
+          echo "extraResources 校验通过"
+
+      # ── 构建 UI + 打包 Electron ─────────────────────────────────
+      # .npmrc 默认指向国内 npmmirror 镜像，CI(海外 runner) 覆盖为官方源以提速
+      - name: Install UI dependencies
+        working-directory: koi-ui
+        env:
+          npm_config_registry: https://registry.npmjs.org
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
+        run: npm ci
+
+      - name: Build frontend (rsbuild)
+        working-directory: koi-ui
+        run: npx rsbuild build
+
+      - name: Package Electron app (${{ matrix.arch }})
+        working-directory: koi-ui
+        env:
+          # 关闭代码签名自动发现，避免无证书环境下构建失败
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
+        run: npx electron-builder -c electron-builder.config.mjs --${{ matrix.arch }}
+
+      - name: Show build output
+        working-directory: koi-ui/build-electron
+        run: ls -lh *.pkg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: koi-ui-macos-${{ matrix.arch }}
+          path: koi-ui/build-electron/*.pkg
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.create_release == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect pkg files
+        run: |
+          mkdir -p release-assets
+          find artifacts -name '*.pkg' -exec cp {} release-assets/ \;
+          echo "待发布产物："
+          ls -lh release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*.pkg
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}
