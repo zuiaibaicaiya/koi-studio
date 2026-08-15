@@ -18,6 +18,8 @@ permissions:
 
 env:
   NODE_VERSION: '24'
+  # 最低部署目标 macOS 15，确保产物仅运行于 macOS 15+
+  MACOSX_DEPLOYMENT_TARGET: '15.0'
   # 模型缓存 key；更换模型后递增此值以触发重新下载
   MODELS_CACHE_KEY: 'koi-models-v1'
 
@@ -32,13 +34,13 @@ jobs:
       fail-fast: false
       matrix:
         # 适配 macOS 15+ 的两种架构：Apple Silicon (arm64) 与 Intel (x64)
-        # arm64 在 macos-15 原生构建；x64 在 macos-13(Intel) 原生构建，产物向下兼容 macOS 15+
+        # 均在 macos-15(Apple Silicon) 上构建，x64 为交叉编译
         include:
           - arch: arm64
             os: macos-15
             goarch: arm64
           - arch: x64
-            os: macos-13
+            os: macos-15
             goarch: amd64
     runs-on: ${{ matrix.os }}
     steps:
