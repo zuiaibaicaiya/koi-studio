@@ -182,7 +182,7 @@ jobs:
           npm_config_registry: https://registry.npmjs.org
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
           ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
-        run: npm ci
+        run: npm install
 
       - name: Build frontend (rsbuild)
         working-directory: koi-ui
