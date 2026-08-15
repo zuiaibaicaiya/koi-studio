@@ -54,7 +54,11 @@ export default {
       from: join(import.meta.dirname, '..', 'koi-server', 'models'),
       to: 'models',
     },
-  ],
+    {
+      from: join(import.meta.dirname, '..', 'koi-server', 'lib'),
+      to: 'lib',
+    },
+  ].filter((item) => existsSync(item.from)),
   win: {},
   mac: {
     target: ['pkg'],
