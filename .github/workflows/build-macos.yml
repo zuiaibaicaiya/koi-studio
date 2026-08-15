@@ -165,8 +165,6 @@ jobs:
         working-directory: koi-ui
         env:
           npm_config_registry: https://registry.npmjs.org
-          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
-          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
         run: |
           set -e
           rm -f .npmrc
@@ -185,8 +183,6 @@ jobs:
         env:
           # 关闭代码签名自动发现，避免无证书环境下构建失败
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
-          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
         run: npx electron-builder -c electron-builder.config.mjs --${{ matrix.arch }}
 
       - name: Show build output
