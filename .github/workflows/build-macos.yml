@@ -125,43 +125,28 @@ jobs:
           ls -lh lib/
 
       # ── 准备后端 extraResources：.env ────────────────────────────
-      # .env 被 gitignore，CI 中生成生产环境配置；afterPack 会再把端口改写为 5168
-      - name: Generate .env for packaging
+      # 从 .env.example 复制并改为生产配置；afterPack 会再把端口改写为 5168
+      - name: Copy .env.example -> .env for packaging
         working-directory: koi-server
         run: |
+          set -e
+          cp .env.example .env
+          # 生成随机密钥
           APP_KEY=$(openssl rand -base64 32)
           JWT_SECRET=$(openssl rand -base64 32)
-          cat > .env <<EOF
-          APP_NAME=Goravel
-          APP_ENV=production
-          APP_KEY=${APP_KEY}
-          APP_DEBUG=false
-          LOG_CHANNEL=stack
-          LOG_LEVEL=info
-          SESSION_DRIVER=file
-          SESSION_LIFETIME=120
-          APP_URL=http://localhost:5168
-          APP_HOST=127.0.0.1
-          APP_PORT=5168
-          JWT_SECRET=${JWT_SECRET}
-          AI_PROVIDER=
-          OPENAI_API_KEY=
-          OPENAI_BASE_URL=
-          DB_CONNECTION=sqlite
-          DB_HOST=
-          DB_PORT=
-          DB_DATABASE=database.sqlite
-          DB_USERNAME=
-          DB_PASSWORD=
-          GRPC_HOST=127.0.0.1
-          GRPC_PORT=50052
-          MAIL_HOST=
-          MAIL_PORT=
-          MAIL_USERNAME=
-          MAIL_PASSWORD=
-          MAIL_FROM_ADDRESS=
-          MAIL_FROM_NAME=
-          EOF
+          # 改为生产环境并替换密钥
+          sed -i.bak \
+            -e 's/^APP_ENV=.*/APP_ENV=production/' \
+            -e 's/^APP_DEBUG=.*/APP_DEBUG=false/' \
+            -e 's/^LOG_LEVEL=.*/LOG_LEVEL=info/' \
+            -e "s|^APP_KEY=.*|APP_KEY=${APP_KEY}|" \
+            -e "s|^JWT_SECRET=.*|JWT_SECRET=${JWT_SECRET}|" \
+            -e 's|^APP_URL=.*|APP_URL=http://localhost:5168|' \
+            -e 's|^APP_PORT=.*|APP_PORT=5168|' \
+            .env
+          rm -f .env.bak
+          echo ".env 生成完毕："
+          head -20 .env
 
       # ── 校验 extraResources 五要素齐全 ──────────────────────────
       - name: Verify extraResources
@@ -175,14 +160,21 @@ jobs:
           echo "extraResources 校验通过"
 
       # ── 构建 UI + 打包 Electron ─────────────────────────────────
-      # .npmrc 默认指向国内 npmmirror 镜像，CI(海外 runner) 覆盖为官方源以提速
-      - name: Install UI dependencies
+      # 删除 .npmrc 与 package-lock.json，用官方源干净重装依赖
+      - name: Prepare UI and install dependencies
         working-directory: koi-ui
         env:
           npm_config_registry: https://registry.npmjs.org
           ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/v
           ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/v
-        run: npm install
+        run: |
+          set -e
+          rm -f .npmrc
+          rm -f package-lock.json
+          rm -rf node_modules
+          echo "=== .npmrc 和 package-lock.json 已删除，开始安装依赖 ==="
+          npm install
+          echo "=== 依赖安装完成 ==="
 
       - name: Build frontend (rsbuild)
         working-directory: koi-ui
