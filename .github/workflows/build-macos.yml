@@ -18,6 +18,7 @@ permissions:
 
 env:
   NODE_VERSION: '24'
+  MACOSX_DEPLOYMENT_TARGET: '15.0'
   # 模型缓存 key；更换模型后递增此值以触发重新下载
   MODELS_CACHE_KEY: 'koi-models-v1'
 
@@ -31,18 +32,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 各架构在原生 runner 上编译（CGO_ENABLED=1），不做交叉编译
-        # arm64 在 macos-15(Apple Silicon) 上原生构建，部署目标 macOS 15
-        # x64   在 macos-13(Intel)          上原生构建，兼容 macOS 13+
+        # 参考 electron/electron 官方 macos-publish.yml：全部使用 macos-15 系列 runner
+        # arm64 在 macos-15-xlarge (Apple Silicon) 上原生构建
+        # x64   在 macos-15-xlarge (Apple Silicon) 上用 electron-builder --x64 打包
+        #       Go 二进制利用 sherpa-onnx-go-macos 提供的双架构 fat dylib，
+        #       通过 GOARCH=amd64 输出 x86_64 二进制，运行时 Rosetta 2 保证兼容
+        # 部署目标统一为 macOS 15.0
         include:
           - arch: arm64
-            os: macos-15
+            os: macos-15-xlarge
             goarch: arm64
-            deployment_target: '15.0'
           - arch: x64
-            os: macos-13
+            os: macos-15-xlarge
             goarch: amd64
-            deployment_target: ''
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -95,25 +97,44 @@ jobs:
           du -sh models/*
 
       # ── 准备后端 extraResources：Go 二进制 + dylib ──────────────
-      # sherpa-onnx-go 是 CGO 绑定，必须 CGO_ENABLED=1 原生编译
+      # sherpa-onnx-go 是 CGO 绑定，必须 CGO_ENABLED=1 原生编译（不交叉编译）
+      # x64: 在 Apple Silicon runner 上通过 Rosetta 2 (arch -x86_64) 原生构建 x86_64 进程
+      # arm64: 直接在 arm64 进程原生构建
       - name: Build Go server (darwin/${{ matrix.goarch }})
         working-directory: koi-server
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '1'
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
         run: |
-          go mod download
-          go build -trimpath -ldflags "-s -w" -o koi-server .
-          file koi-server
+          set -e
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            PREFIX="arch -x86_64"
+            echo "x64 构建：通过 Rosetta 2 ($PREFIX) 原生构建，不交叉编译"
+          else
+            PREFIX=""
+            echo "arm64 原生构建"
+          fi
+          $PREFIX bash -c '
+            echo "  -> 进程架构: $(uname -m)"
+            echo "  -> go: $(go version)"
+            go env GOOS GOARCH CGO_ENABLED
+            go mod download
+            go build -trimpath -ldflags "-s -w" -o koi-server .
+            file koi-server
+          '
 
       # sherpa-onnx 动态库需随二进制打包；rpath 为 @executable_path/../lib
       - name: Copy sherpa-onnx dylibs
         working-directory: koi-server
         run: |
           set -e
-          MODULE_DIR=$(go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-macos)
+          if [ "${{ matrix.arch }}" = "x64" ]; then
+            PREFIX="arch -x86_64"
+          else
+            PREFIX=""
+          fi
+          MODULE_DIR=$($PREFIX go list -m -f '{{.Dir}}' github.com/k2-fsa/sherpa-onnx-go-macos)
           if [ "${{ matrix.goarch }}" = "arm64" ]; then
             ARCH_DIR="aarch64-apple-darwin"
           else
