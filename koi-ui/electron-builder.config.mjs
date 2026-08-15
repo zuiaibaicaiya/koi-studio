@@ -21,13 +21,18 @@ export default {
       'Resources',
       '.env',
     );
-    // 仅在打包了后端服务（含 .env）时重写 APP_PORT，避免前端项目构建报错
+    // 仅在打包了后端服务（含 .env）时重写 APP_URL / APP_PORT，避免前端项目构建报错
     if (!existsSync(filePath)) return Promise.resolve();
     const content = readFileSync(filePath, 'utf8');
-    const updatedContent = content.replace(
-      /^(\s*APP_PORT\s*=\s*)\d+(\s*)$/gm,
-      `$1${serverPort}$2`,
-    );
+    const updatedContent = content
+      .replace(
+        /^(\s*APP_PORT\s*=\s*)\d+(\s*)$/gm,
+        `$1${serverPort}$2`,
+      )
+      .replace(
+        /^(\s*APP_URL\s*=\s*)\S+(\s*)$/gm,
+        `$1http://localhost:${serverPort}$2`,
+      );
 
     writeFileSync(filePath, updatedContent, 'utf8');
     return Promise.resolve();
