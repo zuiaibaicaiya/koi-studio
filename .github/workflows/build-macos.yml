@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 env:
-  NODE_VERSION: '20'
+  NODE_VERSION: '24'
   # 模型缓存 key；更换模型后递增此值以触发重新下载
   MODELS_CACHE_KEY: 'koi-models-v1'
 
@@ -43,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -52,45 +52,44 @@ jobs:
           cache-dependency-path: koi-server/go.sum
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: koi-ui/package-lock.json
 
       # ── 准备后端 extraResources：models ──────────────────────────
-      # models 目录(~558MB)被 gitignore，需从 GitHub Release(tag=models) 下载
+      # models 目录(~558MB)被 gitignore，从 k2-fsa 官方 Release 直接下载
       - name: Restore models cache
         id: models-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: koi-server/models
           key: ${{ env.MODELS_CACHE_KEY }}
 
-      - name: Download models
+      - name: Download models from upstream
         if: steps.models-cache.outputs.cache-hit != 'true'
         working-directory: koi-server
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          mkdir -p models
-          # 从本仓库 tag 为 "models" 的 Release 下载 models.tar.gz
-          # 首次使用前需手动创建该 Release：
-          #   cd koi-server && tar -czf models.tar.gz models
-          #   gh release create models models.tar.gz --title "ML Models" --notes "语音识别模型"
-          if gh release download models --repo "${GITHUB_REPOSITORY}" --pattern 'models.tar.gz' --dir /tmp --clobber; then
-            echo "解压模型..."
-            tar -xzf /tmp/models.tar.gz -C .
-            echo "模型目录大小："
-            du -sh models/*
-          else
-            echo "::error::未找到 tag 为 'models' 的 Release 或其 models.tar.gz 资产。"
-            echo "::error::请执行以下命令创建："
-            echo "::error::  cd koi-server && tar -czf models.tar.gz models"
-            echo "::error::  gh release create models models.tar.gz --title 'ML Models' --notes '语音识别模型'"
-            exit 1
-          fi
+          mkdir -p models/speaker
+
+          # 1. ASR 模型: sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+          ASR_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2"
+          echo "下载 ASR 模型..."
+          curl -fSL --retry 3 -o /tmp/asr.tar.bz2 "$ASR_URL"
+          tar -xjf /tmp/asr.tar.bz2 -C models/
+          rm /tmp/asr.tar.bz2
+          # hotwords.txt 为运行时热词文件，上游包不含则创建空文件
+          touch "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/hotwords.txt"
+
+          # 2. Speaker 模型: 3dspeaker_speech_campplus_sv_zh-cn_16k-common
+          SPK_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx"
+          echo "下载 Speaker 模型..."
+          curl -fSL --retry 3 -o "models/speaker/3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx" "$SPK_URL"
+
+          echo "模型目录大小："
+          du -sh models/*
 
       # ── 准备后端 extraResources：Go 二进制 ──────────────────────
       - name: Build Go server (darwin/${{ matrix.goarch }})
