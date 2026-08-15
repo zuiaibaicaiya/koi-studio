@@ -66,6 +66,12 @@ export const useAuthStore = defineStore(
       return await userApi.changePassword(payload);
     }
 
+    /** 清除本地会话（token + 用户信息），并同步持久化存储。 */
+    function clearSession() {
+      token.value = '';
+      user.value = null;
+    }
+
     /** 登出 */
     async function logout() {
       try {
@@ -73,8 +79,7 @@ export const useAuthStore = defineStore(
       } catch {
         // 即使后端登出失败也清除本地状态
       } finally {
-        token.value = '';
-        user.value = null;
+        clearSession();
       }
     }
 
@@ -85,6 +90,7 @@ export const useAuthStore = defineStore(
       isAuthenticated,
       userRole,
       login,
+      clearSession,
       refreshToken,
       fetchCurrentUser,
       updateProfile,

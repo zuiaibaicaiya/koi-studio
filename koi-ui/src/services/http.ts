@@ -32,28 +32,43 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-/** 防止并发 401 时重复跳转登录页。 */
-let isRedirectingToLogin = false;
+/**
+ * 防重复锁：并发的多个 401 只会触发一次登出跳转。
+ * 跳转到登录页完成（或被导航守卫拦截）后才释放，避免在本次会话内重复跳转。
+ */
+let unauthorizedHandled: Promise<void> | null = null;
 
-/** 登录失效时清除本地会话并跳转登录页。 */
-async function handleUnauthorized() {
-  if (isRedirectingToLogin) return;
-  isRedirectingToLogin = true;
-  try {
+/** 登录失效时清除本地会话并跳转登录页（带防重复处理）。 */
+function handleUnauthorized(): Promise<void> {
+  if (unauthorizedHandled) return unauthorizedHandled;
+
+  unauthorizedHandled = (async () => {
+    // 1. 清除本地存储中的 token 与用户信息（pinia persist 会同步到 localStorage）
     const auth = useAuthStore();
-    auth.token = '';
-    auth.user = null;
+    auth.clearSession();
+
+    // 2. 跳转到登录页，并通过 redirect 记录用户原本访问的页面
     const { default: router } = await import('../router');
     const current = router.currentRoute.value;
     if (current.name !== 'login') {
-      await router.replace({ name: 'login', query: current.fullPath ? { redirect: current.fullPath } : {} });
+      await router.replace({
+        name: 'login',
+        query: current.fullPath ? { redirect: current.fullPath } : {},
+      });
     }
-  } finally {
-    // 延迟重置，避免同一次刷新周期内重复触发
-    setTimeout(() => {
-      isRedirectingToLogin = false;
-    }, 500);
-  }
+  })().finally(() => {
+    unauthorizedHandled = null;
+  });
+
+  return unauthorizedHandled;
+}
+
+/** 判断响应是否为 token 过期（HTTP 401 或业务码 401 的过期标识）。 */
+function isTokenExpired(response: Response, envelope?: ApiEnvelope): boolean {
+  if (response.status === 401) return true;
+  // 兜底：部分实现可能以 200 + code:401 返回过期，统一视为登录失效
+  if (envelope && envelope.code === 401) return true;
+  return false;
 }
 
 function buildUrl(path: string, params?: object): string {
@@ -89,19 +104,44 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     signal,
   });
 
+  // token 过期：HTTP 401 直接判定（无需解析响应体），统一跳转登录页
   if (response.status === 401) {
+    let msg = '登录已过期，请重新登录';
+    try {
+      const ct = response.headers.get('content-type') ?? '';
+      if (ct.includes('application/json')) {
+        const env = (await response.json()) as ApiEnvelope;
+        if (env?.msg) msg = env.msg;
+      }
+    } catch {
+      // 解析失败时使用默认提示
+    }
     await handleUnauthorized();
-    throw new ApiError('登录已过期，请重新登录', 401);
+    throw new ApiError(msg, 401);
   }
+
+  // 其余响应统一解析 JSON 响应体
+  const contentType = response.headers.get('content-type') ?? '';
+  const isJson = contentType.includes('application/json');
+  const envelope: ApiEnvelope<T> | undefined = isJson
+    ? ((await response.json()) as ApiEnvelope<T>)
+    : undefined;
+
   if (!response.ok) {
     throw new ApiError(`请求失败（HTTP ${response.status}）`, response.status);
   }
 
-  const envelope = (await response.json()) as ApiEnvelope<T>;
-  if (envelope.code !== 0) {
+  // 兜底：业务码层面的 token 过期标识（与 HTTP 401 等价）
+  if (isTokenExpired(response, envelope)) {
+    await handleUnauthorized();
+    throw new ApiError(envelope?.msg ?? '登录已过期，请重新登录', 401);
+  }
+
+  if (envelope && envelope.code !== 0) {
     throw new ApiError(envelope.msg || '请求失败', envelope.code);
   }
-  return envelope.data;
+
+  return envelope?.data as T;
 }
 
 export const http = {
