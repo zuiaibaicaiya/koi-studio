@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { App } from 'antdv-next';
 import {
   useMeetingStore,
@@ -184,12 +185,10 @@ async function handleFinishMeeting(record: Meeting) {
   }
 }
 
-/* ---- 查看会议详情弹窗 ---- */
-const meetingDetailVisible = ref(false);
-const meetingDetail = ref<Meeting | null>(null);
-function openMeetingDetail(record: Meeting) {
-  meetingDetail.value = record;
-  meetingDetailVisible.value = true;
+/* ---- 跳转会议详情页面 ---- */
+const router = useRouter();
+function goMeetingDetail(record: Meeting) {
+  router.push({ name: 'meetingDetail', params: { id: record.id } });
 }
 
 /* ==================== 音频转写（暂时保留本地模拟数据） ==================== */
@@ -320,7 +319,10 @@ onMounted(() => {
             @change="(pag: any) => pag.current && onMeetingPageChange(pag.current, pag.pageSize)"
           >
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'status'">
+              <template v-if="column.key === 'name'">
+                <a class="name-link" @click="goMeetingDetail(record)">{{ record.name }}</a>
+              </template>
+              <template v-else-if="column.key === 'status'">
                 <a-tag :color="record.rawStatus === 'ongoing' ? 'green' : record.rawStatus === 'created' ? 'blue' : 'default'">
                   <template v-if="record.rawStatus === 'ongoing'">
                     <span class="status-dot dot-active" />
@@ -337,6 +339,9 @@ onMounted(() => {
               </template>
               <template v-else-if="column.key === 'action'">
                 <a-space size="small">
+                  <a-button type="link" size="small" @click="goMeetingDetail(record)">
+                    <EyeOutlined />详情
+                  </a-button>
                   <a-button type="link" size="small" @click="handleMeetingExportOne(record)">
                     <DownloadOutlined />导出
                   </a-button>
@@ -387,34 +392,6 @@ onMounted(() => {
         </a-form>
       </a-modal>
 
-      <!-- 会议详情弹窗 -->
-      <a-modal
-        v-model:open="meetingDetailVisible"
-        title="会议详情"
-        :footer="null"
-        width="520px"
-      >
-        <a-descriptions v-if="meetingDetail" :column="1" bordered size="middle" class="detail-desc">
-          <a-descriptions-item label="ID">{{ meetingDetail.id }}</a-descriptions-item>
-          <a-descriptions-item label="会议名称">{{ meetingDetail.name }}</a-descriptions-item>
-          <a-descriptions-item label="参会人员">{{ meetingDetail.participants || '--' }}</a-descriptions-item>
-          <a-descriptions-item label="说话人ID">{{ meetingDetail.speakerIds || '--' }}</a-descriptions-item>
-          <a-descriptions-item label="热词库ID">{{ meetingDetail.hotWordLibraryIds || '--' }}</a-descriptions-item>
-          <a-descriptions-item label="开始时间">{{ meetingDetail.startTime }}</a-descriptions-item>
-          <a-descriptions-item label="结束时间">{{ meetingDetail.endTime }}</a-descriptions-item>
-          <a-descriptions-item label="状态">
-            <a-tag :color="meetingDetail.rawStatus === 'ongoing' ? 'green' : meetingDetail.rawStatus === 'created' ? 'blue' : 'default'">
-              {{ meetingDetail.status }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="音频">
-            <audio v-if="meetingDetail.audioUrl" :src="meetingDetail.audioUrl" controls preload="metadata" class="audio-player" />
-            <span v-else class="muted">--</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="创建者ID">{{ meetingDetail.createdBy || '--' }}</a-descriptions-item>
-          <a-descriptions-item label="创建时间">{{ meetingDetail.createdAt }}</a-descriptions-item>
-        </a-descriptions>
-      </a-modal>
     </template>
 
     <!-- ==================== 音频转写 ==================== -->
@@ -572,6 +549,14 @@ onMounted(() => {
 }
 .muted {
   color: var(--color-text-secondary);
+}
+.name-link {
+  color: var(--color-brand);
+  cursor: pointer;
+  font-weight: 600;
+}
+.name-link:hover {
+  text-decoration: underline;
 }
 .audio-player {
   width: 240px;

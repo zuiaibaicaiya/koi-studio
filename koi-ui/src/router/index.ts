@@ -65,6 +65,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/meeting/LiveMeetingTranscribe.vue'),
     meta: { requiresAuth: true, title: '实时转写' },
   },
+  // 会议详情：独立路由，采用虚拟列表加载转写内容
+  {
+    path: '/meeting/detail/:id',
+    name: 'meetingDetail',
+    component: () => import('../views/meeting/MeetingDetail.vue'),
+    meta: { requiresAuth: true, title: '会议详情' },
+  },
   {
     path: '/:pathMatch(.*)*',
     redirect: '/home',

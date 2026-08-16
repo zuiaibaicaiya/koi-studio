@@ -55,6 +55,20 @@ export interface PaginatedResult<T> {
   pageSize: number;
 }
 
+/** 会议转写记录 DTO（见 koi-server/app/models/meeting_transcript.go） */
+export interface MeetingTranscriptDTO {
+  id: number;
+  meeting_id: number;
+  speaker_id: number | null;
+  speaker_name: string;
+  text: string;
+  start_ms: number;
+  end_ms: number;
+  word_timestamps: string;
+  is_final: boolean;
+  created_at?: string;
+}
+
 export const meetingApi = {
   listMeetings: (params: MeetingListParams = {}) =>
     http.get<PaginatedResult<MeetingDTO>>('/api/meeting', params),
@@ -63,6 +77,10 @@ export const meetingApi = {
   getMeeting: (id: number) => http.get<MeetingDTO>(`/api/meeting/${id}`),
   updateMeeting: (id: number, payload: UpdateMeetingPayload) =>
     http.put<MeetingDTO>(`/api/meeting/${id}`, payload),
+
+  /** 获取会议转写记录（分页，按时间升序） */
+  getMeetingTranscripts: (id: number, params: { page?: number; pageSize?: number } = {}) =>
+    http.get<PaginatedResult<MeetingTranscriptDTO>>(`/api/meeting/${id}/transcripts`, params),
   deleteMeeting: (id: number) => http.delete<void>(`/api/meeting/${id}`),
   startMeeting: (id: number) => http.post<void>(`/api/meeting/${id}/start`),
   finishMeeting: (id: number) => http.post<void>(`/api/meeting/${id}/finish`),
