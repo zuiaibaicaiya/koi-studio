@@ -65,6 +65,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/meeting/LiveMeetingTranscribe.vue'),
     meta: { requiresAuth: true, title: '实时转写' },
   },
+  // 离线转写：用户主动上传音频文件，无需实时录音
+  {
+    path: '/offline/create',
+    name: 'offlineCreate',
+    component: () => import('../views/meeting/OfflineTranscribeCreate.vue'),
+    meta: { requiresAuth: true, title: '音频转写' },
+  },
+  {
+    path: '/offline/transcribe',
+    name: 'offlineTranscribe',
+    component: () => import('../views/meeting/OfflineTranscribe.vue'),
+    meta: { requiresAuth: true, title: '离线转写' },
+  },
   // 会议详情：独立路由，采用虚拟列表加载转写内容
   {
     path: '/meeting/detail/:id',

@@ -100,3 +100,44 @@ export async function toWavFile(input: Blob, fileName: string, sampleRate = TARG
   const mono = await toMono(decoded, sampleRate);
   return new File([encodeWav(mono)], name, { type: 'audio/wav' });
 }
+
+/** 把单声道 AudioBuffer 的浮点采样线性量化为 16bit PCM（Int16） */
+function floatToInt16(buffer: AudioBuffer): Int16Array {
+  const samples = buffer.getChannelData(0);
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+export interface Pcm16Result {
+  /** 16bit 单声道 PCM 采样，可直接作为 `with-binary` 上行帧 */
+  samples: Int16Array;
+  /** 采样率（已重采样到 targetSampleRate） */
+  sampleRate: number;
+  /** 时长（毫秒） */
+  durationMs: number;
+}
+
+/**
+ * 把任意浏览器可解码的音频文件解码为 16bit 单声道 PCM，
+ * 与实时转写上行帧格式完全一致，可直接喂给后端声纹/转写流水线。
+ *
+ * 离线转写的文件在浏览器侧解码并重采样到目标采样率，
+ * 再按帧切分经 socket `with-binary` 事件上行，复用实时转写后端。
+ */
+export async function decodeFileToPcm16(
+  input: Blob,
+  targetSampleRate = TARGET_SAMPLE_RATE,
+): Promise<Pcm16Result> {
+  const decoded = await decodeAudio(input);
+  const mono = await toMono(decoded, targetSampleRate);
+  const samples = floatToInt16(mono);
+  return {
+    samples,
+    sampleRate: targetSampleRate,
+    durationMs: (samples.length / targetSampleRate) * 1000,
+  };
+}

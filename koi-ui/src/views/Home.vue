@@ -72,6 +72,7 @@ const modules = [
     desc: '上传音频文件，自动识别说话人并生成文字稿与热词标记。',
     icon: AudioOutlined,
     color: '#52c41a',
+    to: 'offlineCreate',
   },
   {
     key: 'system',
