@@ -42,6 +42,7 @@ const meetingColumns = [
 ];
 
 /* ---- 搜索与分页 ---- */
+const searchModel = reactive({});
 const meetingKeyword = ref('');
 const meetingTimeRange = ref<[string, string] | null>(null);
 const meetingStatusFilter = ref<'' | UIMeetingStatus>('');
@@ -233,9 +234,11 @@ onMounted(loadMeetings);
       <a-form
         class="filter-form"
         layout="horizontal"
+        :model="searchModel"
         :label-col="{ span: 6 }"
         :wrapper-col="{ span: 18 }"
         :colon="false"
+        @finish="doSearchMeeting"
       >
         <a-row :gutter="[8, 8]">
           <a-col :xs="24" :sm="12" :md="8">
@@ -265,10 +268,9 @@ onMounted(loadMeetings);
             <a-form-item label="时间段" class="time-range-item">
               <a-range-picker
                 v-model:value="meetingTimeRange"
-                :show-time="{ format: 'HH:mm:ss' }"
-                format="YYYY-MM-DD HH:mm:ss"
-                value-format="YYYY-MM-DD HH:mm:ss"
-                :placeholder="['开始时间', '结束时间']"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+                :placeholder="['开始日期', '结束日期']"
                 style="width: 100%"
               />
             </a-form-item>
@@ -279,7 +281,7 @@ onMounted(loadMeetings);
                 <a-button @click="handleMeetingReset">
                   <ReloadOutlined />重置
                 </a-button>
-                <a-button type="primary" @click="doSearchMeeting">
+                <a-button type="primary" html-type="submit">
                   <SearchOutlined />搜索
                 </a-button>
                 <a-button type="dashed" @click="goCreateTranscription">
@@ -416,7 +418,7 @@ onMounted(loadMeetings);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: 12px 16px;
+  padding: 8px 12px;
 }
 .toolbar :deep(.ant-form-item-label > label) {
   color: var(--color-text-secondary);
@@ -427,20 +429,13 @@ onMounted(loadMeetings);
 .filter-form :deep(.ant-form-item) {
   margin-bottom: 0;
 }
-/* 仅“时间段”项：控件紧凑，使其比其它控件窄一点，标签仍与控件同行 */
+/* 仅“时间段”项：控件跟随列宽，标签仍与控件同行 */
 .filter-form :deep(.time-range-item .ant-picker) {
   width: 100%;
   min-width: 0;
 }
 .filter-form :deep(.time-range-item .ant-picker-input) {
   min-width: 0;
-}
-.filter-form :deep(.time-range-item .ant-picker-input > input) {
-  font-size: 12px;
-  padding: 0 2px;
-}
-.filter-form :deep(.time-range-item .ant-picker-separator) {
-  padding: 0 2px;
 }
 .toolbar-actions-col {
   display: flex;
