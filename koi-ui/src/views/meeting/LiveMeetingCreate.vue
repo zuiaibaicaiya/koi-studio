@@ -105,20 +105,22 @@ const hotWordOptions = computed(() =>
 );
 
 // ---- 表单验证 ----
-// 仅「会议名称」为必填；参会人员、会议时间、说话人、热词库均为选填。
+// 「会议名称」与「会议时间」为必填；参会人员、说话人、热词库均为选填。
 // 录音方式（recordMode）表单初始化即默认「麦克风录音」，无需校验。
 const rules: Record<string, Rule[]> = {
   name: [
     { required: true, message: '请输入会议名称', whitespace: true },
     { max: 60, message: '会议名称不超过 60 个字符' },
   ],
-  // 会议时间为选填：仅在用户填写了完整区间时校验「结束晚于开始」
+  // 会议时间为必填：必须填写完整的开始与结束时间区间，且结束晚于开始
   meetingTime: [
     {
+      required: true,
+      message: '请选择会议时间',
       validator: (_r, v: unknown) => {
         const range = v as [Dayjs, Dayjs] | [];
         if (!range || range.length !== 2 || !range[0] || !range[1]) {
-          return Promise.resolve();
+          return Promise.reject(new Error('请选择会议开始与结束时间'));
         }
         return range[1].isAfter(range[0])
           ? Promise.resolve()
@@ -169,8 +171,10 @@ const completionCount = computed(() => {
 
 const completionPercent = computed(() => (completionCount.value / 5) * 100);
 
-// 仅会议名称为必填项，其余均为选填，录音方式已有默认值，故只要名称非空即可开始
-const isFormReady = computed(() => formState.name.trim().length > 0);
+// 会议名称和会议时间均为必填项，录音方式已有默认值，故需两者均填写才可开始
+const isFormReady = computed(
+  () => formState.name.trim().length > 0 && formState.meetingTime.length === 2,
+);
 
 // ---- 操作 ----
 async function handleStart() {
@@ -464,7 +468,7 @@ onBeforeUnmount(() => {
                 </a-input>
               </a-form-item>
 
-              <a-form-item name="meetingTime" label="会议时间（选填）">
+              <a-form-item name="meetingTime" label="会议时间">
                 <a-range-picker
                   v-model:value="formState.meetingTime"
                   show-time
@@ -611,7 +615,7 @@ onBeforeUnmount(() => {
                   开始实时转写
                 </a-button>
                 <p v-if="!isFormReady" class="submit-hint">
-                  请先填写会议名称（其余信息均为选填）
+                  请先填写会议名称与会议时间（其余信息均为选填）
                 </p>
               </a-form-item>
             </a-form>

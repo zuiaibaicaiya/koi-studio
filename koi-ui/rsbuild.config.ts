@@ -13,7 +13,7 @@ export default defineConfig(({ env }) => {
   const { publicVars } = loadEnv({ mode: env, prefixes: ['PUBLIC_'] });
 
   return {
-  plugins: [pluginVue(), electronRs(), pluginNodePolyfill()],
+  plugins: [pluginVue(), electronRs({ignorePack:true}), pluginNodePolyfill()],
   source: {
     define: publicVars,
   },
