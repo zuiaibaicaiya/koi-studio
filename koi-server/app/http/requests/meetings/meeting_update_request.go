@@ -20,6 +20,8 @@ type MeetingUpdateRequest struct {
 	EndTime string `form:"end_time" json:"end_time" example:"2026-08-10 10:00:00"`
 	// Status 会议状态：created-已创建，ongoing-进行中，finished-已结束
 	Status string `form:"status" json:"status" example:"created"`
+	// Mode 会议模式：live-实时会议，audio-音频转写
+	Mode string `form:"mode" json:"mode" example:"live"`
 }
 
 func (r *MeetingUpdateRequest) Authorize(ctx http.Context) error {
@@ -32,6 +34,7 @@ func (r *MeetingUpdateRequest) Filters(ctx http.Context) map[string]any {
 		"participants": "trim",
 		"speaker_ids":  "trim",
 		"status":       "trim",
+		"mode":         "trim",
 	}
 }
 
@@ -42,6 +45,7 @@ func (r *MeetingUpdateRequest) Rules(ctx http.Context) map[string]any {
 		"speaker_ids":        "max_len:500",
 		"hot_word_library_ids": "max_len:500",
 		"status":             "in:created,ongoing,finished",
+		"mode":               "in:live,audio",
 	}
 }
 
@@ -49,6 +53,7 @@ func (r *MeetingUpdateRequest) Messages(ctx http.Context) map[string]string {
 	return map[string]string{
 		"name.max_len":  ":attribute长度最多%d位",
 		"status.in":     ":attribute值不正确",
+		"mode.in":       ":attribute值不正确",
 	}
 }
 
@@ -61,5 +66,6 @@ func (r *MeetingUpdateRequest) Attributes(ctx http.Context) map[string]string {
 		"start_time":         "开始时间",
 		"end_time":           "结束时间",
 		"status":             "状态",
+		"mode":               "模式",
 	}
 }

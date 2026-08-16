@@ -44,8 +44,8 @@ func ParseMeetingTime(value string) (*carbon.DateTime, error) {
 	return nil, errors.New("时间格式不正确，请使用 2006-01-02 15:04:05")
 }
 
-// GetMeetingList 分页查询会议列表
-func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status, startTime, endTime string) ([]models.Meeting, int64, error) {
+// GetMeetingList 分页查询会议列表，支持关键词、状态、模式、时间范围过滤
+func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status, mode, startTime, endTime string) ([]models.Meeting, int64, error) {
 	query := facades.Orm().Query()
 	if keyword != "" {
 		like := "%" + keyword + "%"
@@ -53,6 +53,9 @@ func (s *MeetingService) GetMeetingList(page, pageSize int, keyword, status, sta
 	}
 	if status != "" {
 		query = query.Where("status = ?", status)
+	}
+	if mode != "" {
+		query = query.Where("mode = ?", mode)
 	}
 	// 时间段筛选：会议与所选区间有重叠即命中
 	if startTime != "" && endTime != "" {

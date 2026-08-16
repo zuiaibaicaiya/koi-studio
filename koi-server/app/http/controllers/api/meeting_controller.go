@@ -44,7 +44,7 @@ func (ctrl *MeetingController) ListMeetings(ctx http.Context) http.Response {
 	}
 
 	page, pageSize := normalizePagination(req.Page, req.PageSize)
-	list, total, err := ctrl.meetingService.GetMeetingList(page, pageSize, req.Keyword, req.Status, req.StartTime, req.EndTime)
+	list, total, err := ctrl.meetingService.GetMeetingList(page, pageSize, req.Keyword, req.Status, req.Mode, req.StartTime, req.EndTime)
 	if err != nil {
 		facades.Log().WithContext(ctx).Error("查询会议列表失败: " + err.Error())
 		return ctrl.ApiErrorMsg(ctx, "查询失败")
@@ -113,6 +113,12 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "结束时间必须晚于开始时间")
 	}
 
+	// 模式：未指定时缺省为实时会议
+	meetingMode := req.Mode
+	if meetingMode == "" {
+		meetingMode = models.MeetingModeLive
+	}
+
 	meeting := models.Meeting{
 		Name:         req.Name,
 		Participants: req.Participants,
@@ -120,6 +126,7 @@ func (ctrl *MeetingController) CreateMeeting(ctx http.Context) http.Response {
 		StartTime:    *carbon.NewDateTime(startTime),
 		EndTime:      *carbon.NewDateTime(endTime),
 		Status:       models.MeetingStatusCreated,
+		Mode:         meetingMode,
 	}
 
 	meeting.HotWordLibraryIds = req.HotWordLibraryIds
@@ -170,6 +177,9 @@ func (ctrl *MeetingController) UpdateMeeting(ctx http.Context) http.Response {
 	}
 	if req.Status != "" {
 		meeting.Status = req.Status
+	}
+	if req.Mode != "" {
+		meeting.Mode = req.Mode
 	}
 
 	// 热词库：空字符串表示不修改

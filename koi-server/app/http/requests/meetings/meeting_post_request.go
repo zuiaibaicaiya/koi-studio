@@ -18,6 +18,8 @@ type MeetingPostRequest struct {
 	StartTime string `form:"start_time" json:"start_time" example:"2026-08-10 09:00:00"`
 	// EndTime 结束时间
 	EndTime string `form:"end_time" json:"end_time" example:"2026-08-10 10:00:00"`
+	// Mode 会议模式：live-实时会议（默认），audio-音频转写
+	Mode string `form:"mode" json:"mode" example:"live"`
 }
 
 func (r *MeetingPostRequest) Authorize(ctx http.Context) error {
@@ -30,6 +32,7 @@ func (r *MeetingPostRequest) Filters(ctx http.Context) map[string]any {
 		"participants":          "trim",
 		"speaker_ids":           "trim",
 		"hot_word_library_ids":  "trim",
+		"mode":                  "trim",
 	}
 }
 
@@ -39,6 +42,7 @@ func (r *MeetingPostRequest) Rules(ctx http.Context) map[string]any {
 		"participants":          "max_len:500",
 		"speaker_ids":           "max_len:500",
 		"hot_word_library_ids":  "max_len:500",
+		"mode":                  "in:live,audio",
 	}
 }
 
@@ -47,6 +51,7 @@ func (r *MeetingPostRequest) Messages(ctx http.Context) map[string]string {
 		"name.required":       ":attribute不可以为空",
 		"name.max_len":        ":attribute长度最多%d位",
 		"participants.max_len": ":attribute长度最多%d位",
+		"mode.in":             ":attribute值不正确",
 	}
 }
 
@@ -56,6 +61,7 @@ func (r *MeetingPostRequest) Attributes(ctx http.Context) map[string]string {
 		"participants":       "参会人员",
 		"speaker_ids":        "说话人",
 		"hot_word_library_ids": "热词库",
+		"mode":                "模式",
 		"start_time":         "开始时间",
 		"end_time":           "结束时间",
 	}

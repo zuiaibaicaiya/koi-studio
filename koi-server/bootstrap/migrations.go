@@ -18,5 +18,6 @@ func Migrations() []schema.Migration {
 		&migrations.M20260810000001CreateMeetingsTable{},
 		&migrations.M20260811100001CreateMeetingTranscriptsTable{},
 		&migrations.M20260811100002AddAudioFilePathToMeetings{},
+		&migrations.M20260816000001AddModeToMeetings{},
 	}
 }

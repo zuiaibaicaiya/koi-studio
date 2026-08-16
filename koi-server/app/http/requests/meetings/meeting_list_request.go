@@ -15,6 +15,8 @@ type MeetingListRequest struct {
 	Keyword string `form:"keyword" json:"keyword" example:"周会"`
 	// Status 状态筛选：created/ongoing/finished
 	Status string `form:"status" json:"status" example:"created"`
+	// Mode 模式筛选：live-实时会议，audio-音频转写
+	Mode string `form:"mode" json:"mode" example:"live"`
 	// StartTime 时间段起始（筛选该时间段内的会议，格式 2006-01-02 15:04:05）
 	StartTime string `form:"start_time" json:"start_time" example:"2026-08-01 00:00:00"`
 	// EndTime 时间段结束
@@ -29,6 +31,7 @@ func (r *MeetingListRequest) Filters(ctx http.Context) map[string]any {
 	return map[string]any{
 		"keyword":    "trim",
 		"status":     "trim",
+		"mode":       "trim",
 		"start_time": "trim",
 		"end_time":   "trim",
 	}
@@ -39,6 +42,7 @@ func (r *MeetingListRequest) Rules(ctx http.Context) map[string]any {
 		"page":     "min:1",
 		"pageSize": "min:1",
 		"status":   "in:created,ongoing,finished",
+		"mode":     "in:live,audio",
 	}
 }
 
@@ -47,6 +51,7 @@ func (r *MeetingListRequest) Messages(ctx http.Context) map[string]string {
 		"page.min":     "页码至少为1",
 		"pageSize.min": "每页数量至少为1",
 		"status.in":    ":attribute值不正确",
+		"mode.in":      ":attribute值不正确",
 	}
 }
 
@@ -55,6 +60,7 @@ func (r *MeetingListRequest) Attributes(ctx http.Context) map[string]string {
 		"page":       "页码",
 		"pageSize":   "每页数量",
 		"status":     "状态",
+		"mode":       "模式",
 		"start_time": "开始时间",
 		"end_time":   "结束时间",
 	}
