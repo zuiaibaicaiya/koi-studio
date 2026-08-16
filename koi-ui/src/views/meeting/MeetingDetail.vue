@@ -48,7 +48,7 @@
               :item="item"
               :active="true"
               :data-index="index"
-              :size-dependencies="[item.text]"
+              :size-dependencies="[item.text, item.words && item.words.length]"
             >
               <div class="transcript-item" :class="{ final: item.isFinal }" @click="seekTo(item)">
                 <a-avatar class="speaker-avatar" :style="{ backgroundColor: item.color }">
@@ -60,7 +60,21 @@
                     <span class="transcript-time">{{ item.clock }}</span>
                     <a-tag v-if="!item.isFinal" color="orange" class="draft-tag">识别中</a-tag>
                   </div>
-                  <div class="transcript-text">{{ item.text }}</div>
+                  <div class="transcript-text">
+                    <template v-if="item.words && item.words.length && item.words[0]">
+                      <span
+                        v-for="(span, wi) in item.words"
+                        v-show="span"
+                        :key="wi"
+                        class="word-span"
+                        :class="wordState(item, span)"
+                        :title="`${fmt(span.startMs / 1000)} 起`"
+                        @click.stop="seekToSpan(item, span)"
+                        >{{ span.word }}</span
+                      ><span v-if="span && !isCJK(span.word)" class="word-space"> </span>
+                    </template>
+                    <template v-else>{{ item.text }}</template>
+                  </div>
                 </div>
               </div>
             </DynamicScrollerItem>
@@ -176,6 +190,13 @@ const total = ref(0);
 const totalPages = computed(() => (total.value ? Math.max(1, Math.ceil(total.value / pageSize.value)) : 1));
 const finished = computed(() => page.value >= totalPages.value);
 
+/** 转写中的最小时间单元（中文按字、英文按词），带相对于音频开头的起止毫秒 */
+interface WordSpan {
+  word: string;
+  startMs: number;
+  endMs: number;
+}
+
 interface TranscriptItem {
   id: number;
   speaker: string;
@@ -185,6 +206,8 @@ interface TranscriptItem {
   isFinal: boolean;
   clock: string;
   color: string;
+  /** 词级时间轴；为空表示后端未提供 word_timestamps，此时整体使用段级时间 */
+  words: WordSpan[];
 }
 
 const STATUS: Record<MeetingDTO['status'], { text: string; color: string }> = {
@@ -215,8 +238,29 @@ function utteranceClock(startMs: number): string {
   return '00:00';
 }
 
+/** 解析后端 word_timestamps（JSON 数组），并转为毫秒时间轴 */
+function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
+  if (!t || !t.word_timestamps) return [];
+  try {
+    const raw = JSON.parse(t.word_timestamps);
+    if (!Array.isArray(raw)) return [];
+    const spans: WordSpan[] = [];
+    for (const w of raw) {
+      if (!w || typeof w.word !== 'string') continue;
+      const start = Number(w.start_ms);
+      const end = Number(w.end_ms);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      spans.push({ word: w.word, startMs: start, endMs: end });
+    }
+    return spans;
+  } catch {
+    return [];
+  }
+}
+
 function toSegment(t: MeetingTranscriptDTO): TranscriptItem {
   const speaker = t.speaker_name || '未知说话人';
+  const words = parseWordTimestamps(t);
   return {
     id: t.id,
     speaker,
@@ -226,6 +270,7 @@ function toSegment(t: MeetingTranscriptDTO): TranscriptItem {
     isFinal: t.is_final,
     clock: utteranceClock(t.start_ms),
     color: speakerColor(speaker),
+    words,
   };
 }
 
@@ -298,8 +343,10 @@ const playing = ref(false);
 const ready = ref(false);
 const currentTime = ref(0);
 const duration = ref(0);
+/** 当前播放会话的起点（毫秒）：点击文字/段落跳转时设定，高亮"已播放"从这一点开始 */
+const playAnchorMs = ref(0);
 const speeds = [0.75, 1, 1.25, 1.5, 2];
-const speedIndex = ref(0);
+const speedIndex = ref(1);
 const speed = computed(() => speeds[speedIndex.value]);
 
 function fmt(sec: number): string {
@@ -318,6 +365,7 @@ function destroyWave() {
   ready.value = false;
   currentTime.value = 0;
   duration.value = 0;
+  playAnchorMs.value = 0;
 }
 
 function initWave() {
@@ -349,6 +397,7 @@ function initWave() {
   ws.on('finish', () => {
     playing.value = false;
     currentTime.value = 0;
+    playAnchorMs.value = 0;
   });
   ws.on('error', () => message.warning('音频加载失败，无法播放'));
   wave.value = ws;
@@ -365,8 +414,38 @@ function seekTo(item: TranscriptItem) {
   }
   const ws = wave.value;
   if (!ws) return;
+  playAnchorMs.value = item.startMs;
   ws.setTime(item.startMs / 1000);
   if (!ws.isPlaying()) ws.play().catch(() => message.warning('音频加载失败，无法播放'));
+}
+/** 点击某词/字，从该词对应的精确时间点开始播放；高亮从此字开始 */
+function seekToSpan(item: TranscriptItem, span: WordSpan) {
+  if (!audioSrc.value) {
+    message.info('该会议暂无音频');
+    return;
+  }
+  const ws = wave.value;
+  if (!ws) return;
+  playAnchorMs.value = span.startMs;
+  ws.setTime(span.startMs / 1000);
+  if (!ws.isPlaying()) ws.play().catch(() => message.warning('音频加载失败，无法播放'));
+}
+
+/** 当前播放位置（毫秒，相对音频开头），由 wavesurfer 的 timeupdate 驱动 */
+const currentMs = computed(() => currentTime.value * 1000);
+
+/** 判断某个词/字的高亮状态：active=正在播放，played=已播放过（从本次播放起点开始），''=未播放 */
+function wordState(item: TranscriptItem, span: WordSpan): string {
+  // 已播放：从该次播放起点(anchor)起、且已被播放头越过结尾的字
+  if (span.startMs >= playAnchorMs.value && span.endMs <= currentMs.value) return 'played';
+  // 正在播放的当前字
+  if (playing.value && currentMs.value >= span.startMs && currentMs.value < span.endMs) return 'active';
+  return '';
+}
+
+/** 含中文字符的词，渲染时无需额外空格 */
+function isCJK(w: string): boolean {
+  return /[一-鿿]/.test(w);
 }
 function onWaveClick() {
   // 点击波形切换播放/暂停
@@ -375,7 +454,9 @@ function onWaveClick() {
 function skip(seconds: number) {
   const ws = wave.value;
   if (!ws || !duration.value) return;
-  ws.setTime(Math.min(Math.max(ws.getCurrentTime() + seconds, 0), duration.value));
+  const t = Math.min(Math.max(ws.getCurrentTime() + seconds, 0), duration.value);
+  playAnchorMs.value = t * 1000;
+  ws.setTime(t);
 }
 function onSpeedChange(v: number) {
   const i = speeds.indexOf(v);
@@ -633,8 +714,32 @@ watch(
 }
 .transcript-text {
   color: var(--color-text);
-  line-height: 1.6;
+  line-height: 1.8;
   word-break: break-word;
+  white-space: pre-wrap;
+}
+/* 逐字/逐词高亮：可点击定位，播放中高亮当前字，已播放字常驻高亮 */
+.word-span {
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 0 1px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.word-span:hover {
+  background: var(--color-hover, rgba(99, 102, 241, 0.12));
+}
+.word-span.played {
+  color: var(--color-primary, #6366f1);
+  background: rgba(99, 102, 241, 0.1);
+}
+.word-span.active {
+  color: #fff;
+  background: var(--color-primary, #6366f1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+  font-weight: 600;
+}
+/* 英文词之间的分隔空格，避免连续英文粘连 */
+.word-space {
   white-space: pre-wrap;
 }
 </style>
