@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 
 const productName = 'koi-ui';
 const serverPort = '5168';
+const grpcPort = '50052';
 
 export default {
   productName,
@@ -32,6 +33,10 @@ export default {
       .replace(
         /^(\s*APP_URL\s*=\s*)\S+(\s*)$/gm,
         `$1http://localhost:${serverPort}$2`,
+      )
+      .replace(
+        /^(\s*GRPC_PORT\s*=\s*)\d+(\s*)$/gm,
+        `$1${grpcPort}$2`,
       );
 
     writeFileSync(filePath, updatedContent, 'utf8');
