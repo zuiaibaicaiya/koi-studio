@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, onMounted, watch } from 'vue';
+import { reactive, ref, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { App } from 'antdv-next';
 import {
@@ -8,17 +8,16 @@ import {
   type UIMeetingStatus,
 } from '../../store/meeting';
 import { exportMeetingById } from '../../utils/exportMeeting';
+import { meetingApi } from '../../services/meetingApi';
 import {
   EditOutlined,
   DeleteOutlined,
   SearchOutlined,
   ReloadOutlined,
   DownloadOutlined,
-  VideoCameraOutlined,
-  AudioOutlined,
   EyeOutlined,
   PlayCircleOutlined,
-  StopOutlined,
+  PlusOutlined,
 } from '@antdv-next/icons';
 
 // 使用 App 上下文的 message / modal 实例，使其继承 ConfigProvider 主题（暗黑模式），
@@ -27,8 +26,8 @@ const { message, modal } = App.useApp();
 
 const store = useMeetingStore();
 
-/* ==================== 页签 ==================== */
-const activeTab = ref<'live' | 'transcription'>('live');
+/* ==================== 类型筛选（所有 / 实时会议 / 音频转写） ==================== */
+const typeFilter = ref<'all' | 'live' | 'audio'>('all');
 
 /* ==================== 实时会议（对接后端） ==================== */
 const meetingColumns = [
@@ -39,12 +38,26 @@ const meetingColumns = [
   { title: '结束时间', dataIndex: 'endTime', key: 'endTime', width: 185 },
   { title: '音频', dataIndex: 'audioUrl', key: 'audioUrl', width: 280 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '操作', key: 'action', width: 150, fixed: 'right' as const },
+  { title: '操作', key: 'action', width: 200, fixed: 'right' as const },
 ];
 
 /* ---- 搜索与分页 ---- */
 const meetingKeyword = ref('');
 const meetingTimeRange = ref<[string, string] | null>(null);
+const meetingStatusFilter = ref<'' | UIMeetingStatus>('');
+
+// 类型 / 状态 以分段选择器展示，操作更直观
+const typeOptions = [
+  { label: '所有', value: 'all' },
+  { label: '实时会议', value: 'live' },
+  { label: '音频转写', value: 'audio' },
+];
+const statusOptions = [
+  { label: '全部', value: '' },
+  { label: '已预约', value: '已预约' },
+  { label: '进行中', value: '进行中' },
+  { label: '已结束', value: '已结束' },
+];
 
 const meetingPagination = reactive({
   current: 1,
@@ -53,37 +66,43 @@ const meetingPagination = reactive({
   showTotal: (t: number) => `共 ${t} 条`,
 });
 
-function doSearchMeeting() {
-  meetingPagination.current = 1;
+/** 统一加载会议列表：根据类型筛选决定是否按 mode 查询（所有=不区分） */
+function loadMeetings() {
+  const mode = typeFilter.value === 'all' ? undefined : typeFilter.value;
   store.load({
-    page: 1,
+    mode,
+    page: meetingPagination.current,
     pageSize: meetingPagination.pageSize,
     keyword: meetingKeyword.value || undefined,
+    status: meetingStatusFilter.value,
     startTime: meetingTimeRange.value?.[0] || undefined,
     endTime: meetingTimeRange.value?.[1] || undefined,
   });
+}
+
+function doSearchMeeting() {
+  meetingPagination.current = 1;
+  loadMeetings();
 }
 
 function handleMeetingReset() {
   meetingKeyword.value = '';
   meetingTimeRange.value = null;
-  doSearchMeeting();
+  meetingStatusFilter.value = '';
+  meetingPagination.current = 1;
+  loadMeetings();
 }
 
 function onMeetingPageChange(page: number, pageSize: number) {
   meetingPagination.current = page;
   meetingPagination.pageSize = pageSize;
-  store.load({
-    page,
-    pageSize,
-    keyword: meetingKeyword.value || undefined,
-    startTime: meetingTimeRange.value?.[0] || undefined,
-    endTime: meetingTimeRange.value?.[1] || undefined,
-  });
+  loadMeetings();
 }
 
 watch(meetingKeyword, doSearchMeeting);
 watch(meetingTimeRange, doSearchMeeting);
+watch(typeFilter, doSearchMeeting);
+watch(meetingStatusFilter, doSearchMeeting);
 
 /* ---- 会议弹窗 ---- */
 const meetingModalVisible = ref(false);
@@ -159,298 +178,211 @@ function confirmDeleteMeeting(record: Meeting) {
   });
 }
 
-/* ---- 开始/结束会议 ---- */
-async function handleStartMeeting(record: Meeting) {
-  try {
-    await store.start(record.id);
-    message.success(`会议「${record.name}」已开始`);
-  } catch (e: unknown) {
-    message.error((e as { message?: string })?.message || '操作失败');
-  }
-}
-
-async function handleFinishMeeting(record: Meeting) {
-  try {
-    await store.finish(record.id);
-    message.success(`会议「${record.name}」已结束`);
-  } catch (e: unknown) {
-    message.error((e as { message?: string })?.message || '操作失败');
-  }
-}
-
 /* ---- 跳转会议详情页面 ---- */
 const router = useRouter();
 function goMeetingDetail(record: Meeting) {
   router.push({ name: 'meetingDetail', params: { id: record.id } });
 }
 
-/* ==================== 音频转写（暂时保留本地模拟数据） ==================== */
-type TranscriptionStatus = '转写中' | '已完成' | '失败';
+/* ==================== 音频转写相关（与实时会议共用 meetings 表，按 mode=audio 区分） ==================== */
 
-interface LocalTranscription {
-  id: number;
-  meetingTitle: string;
-  fileName: string;
-  audioUrl: string;
-  language: string;
-  duration: number;
-  status: TranscriptionStatus;
-  transcriptText: string;
-  createdAt: string;
+/* ---- 查看转写文本弹窗（拉取真实转写记录） ---- */
+const transcriptDetailVisible = ref(false);
+const transcriptDetailLoading = ref(false);
+const transcriptDetailTitle = ref('');
+const transcriptDetailList = ref<{ speaker: string; time: string; content: string }[]>([]);
+
+function formatMs(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-const transcriptionList = computed<LocalTranscription[]>(() =>
-  store.transcriptions.map((t) => ({
-    id: t.id,
-    meetingTitle: '',
-    fileName: `转写记录 ${t.id}`,
-    audioUrl: '',
-    language: '中文普通话',
-    duration: 0,
-    status: '已完成' as TranscriptionStatus,
-    transcriptText: t.content,
-    createdAt: t.time,
-  })),
-);
-
-const transcriptionColumns = [
-  { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
-  { title: '说话人', dataIndex: 'meetingTitle', key: 'meetingTitle', ellipsis: true },
-  { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 160 },
-  { title: '状态', dataIndex: 'status', key: 'status', width: 90 },
-  { title: '操作', key: 'action', width: 110, fixed: 'right' as const },
-];
-
-const transcriptionKeyword = ref('');
-const transcriptionStatusFilter = ref<TranscriptionStatus | undefined>();
-const transcriptionPagination = reactive({ current: 1, pageSize: 10, showSizeChanger: true, showTotal: (t: number) => `共 ${t} 条` });
-
-const transcriptionStatuses: TranscriptionStatus[] = ['转写中', '已完成', '失败'];
-
-const transcriptionFiltered = computed(() => {
-  let list: LocalTranscription[] = [...transcriptionList.value];
-  const kw = transcriptionKeyword.value.trim().toLowerCase();
-  if (kw) list = list.filter((t) => t.transcriptText.toLowerCase().includes(kw));
-  if (transcriptionStatusFilter.value) list = list.filter((t) => t.status === transcriptionStatusFilter.value);
-  return list;
-});
-
-/* ---- 查看转写文本弹窗 ---- */
-const transcriptDetailVisible = ref(false);
-const transcriptDetail = ref<LocalTranscription | null>(null);
-function openTranscriptDetail(record: LocalTranscription) {
-  transcriptDetail.value = record;
+async function openTranscriptDetail(record: Meeting) {
+  transcriptDetailTitle.value = record.name;
   transcriptDetailVisible.value = true;
+  transcriptDetailLoading.value = true;
+  transcriptDetailList.value = [];
+  try {
+    const res = await meetingApi.getMeetingTranscripts(record.id, { page: 1, pageSize: 200 });
+    transcriptDetailList.value = res.items.map((t) => ({
+      speaker: t.speaker_name || '未知说话人',
+      time: formatMs(t.start_ms),
+      content: t.text,
+    }));
+  } catch {
+    message.error('获取转写内容失败');
+  } finally {
+    transcriptDetailLoading.value = false;
+  }
+}
+
+function goCreateTranscription() {
+  router.push({ name: 'offlineCreate' });
 }
 
 /* ==================== 初始化 ==================== */
-onMounted(() => {
-  store.load();
-});
+onMounted(loadMeetings);
 </script>
 
 <template>
   <div class="page">
-    <!-- ========== 页签切换 ========== -->
-    <a-card variant="borderless" class="tab-card">
-      <a-tabs v-model:activeKey="activeTab" class="meeting-tabs">
-        <a-tab-pane key="live">
-          <template #tab>
-            <span><VideoCameraOutlined /> 实时会议</span>
-          </template>
-        </a-tab-pane>
-        <a-tab-pane key="transcription">
-          <template #tab>
-            <span><AudioOutlined /> 音频转写</span>
-          </template>
-        </a-tab-pane>
-      </a-tabs>
+    <!-- ==================== 工具栏（合并实时会议与音频转写） ==================== -->
+    <a-card class="toolbar" variant="borderless">
+      <a-form layout="inline" class="filter-form">
+        <a-form-item label="类型">
+          <a-select v-model:value="typeFilter" :options="typeOptions" style="width: 140px" />
+        </a-form-item>
+        <a-form-item label="关键词">
+          <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear style="width: 240px">
+            <template #prefix><SearchOutlined /></template>
+          </a-input>
+        </a-form-item>
+        <a-form-item label="时间段">
+          <a-range-picker
+            v-model:value="meetingTimeRange"
+            :show-time="{ format: 'HH:mm:ss' }"
+            format="YYYY-MM-DD HH:mm:ss"
+            value-format="YYYY-MM-DD HH:mm:ss"
+            :placeholder="['开始时间', '结束时间']"
+            style="width: 380px"
+          />
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select
+            v-model:value="meetingStatusFilter"
+            :options="statusOptions"
+            placeholder="全部"
+            allow-clear
+            style="width: 120px"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button type="primary" @click="doSearchMeeting">
+              <SearchOutlined />搜索
+            </a-button>
+            <a-button @click="handleMeetingReset">
+              <ReloadOutlined />重置
+            </a-button>
+            <a-button @click="goCreateTranscription">
+              <PlusOutlined />新建转写
+            </a-button>
+          </a-space>
+        </a-form-item>
+      </a-form>
     </a-card>
 
-    <!-- ==================== 实时会议 ==================== -->
-    <template v-if="activeTab === 'live'">
-      <!-- 工具栏 -->
-      <a-card class="toolbar" variant="borderless">
-        <a-form layout="inline" class="filter-form">
-          <a-form-item label="关键词">
-            <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear style="width: 240px">
-              <template #prefix><SearchOutlined /></template>
-            </a-input>
-          </a-form-item>
-          <a-form-item label="时间段">
-            <a-range-picker
-              v-model:value="meetingTimeRange"
-              :show-time="{ format: 'HH:mm:ss' }"
-              format="YYYY-MM-DD HH:mm:ss"
-              value-format="YYYY-MM-DD HH:mm:ss"
-              :placeholder="['开始时间', '结束时间']"
-              style="width: 380px"
-            />
-          </a-form-item>
-          <a-form-item>
-            <a-space>
-              <a-button type="primary" @click="doSearchMeeting">
-                <SearchOutlined />搜索
-              </a-button>
-              <a-button @click="handleMeetingReset">
-                <ReloadOutlined />重置
-              </a-button>
-            </a-space>
-          </a-form-item>
-        </a-form>
-      </a-card>
-
-      <!-- 数据表格 -->
-      <a-card variant="borderless" class="table-card">
-        <a-spin :spinning="store.loading">
-          <a-table
-            :columns="meetingColumns"
-            :data-source="store.list"
-            :pagination="{ ...meetingPagination, total: store.total, current: store.page }"
-            row-key="id"
-            :scroll="{ x: 'max-content' }"
-            @change="(pag: any) => pag.current && onMeetingPageChange(pag.current, pag.pageSize)"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'name'">
-                <a class="name-link" @click="goMeetingDetail(record)">{{ record.name }}</a>
-              </template>
-              <template v-else-if="column.key === 'status'">
-                <a-tag :color="record.rawStatus === 'ongoing' ? 'green' : record.rawStatus === 'created' ? 'blue' : 'default'">
-                  <template v-if="record.rawStatus === 'ongoing'">
-                    <span class="status-dot dot-active" />
-                  </template>
-                  {{ record.status }}
-                </a-tag>
-              </template>
-              <template v-else-if="column.key === 'participants'">
-                <span>{{ record.participants || '--' }}</span>
-              </template>
-              <template v-else-if="column.key === 'audioUrl'">
-                <audio v-if="record.audioUrl" :src="record.audioUrl" controls preload="metadata" class="audio-player" />
-                <span v-else class="muted">--</span>
-              </template>
-              <template v-else-if="column.key === 'action'">
-                <a-space size="small">
-                  <a-button type="link" size="small" @click="goMeetingDetail(record)">
-                    <EyeOutlined />详情
-                  </a-button>
-                  <a-button type="link" size="small" @click="handleMeetingExportOne(record)">
-                    <DownloadOutlined />导出
-                  </a-button>
-                  <a-button type="link" size="small" danger @click="confirmDeleteMeeting(record)">
-                    <DeleteOutlined />删除
-                  </a-button>
-                </a-space>
-              </template>
-            </template>
-          </a-table>
-        </a-spin>
-      </a-card>
-
-      <!-- 新增/编辑弹窗 -->
-      <a-modal
-        v-model:open="meetingModalVisible"
-        title="编辑会议"
-        @ok="handleMeetingSubmit"
-        :confirm-loading="meetingSubmitting"
-        ok-text="保存"
-        cancel-text="取消"
-        width="560px"
-      >
-        <a-form :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }" class="modal-form">
-          <a-form-item label="会议名称" required>
-            <a-input v-model:value="meetingForm.name" placeholder="请输入会议名称" />
-          </a-form-item>
-          <a-form-item label="参会人员">
-            <a-input v-model:value="meetingForm.participants" placeholder="请输入参会人员，多个用逗号分隔" />
-          </a-form-item>
-          <a-form-item label="说话人ID">
-            <a-input v-model:value="meetingForm.speakerIds" placeholder="说话人ID，多个用逗号分隔" />
-          </a-form-item>
-          <a-form-item label="热词库ID">
-            <a-input v-model:value="meetingForm.hotWordLibraryIds" placeholder="热词库ID，多个用逗号分隔" />
-          </a-form-item>
-          <a-form-item label="开始时间" required>
-            <a-input v-model:value="meetingForm.startTime" placeholder="2026-08-10 09:00:00" />
-          </a-form-item>
-          <a-form-item label="结束时间" required>
-            <a-input v-model:value="meetingForm.endTime" placeholder="2026-08-10 10:00:00" />
-          </a-form-item>
-          <a-form-item v-if="meetingEditingId" label="状态">
-            <a-select v-model:value="meetingForm.status">
-              <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-            </a-select>
-          </a-form-item>
-        </a-form>
-      </a-modal>
-
-    </template>
-
-    <!-- ==================== 音频转写 ==================== -->
-    <template v-if="activeTab === 'transcription'">
-      <!-- 工具栏 -->
-      <a-card class="toolbar" variant="borderless">
-        <a-form layout="inline" class="filter-form">
-          <a-form-item label="关键词">
-            <a-input v-model:value="transcriptionKeyword" placeholder="搜索转写内容" allow-clear style="width: 260px">
-              <template #prefix><SearchOutlined /></template>
-            </a-input>
-          </a-form-item>
-          <a-form-item label="状态">
-            <a-select v-model:value="transcriptionStatusFilter" placeholder="全部" allow-clear style="width: 120px">
-              <a-select-option v-for="s in transcriptionStatuses" :key="s" :value="s">{{ s }}</a-select-option>
-            </a-select>
-          </a-form-item>
-        </a-form>
-        <div class="actions">
-          <a-button @click="transcriptionKeyword = ''; transcriptionStatusFilter = undefined;">重置筛选</a-button>
-        </div>
-      </a-card>
-
-      <!-- 数据表格 -->
-      <a-card variant="borderless" class="table-card">
+    <!-- ==================== 数据表格 ==================== -->
+    <a-card variant="borderless" class="table-card">
+      <a-spin :spinning="store.loading">
         <a-table
-          :columns="transcriptionColumns"
-          :data-source="transcriptionFiltered"
-          :pagination="transcriptionPagination"
+          :columns="meetingColumns"
+          :data-source="store.list"
+          :pagination="{ ...meetingPagination, total: store.total, current: store.page }"
           row-key="id"
           :scroll="{ x: 'max-content' }"
+          @change="(pag: any) => pag.current && onMeetingPageChange(pag.current, pag.pageSize)"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag color="green">{{ record.status }}</a-tag>
+            <template v-if="column.key === 'name'">
+              <a class="name-link" @click="goMeetingDetail(record)">{{ record.name }}</a>
+            </template>
+            <template v-else-if="column.key === 'status'">
+              <a-tag :color="record.rawStatus === 'ongoing' ? 'green' : record.rawStatus === 'created' ? 'blue' : 'default'">
+                <template v-if="record.rawStatus === 'ongoing'">
+                  <span class="status-dot dot-active" />
+                </template>
+                {{ record.status }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'participants'">
+              <span>{{ record.participants || '--' }}</span>
+            </template>
+            <template v-else-if="column.key === 'audioUrl'">
+              <audio v-if="record.audioUrl" :src="record.audioUrl" controls preload="metadata" class="audio-player" />
+              <span v-else class="muted">--</span>
             </template>
             <template v-else-if="column.key === 'action'">
               <a-space size="small" wrap>
-                <a-button type="link" size="small" @click="openTranscriptDetail(record)">
-                  <EyeOutlined />查看
+                <a-button v-if="record.mode === 'live'" type="link" size="small" @click="openMeetingEdit(record)">
+                  <EditOutlined />编辑
+                </a-button>
+                <a-button type="link" size="small" @click="goMeetingDetail(record)">
+                  <EyeOutlined />详情
+                </a-button>
+                <a-button v-if="record.mode === 'audio'" type="link" size="small" @click="openTranscriptDetail(record)">
+                  <PlayCircleOutlined />查看转写
+                </a-button>
+                <a-button type="link" size="small" @click="handleMeetingExportOne(record)">
+                  <DownloadOutlined />导出
+                </a-button>
+                <a-button type="link" size="small" danger @click="confirmDeleteMeeting(record)">
+                  <DeleteOutlined />删除
                 </a-button>
               </a-space>
             </template>
           </template>
         </a-table>
-      </a-card>
+      </a-spin>
+    </a-card>
 
-      <!-- 转写文本详情弹窗 -->
-      <a-modal
-        v-model:open="transcriptDetailVisible"
-        title="转写文本详情"
-        :footer="null"
-        width="640px"
-      >
-        <a-descriptions v-if="transcriptDetail" :column="1" bordered size="middle" class="detail-desc">
-          <a-descriptions-item label="说话人">{{ transcriptDetail.meetingTitle }}</a-descriptions-item>
-          <a-descriptions-item label="时间">{{ transcriptDetail.createdAt }}</a-descriptions-item>
-          <a-descriptions-item label="状态">
-            <a-tag color="green">{{ transcriptDetail.status }}</a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="转写文本">
-            <div class="transcript-text">{{ transcriptDetail.transcriptText || '暂无转写内容' }}</div>
-          </a-descriptions-item>
-        </a-descriptions>
-      </a-modal>
-    </template>
+    <!-- 新增/编辑弹窗 -->
+    <a-modal
+      v-model:open="meetingModalVisible"
+      title="编辑会议"
+      @ok="handleMeetingSubmit"
+      :confirm-loading="meetingSubmitting"
+      ok-text="保存"
+      cancel-text="取消"
+      width="560px"
+    >
+      <a-form :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }" class="modal-form">
+        <a-form-item label="会议名称" required>
+          <a-input v-model:value="meetingForm.name" placeholder="请输入会议名称" />
+        </a-form-item>
+        <a-form-item label="参会人员">
+          <a-input v-model:value="meetingForm.participants" placeholder="请输入参会人员，多个用逗号分隔" />
+        </a-form-item>
+        <a-form-item label="说话人ID">
+          <a-input v-model:value="meetingForm.speakerIds" placeholder="说话人ID，多个用逗号分隔" />
+        </a-form-item>
+        <a-form-item label="热词库ID">
+          <a-input v-model:value="meetingForm.hotWordLibraryIds" placeholder="热词库ID，多个用逗号分隔" />
+        </a-form-item>
+        <a-form-item label="开始时间" required>
+          <a-input v-model:value="meetingForm.startTime" placeholder="2026-08-10 09:00:00" />
+        </a-form-item>
+        <a-form-item label="结束时间" required>
+          <a-input v-model:value="meetingForm.endTime" placeholder="2026-08-10 10:00:00" />
+        </a-form-item>
+        <a-form-item v-if="meetingEditingId" label="状态">
+          <a-select v-model:value="meetingForm.status">
+            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
+          </a-select>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 转写文本详情弹窗 -->
+    <a-modal
+      v-model:open="transcriptDetailVisible"
+      :title="`转写文本 · ${transcriptDetailTitle}`"
+      :footer="null"
+      width="640px"
+    >
+      <a-spin :spinning="transcriptDetailLoading">
+        <div v-if="transcriptDetailList.length" class="transcript-list">
+          <div v-for="(item, idx) in transcriptDetailList" :key="idx" class="transcript-item">
+            <span class="transcript-speaker">{{ item.speaker }}</span>
+            <span class="transcript-time">{{ item.time }}</span>
+            <span class="transcript-content">{{ item.content }}</span>
+          </div>
+        </div>
+        <a-empty v-else description="暂无转写内容" />
+      </a-spin>
+    </a-modal>
   </div>
 </template>
 
@@ -459,23 +391,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-/* ---- 页签 ---- */
-.tab-card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-}
-.meeting-tabs :deep(.ant-tabs-nav) {
-  margin-bottom: 0;
-}
-.meeting-tabs :deep(.ant-tabs-tab) {
-  color: var(--color-text-secondary);
-  font-size: 15px;
-}
-.meeting-tabs :deep(.ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn) {
-  color: var(--color-brand);
 }
 
 /* ---- 工具栏 ---- */
@@ -558,5 +473,42 @@ onMounted(() => {
 .audio-player:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
+}
+
+/* ---- 转写文本列表 ---- */
+.transcript-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.transcript-item {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 12px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-md);
+  line-height: 1.7;
+}
+.transcript-speaker {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--color-brand);
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transcript-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-secondary);
+  width: 52px;
+}
+.transcript-content {
+  flex: 1 1 auto;
 }
 </style>

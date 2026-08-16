@@ -10,13 +10,15 @@ export interface MeetingDTO {
   start_time: string;
   end_time: string;
   status: 'created' | 'ongoing' | 'finished';
+  /** 会议模式：live-实时会议，audio-音频转写 */
+  mode?: 'live' | 'audio';
   created_by: number;
-  created_at?: string;
-  updated_at?: string;
+  createdAt?: string;
+  updatedAt?: string;
   audio_url?: string;
 }
 
-/** 创建实时会议请求体（见 MeetingPostRequest）。 */
+/** 创建会议请求体（见 MeetingPostRequest）。 */
 export interface CreateMeetingPayload {
   name: string;
   participants?: string;
@@ -24,6 +26,8 @@ export interface CreateMeetingPayload {
   hot_word_library_ids?: string;
   start_time?: string;
   end_time?: string;
+  /** 会议模式：live-实时会议（默认），audio-音频转写 */
+  mode?: 'live' | 'audio';
 }
 
 /** 更新实时会议请求体（见 MeetingUpdateRequest）。 */
@@ -35,6 +39,8 @@ export interface UpdateMeetingPayload {
   start_time?: string;
   end_time?: string;
   status?: string;
+  /** 会议模式：live-实时会议，audio-音频转写 */
+  mode?: 'live' | 'audio';
 }
 
 /** 会议列表查询参数（见 MeetingListRequest）。 */
@@ -43,6 +49,8 @@ export interface MeetingListParams {
   pageSize?: number;
   keyword?: string;
   status?: string;
+  /** 模式筛选：live-实时会议，audio-音频转写 */
+  mode?: 'live' | 'audio';
   start_time?: string;
   end_time?: string;
 }

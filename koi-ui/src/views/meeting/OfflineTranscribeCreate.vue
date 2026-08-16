@@ -211,11 +211,13 @@ async function handleStart() {
       hot_word_library_ids: string;
       start_time?: string;
       end_time?: string;
+      mode?: 'live' | 'audio';
     } = {
       name: formState.name.trim(),
       participants: selectedParticipants.value.join('、'),
       speaker_ids: formState.speakers.join(','),
       hot_word_library_ids: formState.hotWords.join(','),
+      mode: 'audio',
     };
     if (formState.meetingTime.length === 2) {
       payload.start_time = formState.meetingTime[0].format('YYYY-MM-DD HH:mm:ss');
