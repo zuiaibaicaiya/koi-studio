@@ -230,47 +230,65 @@ onMounted(loadMeetings);
   <div class="page">
     <!-- ==================== 工具栏（合并实时会议与音频转写） ==================== -->
     <a-card class="toolbar" variant="borderless">
-      <a-form layout="inline" class="filter-form">
-        <a-form-item label="类型">
-          <a-select v-model:value="typeFilter" :options="typeOptions" style="width: 140px" />
-        </a-form-item>
-        <a-form-item label="关键词">
-          <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear style="width: 240px">
-            <template #prefix><SearchOutlined /></template>
-          </a-input>
-        </a-form-item>
-        <a-form-item label="时间段">
-          <a-range-picker
-            v-model:value="meetingTimeRange"
-            :show-time="{ format: 'HH:mm:ss' }"
-            format="YYYY-MM-DD HH:mm:ss"
-            value-format="YYYY-MM-DD HH:mm:ss"
-            :placeholder="['开始时间', '结束时间']"
-            style="width: 380px"
-          />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select
-            v-model:value="meetingStatusFilter"
-            :options="statusOptions"
-            placeholder="全部"
-            allow-clear
-            style="width: 120px"
-          />
-        </a-form-item>
-        <a-form-item>
-          <a-space>
-            <a-button type="primary" @click="doSearchMeeting">
-              <SearchOutlined />搜索
-            </a-button>
-            <a-button @click="handleMeetingReset">
-              <ReloadOutlined />重置
-            </a-button>
-            <a-button @click="goCreateTranscription">
-              <PlusOutlined />新建转写
-            </a-button>
-          </a-space>
-        </a-form-item>
+      <a-form
+        class="filter-form"
+        layout="horizontal"
+        :label-col="{ span: 6 }"
+        :wrapper-col="{ span: 18 }"
+        :colon="false"
+      >
+        <a-row :gutter="[8, 8]">
+          <a-col :xs="24" :sm="12" :md="8">
+            <a-form-item label="类型">
+              <a-select v-model:value="typeFilter" :options="typeOptions" style="width: 100%" />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :md="8">
+            <a-form-item label="关键词">
+              <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear style="width: 100%">
+                <template #prefix><SearchOutlined /></template>
+              </a-input>
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :md="8">
+            <a-form-item label="状态">
+              <a-select
+                v-model:value="meetingStatusFilter"
+                :options="statusOptions"
+                placeholder="全部"
+                allow-clear
+                style="width: 100%"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :md="8">
+            <a-form-item label="时间段" class="time-range-item">
+              <a-range-picker
+                v-model:value="meetingTimeRange"
+                :show-time="{ format: 'HH:mm:ss' }"
+                format="YYYY-MM-DD HH:mm:ss"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                :placeholder="['开始时间', '结束时间']"
+                style="width: 100%"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :xs="24" :sm="12" :md="8" class="toolbar-actions-col">
+            <a-form-item :label="null">
+              <a-space class="toolbar-actions">
+                <a-button @click="handleMeetingReset">
+                  <ReloadOutlined />重置
+                </a-button>
+                <a-button type="primary" @click="doSearchMeeting">
+                  <SearchOutlined />搜索
+                </a-button>
+                <a-button type="dashed" @click="goCreateTranscription">
+                  <PlusOutlined />新建转写
+                </a-button>
+              </a-space>
+            </a-form-item>
+          </a-col>
+        </a-row>
       </a-form>
     </a-card>
 
@@ -404,7 +422,30 @@ onMounted(loadMeetings);
   color: var(--color-text-secondary);
 }
 .filter-form {
-  margin-bottom: 12px;
+  padding: 8px 0 4px;
+}
+.filter-form :deep(.ant-form-item) {
+  margin-bottom: 0;
+}
+/* 仅“时间段”项：控件紧凑，使其比其它控件窄一点，标签仍与控件同行 */
+.filter-form :deep(.time-range-item .ant-picker) {
+  width: 100%;
+  min-width: 0;
+}
+.filter-form :deep(.time-range-item .ant-picker-input) {
+  min-width: 0;
+}
+.filter-form :deep(.time-range-item .ant-picker-input > input) {
+  font-size: 12px;
+  padding: 0 2px;
+}
+.filter-form :deep(.time-range-item .ant-picker-separator) {
+  padding: 0 2px;
+}
+.toolbar-actions-col {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
 }
 
 /* ---- 表格 ---- */
