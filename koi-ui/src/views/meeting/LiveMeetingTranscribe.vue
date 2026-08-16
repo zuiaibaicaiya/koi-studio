@@ -600,10 +600,12 @@ function backToCreate() {
 function stopMeeting() {
     modal.confirm({
     title: '结束会议',
-    content: '确认结束本次实时会议？结束后将跳转首页。',
+    content: '确认结束本次实时会议？结束后将停止音频录制并跳转首页。',
     okText: '结束',
     cancelText: '取消',
     onOk: async () => {
+      // 立即结束音频录制（停止麦克风 / 系统音频采集），避免确认后等待后端响应期间仍在上行音频
+      await stopCapture(true);
       await finalizeAndLeave(() => router.push({ name: 'home' }));
     },
   });

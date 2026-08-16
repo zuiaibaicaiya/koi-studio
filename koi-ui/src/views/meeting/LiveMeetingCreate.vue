@@ -162,6 +162,7 @@ const selectedHotWords = computed(() =>
 const completionCount = computed(() => {
   let c = 0;
   if (formState.name.trim()) c++;
+  if (formState.meetingTime.length === 2) c++;
   if (selectedParticipants.value.length > 0) c++;
   if (formState.recordMode) c++;
   if (formState.speakers.length > 0) c++;
@@ -169,7 +170,7 @@ const completionCount = computed(() => {
   return c;
 });
 
-const completionPercent = computed(() => (completionCount.value / 5) * 100);
+const completionPercent = computed(() => (completionCount.value / 6) * 100);
 
 // 会议名称和会议时间均为必填项，录音方式已有默认值，故需两者均填写才可开始
 const isFormReady = computed(
@@ -654,6 +655,19 @@ onBeforeUnmount(() => {
               <span class="preview-value">
                 <template v-if="selectedParticipants.length">
                   {{ selectedParticipants.length }} 人
+                </template>
+                <span v-else class="placeholder">—</span>
+              </span>
+            </div>
+
+            <!-- 会议时间 -->
+            <div class="preview-field">
+              <span class="preview-label">会议时间</span>
+              <span class="preview-value">
+                <template v-if="formState.meetingTime.length === 2">
+                  {{ formState.meetingTime[0].format('YYYY-MM-DD HH:mm') }}
+                  <br />
+                  {{ formState.meetingTime[1].format('YYYY-MM-DD HH:mm') }}
                 </template>
                 <span v-else class="placeholder">—</span>
               </span>
