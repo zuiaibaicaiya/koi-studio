@@ -586,7 +586,7 @@ watch(
   transform: translateX(-50%);
   bottom: 16px;
   width: calc(100% - 40px);
-  max-width: 1080px;
+  max-width: calc(1080px - 40px);
   display: flex;
   align-items: center;
   gap: 12px;
