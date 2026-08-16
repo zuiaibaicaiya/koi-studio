@@ -9,7 +9,7 @@ require (
 	github.com/goravel/openai v1.18.0
 	github.com/goravel/postgres v1.18.0
 	github.com/goravel/sqlite v1.18.0
-	github.com/k2-fsa/sherpa-onnx-go v1.13.4
+	github.com/k2-fsa/sherpa-onnx-go v1.13.5
 	github.com/spf13/cast v1.10.0
 	github.com/stretchr/testify v1.11.1
 	github.com/xuri/excelize/v2 v2.11.0
@@ -83,9 +83,9 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jmoiron/sqlx v1.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.4 // indirect
-	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.4 // indirect
-	github.com/k2-fsa/sherpa-onnx-go-windows v1.13.4 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-linux v1.13.5 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-macos v1.13.5 // indirect
+	github.com/k2-fsa/sherpa-onnx-go-windows v1.13.5 // indirect
 	github.com/klauspost/compress v1.18.5 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lann/builder v0.0.0-20180802200727-47ae307949d0 // indirect
