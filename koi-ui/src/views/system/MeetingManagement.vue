@@ -10,7 +10,6 @@ import {
 import { exportMeetingById } from '../../utils/exportMeeting';
 import { meetingApi } from '../../services/meetingApi';
 import {
-  EditOutlined,
   DeleteOutlined,
   SearchOutlined,
   ReloadOutlined,
@@ -38,7 +37,7 @@ const meetingColumns = [
   { title: '结束时间', dataIndex: 'endTime', key: 'endTime', width: 185 },
   { title: '音频', dataIndex: 'audioUrl', key: 'audioUrl', width: 280 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
-  { title: '操作', key: 'action', width: 200, fixed: 'right' as const },
+  { title: '操作', key: 'action', width: 256, fixed: 'right' as const },
 ];
 
 /* ---- 搜索与分页 ---- */
@@ -105,50 +104,7 @@ watch(meetingTimeRange, doSearchMeeting);
 watch(typeFilter, doSearchMeeting);
 watch(meetingStatusFilter, doSearchMeeting);
 
-/* ---- 会议弹窗 ---- */
-const meetingModalVisible = ref(false);
-const meetingEditingId = ref<number | null>(null);
-const meetingSubmitting = ref(false);
-const meetingForm = reactive({
-  name: '',
-  participants: '',
-  speakerIds: '',
-  hotWordLibraryIds: '',
-  startTime: '',
-  endTime: '',
-  status: '已预约' as UIMeetingStatus,
-});
-
-function openMeetingEdit(record: Meeting) {
-  meetingEditingId.value = record.id;
-  Object.assign(meetingForm, {
-    name: record.name,
-    participants: record.participants,
-    speakerIds: record.speakerIds,
-    hotWordLibraryIds: record.hotWordLibraryIds,
-    startTime: record.startTime,
-    endTime: record.endTime,
-    status: record.status,
-  });
-  meetingModalVisible.value = true;
-}
-
-async function handleMeetingSubmit() {
-  if (!meetingForm.name.trim()) { message.warning('请输入会议名称'); return; }
-  if (!meetingForm.startTime.trim() || !meetingForm.endTime.trim()) { message.warning('请选择开始和结束时间'); return; }
-  if (!meetingEditingId.value) return;
-  meetingSubmitting.value = true;
-  try {
-    await store.update(meetingEditingId.value, { ...meetingForm });
-    message.success('会议更新成功');
-    meetingPagination.current = store.page;
-  } catch (e: unknown) {
-    message.error((e as { message?: string })?.message || '操作失败');
-  } finally {
-    meetingSubmitting.value = false;
-    meetingModalVisible.value = false;
-  }
-}
+/* ---- 会议操作 ---- */
 
 async function handleMeetingDelete(record: Meeting) {
   try {
@@ -325,10 +281,7 @@ onMounted(loadMeetings);
               <span v-else class="muted">--</span>
             </template>
             <template v-else-if="column.key === 'action'">
-              <a-space size="small" wrap>
-                <a-button v-if="record.mode === 'live'" type="link" size="small" @click="openMeetingEdit(record)">
-                  <EditOutlined />编辑
-                </a-button>
+              <a-space size="small">
                 <a-button type="link" size="small" @click="goMeetingDetail(record)">
                   <EyeOutlined />详情
                 </a-button>
@@ -347,43 +300,6 @@ onMounted(loadMeetings);
         </a-table>
       </a-spin>
     </a-card>
-
-    <!-- 新增/编辑弹窗 -->
-    <a-modal
-      v-model:open="meetingModalVisible"
-      title="编辑会议"
-      @ok="handleMeetingSubmit"
-      :confirm-loading="meetingSubmitting"
-      ok-text="保存"
-      cancel-text="取消"
-      width="560px"
-    >
-      <a-form :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }" class="modal-form">
-        <a-form-item label="会议名称" required>
-          <a-input v-model:value="meetingForm.name" placeholder="请输入会议名称" />
-        </a-form-item>
-        <a-form-item label="参会人员">
-          <a-input v-model:value="meetingForm.participants" placeholder="请输入参会人员，多个用逗号分隔" />
-        </a-form-item>
-        <a-form-item label="说话人ID">
-          <a-input v-model:value="meetingForm.speakerIds" placeholder="说话人ID，多个用逗号分隔" />
-        </a-form-item>
-        <a-form-item label="热词库ID">
-          <a-input v-model:value="meetingForm.hotWordLibraryIds" placeholder="热词库ID，多个用逗号分隔" />
-        </a-form-item>
-        <a-form-item label="开始时间" required>
-          <a-input v-model:value="meetingForm.startTime" placeholder="2026-08-10 09:00:00" />
-        </a-form-item>
-        <a-form-item label="结束时间" required>
-          <a-input v-model:value="meetingForm.endTime" placeholder="2026-08-10 10:00:00" />
-        </a-form-item>
-        <a-form-item v-if="meetingEditingId" label="状态">
-          <a-select v-model:value="meetingForm.status">
-            <a-select-option v-for="s in store.statusOptions" :key="s" :value="s">{{ s }}</a-select-option>
-          </a-select>
-        </a-form-item>
-      </a-form>
-    </a-modal>
 
     <!-- 转写文本详情弹窗 -->
     <a-modal
@@ -448,14 +364,6 @@ onMounted(loadMeetings);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-}
-
-/* ---- 弹窗表单 ---- */
-.modal-form {
-  margin-top: 16px;
-}
-.modal-form :deep(.ant-form-item-label > label) {
-  color: var(--color-text);
 }
 
 /* ---- 状态指示点 ---- */
