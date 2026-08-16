@@ -181,7 +181,7 @@ import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import WaveSurfer from 'wavesurfer.js';
 import { meetingApi, type MeetingDTO, type MeetingTranscriptDTO } from '../../services/meetingApi';
-import { exportMeetingZip } from '../../utils/exportMeeting';
+import { exportMeetingById } from '../../utils/exportMeeting';
 
 const { message } = App.useApp();
 
@@ -487,8 +487,8 @@ async function handleExport() {
   if (!meeting.value) return;
   exporting.value = true;
   try {
-    await exportMeetingZip(meeting.value, transcripts.value);
-    message.success('导出成功');
+    const { audioIncluded } = await exportMeetingById(meeting.value.id);
+    message.success(audioIncluded ? '导出成功' : '已导出会议文本（音频下载失败）');
   } catch (e) {
     console.error(e);
     message.error('导出失败：' + (e instanceof Error ? e.message : String(e)));

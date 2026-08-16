@@ -7,7 +7,7 @@ import {
   type Meeting,
   type UIMeetingStatus,
 } from '../../store/meeting';
-import { exportToCsv, type CsvColumn } from '../../utils/csv';
+import { exportMeetingById } from '../../utils/exportMeeting';
 import {
   EditOutlined,
   DeleteOutlined,
@@ -40,17 +40,6 @@ const meetingColumns = [
   { title: '音频', dataIndex: 'audioUrl', key: 'audioUrl', width: 280 },
   { title: '状态', dataIndex: 'status', key: 'status', width: 100 },
   { title: '操作', key: 'action', width: 150, fixed: 'right' as const },
-];
-
-const meetingCsvColumns: CsvColumn[] = [
-  { key: 'id', title: 'ID' },
-  { key: 'name', title: '会议名称' },
-  { key: 'participants', title: '参会人员' },
-  { key: 'speakerIds', title: '说话人ID' },
-  { key: 'hotWordLibraryIds', title: '热词库ID' },
-  { key: 'startTime', title: '开始时间' },
-  { key: 'endTime', title: '结束时间' },
-  { key: 'status', title: '状态' },
 ];
 
 /* ---- 搜索与分页 ---- */
@@ -150,9 +139,13 @@ async function handleMeetingDelete(record: Meeting) {
   }
 }
 
-function handleMeetingExportOne(record: Meeting) {
-  exportToCsv(`会议-${record.id}.csv`, meetingCsvColumns, [record as unknown as Record<string, unknown>]);
-  message.success(`已导出会议 ${record.id}`);
+async function handleMeetingExportOne(record: Meeting) {
+  try {
+    const { audioIncluded } = await exportMeetingById(record.id);
+    message.success(audioIncluded ? '导出成功' : '已导出会议文本（音频下载失败）');
+  } catch (e) {
+    message.error('导出失败：' + (e instanceof Error ? e.message : String(e)));
+  }
 }
 
 
