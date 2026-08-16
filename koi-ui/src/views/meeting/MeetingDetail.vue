@@ -20,6 +20,16 @@
           </div>
         </template>
       </div>
+      <a-button
+        class="export-btn"
+        type="primary"
+        :loading="exporting"
+        :disabled="meetingLoading || !meeting"
+        @click="handleExport"
+      >
+        <template #icon><DownloadOutlined /></template>
+        导出
+      </a-button>
     </header>
 
     <!-- 会议转写（虚拟列表） -->
@@ -165,11 +175,13 @@ import {
   PauseCircleOutlined,
   BackwardOutlined,
   ForwardOutlined,
+  DownloadOutlined,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import WaveSurfer from 'wavesurfer.js';
 import { meetingApi, type MeetingDTO, type MeetingTranscriptDTO } from '../../services/meetingApi';
+import { exportMeetingZip } from '../../utils/exportMeeting';
 
 const { message } = App.useApp();
 
@@ -470,6 +482,21 @@ function goBack() {
   router.push('/system/meetings');
 }
 
+const exporting = ref(false);
+async function handleExport() {
+  if (!meeting.value) return;
+  exporting.value = true;
+  try {
+    await exportMeetingZip(meeting.value, transcripts.value);
+    message.success('导出成功');
+  } catch (e) {
+    console.error(e);
+    message.error('导出失败：' + (e instanceof Error ? e.message : String(e)));
+  } finally {
+    exporting.value = false;
+  }
+}
+
 onMounted(async () => {
   await loadMeeting();
   await loadTranscripts();
@@ -505,6 +532,10 @@ watch(
 }
 .detail-topbar .back-btn {
   margin-top: 4px;
+}
+.detail-topbar .export-btn {
+  margin-top: 4px;
+  flex-shrink: 0;
 }
 .topbar-title {
   flex: 1;
