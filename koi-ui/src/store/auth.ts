@@ -72,6 +72,23 @@ export const useAuthStore = defineStore(
       user.value = null;
     }
 
+    /**
+     * 启动时校验持久化令牌：localStorage 中可能残留「非空但已失效」的令牌，
+     * 若直接信任会让路由守卫放行进入受保护页面，却又因 401 而接口全部失败。
+     * 此处向后端探活一次，仅在确认令牌失效（401）时清除本地会话；
+     * 清除后路由守卫会自动将其重定向至登录页。
+     */
+    async function init() {
+      if (!token.value) return;
+      // 探活：仅在确认令牌失效（401）时清除会话；后端不可达等异常不清除，
+      // 由页面接口后续的 401 兜底登出处理。.catch 兜底避免悬空 Promise 抛未捕获异常。
+      const probe = fetchCurrentUser().catch((err: unknown) => {
+        if ((err as { code?: number })?.code === 401) clearSession();
+      });
+      // 后端不可达时最多等待 3s，超时则直接放行启动（避免阻塞首屏）。
+      await Promise.race([probe, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    }
+
     /** 登出 */
     async function logout() {
       try {
@@ -93,6 +110,7 @@ export const useAuthStore = defineStore(
       clearSession,
       refreshToken,
       fetchCurrentUser,
+      init,
       updateProfile,
       changePassword,
       logout,

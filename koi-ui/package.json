@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "koi-studio desktop client",
+  "author": "koi-studio",
   "main": "dist/electron/main.cjs",
   "scripts": {
     "build": "rsbuild build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.mjs",

@@ -68,7 +68,7 @@ onMounted(() => {
     startMic();
   }
   // 加载说话人列表（供选择参与转写的说话人）
-  speakerStore.load();
+  speakerStore.load().catch(() => {});
   // 加载热词库（通过热词库接口查询）
   loadLibraries();
 });
