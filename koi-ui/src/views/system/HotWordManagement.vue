@@ -230,6 +230,10 @@ async function submitWord() {
     message.warning('权重必须为数字');
     return;
   }
+  if (weight < 1) {
+    message.warning('权重至少为 1');
+    return;
+  }
   const payload = { word: wordForm.word.trim(), weight };
   try {
     await hotWordApi.updateWord(wordEditing.libraryId, wordEditing.wordId, payload);
@@ -466,10 +470,10 @@ function confirmRemoveWord(record: LibraryWord) {
         <a-form-item label="热词" required>
           <a-input v-model:value="wordForm.word" placeholder="如：人工智能" />
         </a-form-item>
-        <a-form-item label="权重（0-100）">
+        <a-form-item label="权重（1-100）">
           <a-input-number
             v-model:value="wordForm.weight"
-            :min="0"
+            :min="1"
             :max="100"
             :parser="(v: string) => v.replace(/[^\d]/g, '')"
             class="full"
