@@ -4,21 +4,16 @@ import { App } from 'antdv-next';
 const { message, modal } = App.useApp();
 import type { TableColumnsType, UploadProps } from 'antdv-next';
 import {
-  PlusOutlined,
   EditOutlined,
   DeleteOutlined,
   SearchOutlined,
-  DownloadOutlined,
   UploadOutlined,
   FileExcelOutlined,
   EyeOutlined,
 } from '@antdv-next/icons';
 import { useHotWordLibraryStore } from '../../store/hotWordLibrary';
 import type { HotWordLibrary, LibraryWord, LibraryStatus } from '../../store/hotWordLibrary';
-import {
-  exportLibraryToExcel,
-  exportLibraryTemplate,
-} from '../../utils/excel';
+import { exportLibraryTemplate } from '../../utils/excel';
 import { hotWordApi } from '../../services/hotWordApi';
 
 const store = useHotWordLibraryStore();
@@ -150,18 +145,6 @@ const drawerImportBeforeUpload: UploadProps['beforeUpload'] = (file) => {
   return false;
 };
 
-async function exportLib() {
-  if (currentLibraryId.value == null) return;
-  const lib = store.getLibrary(currentLibraryId.value);
-  if (!lib) return;
-  if (lib.words.length === 0) {
-    message.warning('暂无热词数据可导出');
-    return;
-  }
-  exportLibraryToExcel(`${lib.name}.xlsx`, lib.name, lib.words);
-  message.success(`已导出「${lib.name}」`);
-}
-
 function downloadTemplate() {
   exportLibraryTemplate('热词库导入模板.xlsx');
 }
@@ -169,7 +152,6 @@ function downloadTemplate() {
 /* ----------------------------- 抽屉：热词明细（后端分页） ----------------------------- */
 const drawerVisible = ref(false);
 const currentLibraryId = ref<number | null>(null);
-const wordKeyword = ref('');
 const wordPage = ref(1);
 const wordTotal = ref(0);
 const wordLoading = ref(false);
@@ -182,8 +164,8 @@ const currentLibrary = computed<HotWordLibrary | undefined>(() =>
 const drawerWords = ref<LibraryWord[]>([]);
 const drawerWordColumns: TableColumnsType<LibraryWord> = [
   { title: '热词', dataIndex: 'word', key: 'word', width: 180 },
-  { title: '权重', key: 'weight', width: 200 },
-  { title: '操作', key: 'action', width: 270, fixed: 'right' },
+  { title: '权重', key: 'weight', width: 120 },
+  { title: '操作', key: 'action', width: 140, fixed: 'right' },
 ];
 
 /** 从后端拉取当前库的热词分页 */
@@ -194,7 +176,6 @@ async function loadDrawerWords() {
     const res = await hotWordApi.listWords(currentLibraryId.value, {
       page: wordPage.value,
       pageSize: 10,
-      keyword: wordKeyword.value || undefined,
     });
     drawerWords.value = res.items.map((dto) => ({
       id: dto.id,
@@ -214,19 +195,14 @@ async function loadDrawerWords() {
 
 function openDrawer(lib: HotWordLibrary) {
   currentLibraryId.value = lib.id;
-  wordKeyword.value = '';
   wordPage.value = 1;
   drawerVisible.value = true;
   loadDrawerWords();
 }
 
-/** 搜索 / 翻页时重新加载 */
-watch([wordKeyword, wordPage], () => {
+/** 翻页时重新加载 */
+watch(wordPage, () => {
   if (drawerVisible.value) loadDrawerWords();
-});
-
-watch(wordKeyword, () => {
-  wordPage.value = 1;
 });
 
 function onWordTableChange(pag: { current: number }) {
@@ -238,13 +214,6 @@ const wordModalVisible = ref(false);
 const wordEditing = reactive({ libraryId: 0, wordId: 0 });
 const wordForm = reactive({ word: '', weight: 50 });
 
-function openCreateWord() {
-  if (currentLibraryId.value == null) return;
-  wordEditing.libraryId = currentLibraryId.value;
-  wordEditing.wordId = 0;
-  Object.assign(wordForm, { word: '', weight: 50 });
-  wordModalVisible.value = true;
-}
 function openEditWord(w: LibraryWord) {
   wordEditing.libraryId = currentLibraryId.value as number;
   wordEditing.wordId = w.id;
@@ -256,18 +225,18 @@ async function submitWord() {
     message.warning('请输入热词');
     return;
   }
-  const payload = { word: wordForm.word.trim(), weight: wordForm.weight };
+  const weight = Number(wordForm.weight);
+  if (!Number.isFinite(weight)) {
+    message.warning('权重必须为数字');
+    return;
+  }
+  const payload = { word: wordForm.word.trim(), weight };
   try {
-    if (wordEditing.wordId === 0) {
-      await hotWordApi.createWord(wordEditing.libraryId, payload);
-      message.success('热词添加成功');
-    } else {
-      await hotWordApi.updateWord(wordEditing.libraryId, wordEditing.wordId, payload);
-      message.success('热词更新成功');
-    }
+    await hotWordApi.updateWord(wordEditing.libraryId, wordEditing.wordId, payload);
+    message.success('热词更新成功');
     wordModalVisible.value = false;
     await loadDrawerWords();
-    await loadLibraries(); // 更新列表中的 wordCount
+    await loadLibraries();
   } catch (e) {
     message.error((e as Error).message || '保存失败');
   }
@@ -444,35 +413,6 @@ function confirmRemoveWord(record: LibraryWord) {
         </a-upload>
       </template>
 
-      <div v-if="currentLibrary" class="drawer-meta">
-        <a-descriptions :column="1" size="small" bordered>
-          <a-descriptions-item label="状态">
-            <a-tag :color="currentLibrary.status === 'active' ? 'success' : 'default'">
-              {{ currentLibrary.status === 'active' ? '启用' : '禁用' }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="热词数量">{{ currentLibrary.wordCount }} 条</a-descriptions-item>
-          <a-descriptions-item label="描述">{{ currentLibrary.description || '—' }}</a-descriptions-item>
-        </a-descriptions>
-      </div>
-
-      <div class="drawer-toolbar">
-        <a-input
-          v-model:value="wordKeyword"
-          placeholder="搜索热词"
-          allow-clear
-          class="word-search"
-        >
-          <template #prefix><SearchOutlined /></template>
-        </a-input>
-        <a-button type="primary" size="small" @click="openCreateWord">
-          <PlusOutlined />新增热词
-        </a-button>
-        <a-button size="small" @click="exportLib">
-          <DownloadOutlined />导出本库
-        </a-button>
-      </div>
-
       <a-table
         row-key="id"
         size="small"
@@ -493,11 +433,6 @@ function confirmRemoveWord(record: LibraryWord) {
             <span class="word-text">{{ record.word }}</span>
           </template>
           <template v-else-if="column.key === 'weight'">
-            <a-progress
-              :percent="Math.min(Number(record.weight) || 0, 100)"
-              size="small"
-              :stroke-color="Number(record.weight) >= 70 ? '#52c41a' : '#1677ff'"
-            />
             <span class="weight-num">{{ record.weight }}</span>
           </template>
           <template v-else-if="column.key === 'action'">
@@ -518,10 +453,10 @@ function confirmRemoveWord(record: LibraryWord) {
       </a-table>
     </a-drawer>
 
-    <!-- 热词 新增/编辑 -->
+    <!-- 热词 编辑 -->
     <a-modal
       v-model:open="wordModalVisible"
-      :title="wordEditing.wordId === 0 ? '新增热词' : '编辑热词'"
+      title="编辑热词"
       @ok="submitWord"
       ok-text="保存"
       cancel-text="取消"
@@ -532,7 +467,13 @@ function confirmRemoveWord(record: LibraryWord) {
           <a-input v-model:value="wordForm.word" placeholder="如：人工智能" />
         </a-form-item>
         <a-form-item label="权重（0-100）">
-          <a-input-number v-model:value="wordForm.weight" :min="0" :max="100" class="full" />
+          <a-input-number
+            v-model:value="wordForm.weight"
+            :min="0"
+            :max="100"
+            :parser="(v: string) => v.replace(/[^\d]/g, '')"
+            class="full"
+          />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -585,18 +526,6 @@ function confirmRemoveWord(record: LibraryWord) {
   font-size: 13px;
 }
 
-.drawer-meta {
-  margin-bottom: 12px;
-}
-.drawer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-.word-search {
-  flex: 1;
-}
 .word-text {
   font-weight: 500;
 }
