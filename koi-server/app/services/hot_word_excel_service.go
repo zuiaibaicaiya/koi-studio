@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -31,7 +30,7 @@ func (excelService *HotWordExcelService) LibraryNameFromFileName(fileName string
 // ParseHotWords 解析 Excel 文件中的热词。
 //
 // 约定第一个工作表的第一列为热词内容，第二列为权重（可选，缺省为 0）。
-// 若首行为“热词/权重”之类的表头则自动跳过；同一文件内的重复热词会被去重。
+// 首行为标题栏，固定跳过；同一文件内的重复热词会被去重。
 func (excelService *HotWordExcelService) ParseHotWords(filePath string) ([]models.HotWord, error) {
 	file, err := excelize.OpenFile(filePath)
 	if err != nil {
@@ -55,17 +54,17 @@ func (excelService *HotWordExcelService) ParseHotWords(filePath string) ([]model
 	existed := make(map[string]struct{}, len(rows))
 
 	for index, row := range rows {
+		// 首行为标题栏，固定跳过
+		if index == 0 {
+			continue
+		}
+
 		if len(row) == 0 {
 			continue
 		}
 
 		word := strings.TrimSpace(row[0])
 		if word == "" {
-			continue
-		}
-
-		// 跳过表头行
-		if index == 0 && excelService.isHeaderRow(word) {
 			continue
 		}
 
@@ -92,11 +91,4 @@ func (excelService *HotWordExcelService) ParseHotWords(filePath string) ([]model
 	}
 
 	return hotWords, nil
-}
-
-// isHeaderRow 判断首行是否为表头
-func (excelService *HotWordExcelService) isHeaderRow(value string) bool {
-	headers := []string{"热词", "热词内容", "词语", "word", "hotword", "hot word"}
-
-	return slices.Contains(headers, strings.ToLower(value))
 }
