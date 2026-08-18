@@ -443,6 +443,14 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		facades.Log().WithContext(ctx).Warning("清理旧转写记录失败: " + cerr.Error())
 	}
 
+	// 音频上传成功后，自动触发后端异步离线转写。
+	// 转写结果将写入 meeting_transcripts 表；进度通过 /meeting/{id}/progress 查询。
+	transcribeMsg := ""
+	if terr := ctrl.triggerOfflineTranscription(ctx, uint(id)); terr != nil {
+		transcribeMsg = "音频已上传，但触发转写失败: " + terr.Error()
+		facades.Log().WithContext(ctx).Warning(transcribeMsg)
+	}
+
 	respData := map[string]any{
 		"meeting_id":        meeting.ID,
 		"audio_file_path":   meeting.AudioFilePath,
@@ -453,15 +461,42 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		"channels":          wavInfo.Channels,
 		"bits_per_sample":   wavInfo.BitsPerSample,
 		"duration":          wavInfo.DurationSec,
+		"transcription":     "started",
 	}
 	if compatMsg != "" {
 		respData["warning"] = compatMsg
 	}
+	if transcribeMsg != "" {
+		respData["transcription_error"] = transcribeMsg
+	}
 	return ctrl.ApiSuccess(ctx, respData)
 }
 
-// StartTranscription 对会议已上传的音频触发离线转写（mode=audio）
+// triggerOfflineTranscription 触发会议的异步离线转写：
+// 设置会议状态为 ongoing、清理旧记录、调用 OfflineTranscribeService.TranscribeMeeting。
+// 返回的错误会被 UploadAudio 记录到日志，但不阻断音频上传响应。
+func (ctrl *MeetingController) triggerOfflineTranscription(ctx http.Context, meetingID uint) error {
+	offlineSvc, _, err := ctrl.resolveOfflineServices()
+	if err != nil {
+		return err
+	}
+	// 模型加载失败时直接返回错误，避免无效触发
+	if offlineSvc.Status().Error != "" {
+		return fmt.Errorf("离线转写模型加载失败: %s", offlineSvc.Status().Error)
+	}
+	if serr := ctrl.meetingService.SetMeetingStatus(int(meetingID), models.MeetingStatusOngoing); serr != nil {
+		facades.Log().WithContext(ctx).Warning("设置会议状态失败: " + serr.Error())
+	}
+	if terr := offlineSvc.TranscribeMeeting(meetingID); terr != nil {
+		_ = ctrl.meetingService.SetMeetingStatus(int(meetingID), models.MeetingStatusCreated)
+		return fmt.Errorf("触发转写失败: %w", terr)
+	}
+	return nil
+}
+
+// StartTranscription 对会议已上传的音频手动触发离线转写（mode=audio）
 //
+// 通常由 UploadAudio 自动触发，此接口保留用于失败后重试。
 // 转写在后台异步执行，进度可通过 GET /meeting/{id}/progress 查询。
 // @Route POST /meeting/{id}/transcribe
 func (ctrl *MeetingController) StartTranscription(ctx http.Context) http.Response {
@@ -481,29 +516,12 @@ func (ctrl *MeetingController) StartTranscription(ctx http.Context) http.Respons
 		return ctrl.ApiErrorMsg(ctx, "请先上传音频文件")
 	}
 
-	offlineSvc, _, err := ctrl.resolveOfflineServices()
-	if err != nil {
-		return ctrl.ApiErrorMsg(ctx, err.Error())
-	}
-
-	// 只有模型确认加载失败时才直接拒绝；未就绪时允许触发，后台等待加载完成后再转写
-	if offlineSvc.Status().Error != "" {
-		return ctrl.ApiErrorMsg(ctx, "离线转写模型加载失败: "+offlineSvc.Status().Error)
-	}
-
 	// 清理可能残留的旧转写记录
 	if cerr := ctrl.transcriptService.DeleteByMeetingID(uint(id)); cerr != nil {
 		facades.Log().WithContext(ctx).Warning("清理旧转写记录失败: " + cerr.Error())
 	}
 
-	// 状态置为 ongoing
-	if serr := ctrl.meetingService.SetMeetingStatus(id, models.MeetingStatusOngoing); serr != nil {
-		facades.Log().WithContext(ctx).Warning("设置会议状态失败: " + serr.Error())
-	}
-
-	// 异步触发转写
-	if terr := offlineSvc.TranscribeMeeting(uint(id)); terr != nil {
-		_ = ctrl.meetingService.SetMeetingStatus(id, models.MeetingStatusCreated)
+	if terr := ctrl.triggerOfflineTranscription(ctx, uint(id)); terr != nil {
 		facades.Log().WithContext(ctx).Error("触发转写失败: " + terr.Error())
 		return ctrl.ApiErrorMsg(ctx, "触发转写失败: "+terr.Error())
 	}
