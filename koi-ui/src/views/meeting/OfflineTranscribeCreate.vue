@@ -42,6 +42,10 @@ const audioFile = computed(() => offlineStore.file);
 const fileError = ref('');
 const MAX_SIZE = 300 * 1024 * 1024; // 300MB
 
+/** 上传中 / 已上传状态：在创建会议前可多次重新选择，提交时才真正上传到后端 */
+const uploading = ref(false);
+const uploadProgress = ref(0);
+
 // 仅允许音频格式：驱动选择框过滤与上传校验，确保“只支持音频”
 const AUDIO_EXTS = ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma', 'aiff', 'caf', 'amr'];
 const AUDIO_ACCEPT = `audio/*,${AUDIO_EXTS.map((e) => '.' + e).join(',')}`;
@@ -163,6 +167,7 @@ function formatSize(bytes: number): string {
 }
 
 // ---- 音频文件选择 ----
+// 支持多次操作：每次选择都会替换当前文件，并清空之前的错误
 function beforeAudioUpload(file: unknown): false {
   const f = file as File;
   if (!isAudioFile(f)) {
@@ -176,13 +181,15 @@ function beforeAudioUpload(file: unknown): false {
     return false;
   }
   fileError.value = '';
+  uploadProgress.value = 0; // 重置上传进度（尚未提交）
   offlineStore.setFile(f);
-  message.success(`已选择音频：${f.name}`);
-  return false; // 阻止自动上传，由转写页解码处理
+  message.success(`已选择音频：${f.name}（点击底部"开始离线转写"上传）`);
+  return false; // 阻止自动上传，统一在 handleStart 中提交
 }
 
 function removeFile() {
   offlineStore.setFile(null);
+  uploadProgress.value = 0;
 }
 
 // 仅在 before-upload 返回 false 时拦截，这里提供 no-op 以满足 antdv 的上传要求
@@ -224,8 +231,30 @@ async function handleStart() {
       payload.end_time = formState.meetingTime[1].format('YYYY-MM-DD HH:mm:ss');
     }
 
+    // 1) 创建会议（mode=audio）
     const meeting = await meetingApi.createMeeting(payload);
 
+    // 2) 上传音频到后端（后端校验 WAV 头、UUIDv7 命名落盘，同会议重复上传自动覆盖）
+    uploading.value = true;
+    uploadProgress.value = 10;
+    let audioUrl = '';
+    try {
+      const result = await meetingApi.uploadMeetingAudio(meeting.id, audioFile.value);
+      uploadProgress.value = 100;
+      audioUrl = result.audio_url;
+      if (result.warning) {
+        message.warning(result.warning);
+      }
+    } catch (err) {
+      uploading.value = false;
+      submitting.value = false;
+      uploadProgress.value = 0;
+      message.error((err as Error)?.message || '音频上传失败，请重试');
+      return;
+    }
+    uploading.value = false;
+
+    // 3) 跳转到转写页（转写页负责触发后端转写并轮询进度）
     router.push({
       name: 'offlineTranscribe',
       query: {
@@ -236,6 +265,7 @@ async function handleStart() {
         hotWords: formState.hotWords.join(','),
         startTime: payload.start_time,
         endTime: payload.end_time,
+        audioUrl,
       },
     });
   } catch (err) {
@@ -330,11 +360,17 @@ function handleBack() {
                   :custom-request="noopUpload"
                   :show-upload-list="false"
                   :accept="AUDIO_ACCEPT"
+                  :disabled="uploading || submitting"
                 >
                   <div v-if="!audioFile" class="audio-drop__inner">
                     <p class="audio-drop__icon"><InboxOutlined /></p>
                     <p class="audio-drop__title">点击或拖拽音频文件到此处</p>
                     <p class="audio-drop__hint">支持 wav / mp3 / m4a / aac / flac / ogg 等格式，单文件 ≤ 300MB</p>
+                  </div>
+                  <div v-else class="audio-drop__inner audio-drop__inner--compact">
+                    <p class="audio-drop__icon audio-drop__icon--small"><AudioOutlined /></p>
+                    <p class="audio-drop__title">点击或拖拽以替换音频</p>
+                    <p class="audio-drop__hint">支持多次替换，最终以最后一次提交的文件为准</p>
                   </div>
                 </a-upload-dragger>
 
@@ -342,9 +378,33 @@ function handleBack() {
                   <AudioOutlined class="audio-info__icon" />
                   <div class="audio-info__meta">
                     <div class="audio-info__name" :title="audioFile.name">{{ audioFile.name }}</div>
-                    <div class="audio-info__sub">{{ formatSize(audioFile.size) }} · 已就绪，将离线转写</div>
+                    <div class="audio-info__sub">
+                      {{ formatSize(audioFile.size) }} ·
+                      <template v-if="uploading">
+                        上传中 {{ uploadProgress }}%
+                      </template>
+                      <template v-else-if="uploadProgress === 100">
+                        已上传，等待开始转写
+                      </template>
+                      <template v-else>
+                        已就绪，将上传后离线转写
+                      </template>
+                    </div>
+                    <a-progress
+                      v-if="uploading || uploadProgress === 100"
+                      :percent="uploadProgress"
+                      :show-info="false"
+                      size="small"
+                      :status="uploadProgress === 100 ? 'success' : 'active'"
+                    />
                   </div>
-                  <a-button type="text" danger class="audio-info__remove" @click="removeFile">
+                  <a-button
+                    type="text"
+                    danger
+                    class="audio-info__remove"
+                    :disabled="uploading || submitting"
+                    @click="removeFile"
+                  >
                     <template #icon><DeleteOutlined /></template>
                     移除
                   </a-button>
@@ -352,7 +412,7 @@ function handleBack() {
 
                 <p v-if="fileError" class="file-error-tip">{{ fileError }}</p>
                 <p class="field-hint">
-                  离线转写无需实时录音，上传录制好的音频文件即可在转写页自动生成文字稿
+                  离线转写无需实时录音，上传录制好的音频文件即可在转写页自动生成文字稿。支持多次替换音频，最终以最后一次提交为准
                 </p>
               </a-form-item>
 
@@ -431,13 +491,15 @@ function handleBack() {
                   type="primary"
                   size="large"
                   block
-                  :loading="submitting"
-                  :disabled="!isFormReady"
+                  :loading="submitting || uploading"
+                  :disabled="!isFormReady || uploading"
                   @click="handleStart"
                   class="start-btn"
                 >
                   <template #icon><ThunderboltOutlined /></template>
-                  开始离线转写
+                  <template v-if="uploading">正在上传音频…</template>
+                  <template v-else-if="submitting">正在创建会议…</template>
+                  <template v-else>开始离线转写</template>
                 </a-button>
                 <p v-if="!isFormReady" class="submit-hint">
                   请先填写会议名称、会议时间并上传音频文件（其余信息均为选填）
@@ -861,10 +923,17 @@ function handleBack() {
   padding: 28px 16px;
   text-align: center;
 }
+.audio-drop__inner--compact {
+  padding: 16px;
+}
 .audio-drop__icon {
   font-size: 32px;
   color: var(--color-success, #52c41a);
   margin: 0 0 8px;
+}
+.audio-drop__icon--small {
+  font-size: 20px;
+  margin-bottom: 4px;
 }
 .audio-drop__title {
   margin: 0;

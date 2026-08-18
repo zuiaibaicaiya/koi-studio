@@ -8,14 +8,12 @@ import {
   type UIMeetingStatus,
 } from '../../store/meeting';
 import { exportMeetingById } from '../../utils/exportMeeting';
-import { meetingApi } from '../../services/meetingApi';
 import {
   DeleteOutlined,
   SearchOutlined,
   ReloadOutlined,
   DownloadOutlined,
   EyeOutlined,
-  PlayCircleOutlined,
   PlusOutlined,
 } from '@antdv-next/icons';
 
@@ -143,38 +141,6 @@ function goMeetingDetail(record: Meeting) {
 
 /* ==================== 音频转写相关（与实时会议共用 meetings 表，按 mode=audio 区分） ==================== */
 
-/* ---- 查看转写文本弹窗（拉取真实转写记录） ---- */
-const transcriptDetailVisible = ref(false);
-const transcriptDetailLoading = ref(false);
-const transcriptDetailTitle = ref('');
-const transcriptDetailList = ref<{ speaker: string; time: string; content: string }[]>([]);
-
-function formatMs(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-async function openTranscriptDetail(record: Meeting) {
-  transcriptDetailTitle.value = record.name;
-  transcriptDetailVisible.value = true;
-  transcriptDetailLoading.value = true;
-  transcriptDetailList.value = [];
-  try {
-    const res = await meetingApi.getMeetingTranscripts(record.id, { page: 1, pageSize: 200 });
-    transcriptDetailList.value = res.items.map((t) => ({
-      speaker: t.speaker_name || '未知说话人',
-      time: formatMs(t.start_ms),
-      content: t.text,
-    }));
-  } catch {
-    message.error('获取转写内容失败');
-  } finally {
-    transcriptDetailLoading.value = false;
-  }
-}
-
 function goCreateTranscription() {
   router.push({ name: 'offlineCreate' });
 }
@@ -285,9 +251,6 @@ onMounted(loadMeetings);
                 <a-button type="link" size="small" @click="goMeetingDetail(record)">
                   <EyeOutlined />详情
                 </a-button>
-                <a-button v-if="record.mode === 'audio'" type="link" size="small" @click="openTranscriptDetail(record)">
-                  <PlayCircleOutlined />查看转写
-                </a-button>
                 <a-button type="link" size="small" @click="handleMeetingExportOne(record)">
                   <DownloadOutlined />导出
                 </a-button>
@@ -300,25 +263,6 @@ onMounted(loadMeetings);
         </a-table>
       </a-spin>
     </a-card>
-
-    <!-- 转写文本详情弹窗 -->
-    <a-modal
-      v-model:open="transcriptDetailVisible"
-      :title="`转写文本 · ${transcriptDetailTitle}`"
-      :footer="null"
-      width="640px"
-    >
-      <a-spin :spinning="transcriptDetailLoading">
-        <div v-if="transcriptDetailList.length" class="transcript-list">
-          <div v-for="(item, idx) in transcriptDetailList" :key="idx" class="transcript-item">
-            <span class="transcript-speaker">{{ item.speaker }}</span>
-            <span class="transcript-time">{{ item.time }}</span>
-            <span class="transcript-content">{{ item.content }}</span>
-          </div>
-        </div>
-        <a-empty v-else description="暂无转写内容" />
-      </a-spin>
-    </a-modal>
   </div>
 </template>
 
@@ -417,42 +361,5 @@ onMounted(loadMeetings);
 .audio-player:focus-visible {
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
-}
-
-/* ---- 转写文本列表 ---- */
-.transcript-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  max-height: 60vh;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-.transcript-item {
-  display: flex;
-  gap: 12px;
-  align-items: baseline;
-  padding: 10px 12px;
-  background: var(--color-surface-2);
-  border-radius: var(--radius-md);
-  line-height: 1.7;
-}
-.transcript-speaker {
-  flex: 0 0 auto;
-  font-weight: 600;
-  color: var(--color-brand);
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.transcript-time {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-secondary);
-  width: 52px;
-}
-.transcript-content {
-  flex: 1 1 auto;
 }
 </style>
