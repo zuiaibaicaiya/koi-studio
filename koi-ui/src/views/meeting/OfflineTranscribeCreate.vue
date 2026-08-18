@@ -235,15 +235,19 @@ async function handleStart() {
     const meeting = await meetingApi.createMeeting(payload);
 
     // 2) 上传音频到后端（后端校验 WAV 头、UUIDv7 命名落盘，同会议重复上传自动覆盖）
+    //    后端在上传成功后会自动触发异步离线转写，转写结果写入 meeting_transcripts 表
     uploading.value = true;
     uploadProgress.value = 10;
-    let audioUrl = '';
     try {
       const result = await meetingApi.uploadMeetingAudio(meeting.id, audioFile.value);
       uploadProgress.value = 100;
-      audioUrl = result.audio_url;
       if (result.warning) {
         message.warning(result.warning);
+      }
+      if (result.transcription_error) {
+        message.warning(result.transcription_error);
+      } else {
+        message.success('音频已上传，后台已开始离线转写，可在会议管理页查看进度');
       }
     } catch (err) {
       uploading.value = false;
@@ -253,21 +257,11 @@ async function handleStart() {
       return;
     }
     uploading.value = false;
+    submitting.value = false;
 
-    // 3) 跳转到转写页（转写页负责触发后端转写并轮询进度）
-    router.push({
-      name: 'offlineTranscribe',
-      query: {
-        meetingId: String(meeting.id),
-        name: formState.name,
-        participants: selectedParticipants.value.join(','),
-        speakers: formState.speakers.join(','),
-        hotWords: formState.hotWords.join(','),
-        startTime: payload.start_time,
-        endTime: payload.end_time,
-        audioUrl,
-      },
-    });
+    // 3) 跳转到会议管理页（后端在后台执行转写，结果自动入库）
+    offlineStore.clear();
+    router.push({ name: 'meetings' });
   } catch (err) {
     message.error((err as Error)?.message || '创建会议失败，请稍后重试');
     submitting.value = false;

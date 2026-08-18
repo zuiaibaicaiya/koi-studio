@@ -90,6 +90,10 @@ export interface UploadAudioResult {
   duration: number;
   /** 格式兼容性警告（例如多声道需混音） */
   warning?: string;
+  /** 后端是否已自动触发转写：started 表示已触发 */
+  transcription?: 'started';
+  /** 触发转写失败时的错误信息（音频已上传成功，但转写未启动） */
+  transcription_error?: string;
 }
 
 /** 离线转写进度状态 */
