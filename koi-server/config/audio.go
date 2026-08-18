@@ -7,7 +7,7 @@ import (
 func init() {
 	config := facades.Config()
 	config.Add("audio", map[string]any{
-		// Speech Model
+		// Speech Model (Streaming)
 		//
 		// 流式语音识别模型（sherpa-onnx streaming zipformer）的加载参数。
 		// dir 为模型目录，其下需包含 encoder/decoder/joiner 三个 onnx 文件、
@@ -25,6 +25,28 @@ func init() {
 			"max_active_paths": config.Env("AUDIO_MAX_ACTIVE_PATHS", 4),
 			// 首帧音频到达时等待模型加载完成的最长秒数，超时返回错误而非无限阻塞。
 			"load_timeout": config.Env("AUDIO_MODEL_LOAD_TIMEOUT", 5),
+		},
+
+		// Offline ASR Model (Non-streaming)
+		//
+		// 离线语音识别模型（sherpa-onnx offline transducer zipformer）的加载参数。
+		// 用于上传音频文件后的批量转写。
+		"offline_model": map[string]any{
+			// 离线模型类型：zipformer_ctc | transducer | paraformer
+			"model_type":       config.Env("OFFLINE_MODEL_TYPE", "transducer"),
+			"dir":              config.Env("OFFLINE_MODEL_DIR", "models/sherpa-onnx-zipformer-zh-en-2023-11-22"),
+			"model":            config.Env("OFFLINE_MODEL_FILE", "model.onnx"),
+			// transducer 类型模型专用（三文件）
+			"encoder":          config.Env("OFFLINE_MODEL_ENCODER", "encoder-epoch-34-avg-19.onnx"),
+			"decoder":          config.Env("OFFLINE_MODEL_DECODER", "decoder-epoch-34-avg-19.onnx"),
+			"joiner":           config.Env("OFFLINE_MODEL_JOINER", "joiner-epoch-34-avg-19.onnx"),
+			"tokens":           config.Env("OFFLINE_MODEL_TOKENS", "tokens.txt"),
+			"num_threads":      config.Env("OFFLINE_MODEL_NUM_THREADS", 4),
+			"provider":         config.Env("OFFLINE_MODEL_PROVIDER", ""),
+			"decoding_method":  config.Env("OFFLINE_DECODING_METHOD", "greedy_search"),
+			"max_active_paths": config.Env("OFFLINE_MAX_ACTIVE_PATHS", 4),
+			"hotwords_score":   config.Env("OFFLINE_HOTWORDS_SCORE", 2.0),
+			"load_timeout":     config.Env("OFFLINE_MODEL_LOAD_TIMEOUT", 60),
 		},
 
 		// Audio Stream

@@ -110,5 +110,10 @@ func Api() {
 		router.Post("/meeting/{id}/finish", meetingController.FinishMeeting)
 		// 会议转写记录查询。
 		router.Get("/meeting/{id}/transcripts", meetingController.GetMeetingTranscripts)
+
+		// 音频文件离线转写接口（mode=audio）。
+		router.Post("/meeting/{id}/audio", meetingController.UploadAudio)
+		router.Post("/meeting/{id}/transcribe", meetingController.StartTranscription)
+		router.Get("/meeting/{id}/progress", meetingController.GetTranscriptionProgress)
 	})
 }

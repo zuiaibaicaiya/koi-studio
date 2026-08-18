@@ -14,9 +14,16 @@ import (
 	"koi-server/app/jobs"
 	"koi-server/app/services"
 	"koi-server/app/services/audio"
+	offlinetranscribe "koi-server/app/services/offline_transcribe"
 )
 
-// AudioServiceProvider 注册音频实时转写服务。
+// 容器绑定键
+const (
+	OfflineTranscribeBinding       = "koi.audio.offline_transcriber"
+	OfflineProgressManagerBinding  = "koi.audio.offline_progress"
+)
+
+// AudioServiceProvider 注册音频实时转写与离线转写服务。
 type AudioServiceProvider struct{}
 
 // 编译期确认满足框架的服务提供者契约。
@@ -27,6 +34,7 @@ var _ foundation.ServiceProvider = (*AudioServiceProvider)(nil)
 // 单例保证全局只加载一份语音模型；具体实现通过构造函数注入日志、存储、
 // 结果发布器与录音归档器，任一依赖都可在测试中替换为替身。
 func (r *AudioServiceProvider) Register(app foundation.Application) {
+	// --- 实时转写服务 ---
 	app.Singleton(contractsaudio.Binding, func(app foundation.Application) (any, error) {
 		config := audio.NewConfig(app.MakeConfig())
 
@@ -51,6 +59,33 @@ func (r *AudioServiceProvider) Register(app foundation.Application) {
 	app.Singleton("meeting.session_manager", func(app foundation.Application) (any, error) {
 		return services.NewMeetingSessionManager(), nil
 	})
+
+	// --- 离线转写进度管理器 ---
+	app.Singleton(OfflineProgressManagerBinding, func(app foundation.Application) (any, error) {
+		return offlinetranscribe.NewProgressManager(), nil
+	})
+
+	// --- 离线转写服务 ---
+	app.Singleton(OfflineTranscribeBinding, func(app foundation.Application) (any, error) {
+		offlineCfg := offlinetranscribe.NewConfig(app.MakeConfig())
+		progressRaw, err := app.Make(OfflineProgressManagerBinding)
+		if err != nil {
+			return nil, fmt.Errorf("offline: failed to resolve progress manager: %w", err)
+		}
+		diskName := app.MakeConfig().GetString("audio.storage.disk", "audio")
+		return offlinetranscribe.NewService(offlineCfg, offlinetranscribe.Dependencies{
+			Log:               app.MakeLog(),
+			Storage:           app.MakeStorage().Disk(diskName),
+			Progress:          progressRaw.(*offlinetranscribe.ProgressManager),
+			TranscriptService: services.NewMeetingTranscriptService(),
+			MeetingService:    services.NewMeetingService(),
+			HotWordLibService: services.NewHotWordLibraryService(),
+			HotWordService:    services.NewHotWordService(),
+			SpeakerService:    services.NewSpeakerService(),
+			Voiceprint:        facades.Speaker(),
+			SpeakerVoiceprint: services.NewSpeakerVoiceprintService(),
+		})
+	})
 }
 
 // Boot 提前实例化服务，使模型在应用启动阶段就开始异步预加载，
@@ -58,6 +93,9 @@ func (r *AudioServiceProvider) Register(app foundation.Application) {
 func (r *AudioServiceProvider) Boot(app foundation.Application) {
 	if _, err := app.Make(contractsaudio.Binding); err != nil {
 		app.MakeLog().Error(fmt.Sprintf("audio: failed to boot transcriber: %v", err))
+	}
+	if _, err := app.Make(OfflineTranscribeBinding); err != nil {
+		app.MakeLog().Error(fmt.Sprintf("offline: failed to boot offline transcriber: %v", err))
 	}
 }
 

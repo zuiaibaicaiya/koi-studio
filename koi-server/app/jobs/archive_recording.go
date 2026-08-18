@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"koi-server/app/facades"
 	"koi-server/app/models"
 	"koi-server/app/services/audio"
@@ -81,7 +83,13 @@ func (r *ArchiveRecording) Handle(args ...any) error {
 		return fmt.Errorf("archive recording: encode wav: %w", err)
 	}
 
-	filename := filepath.Base(clientID) + ".wav"
+	// 文件名采用 UUIDv7（去掉连字符的 32 字符 hex），时间有序、数据库索引友好。
+	// 与离线转写场景的音频文件命名保持一致，便于统一管理；clientID 仍用于日志关联。
+	uuidV7, uerr := uuid.NewV7()
+	if uerr != nil {
+		return fmt.Errorf("archive recording: generate uuid: %w", uerr)
+	}
+	filename := strings.ReplaceAll(uuidV7.String(), "-", "") + ".wav"
 	if err := disk.Put(filename, string(wav)); err != nil {
 		return fmt.Errorf("archive recording: persist wav: %w", err)
 	}
