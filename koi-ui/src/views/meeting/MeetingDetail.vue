@@ -21,6 +21,16 @@
         </template>
       </div>
       <a-button
+        class="retrans-btn"
+        :loading="retranscribing"
+        :disabled="meetingLoading || !meeting || !meeting.audio_url"
+        title="基于当前会议的音频文件重新转写"
+        @click="handleRetranscribe"
+      >
+        <template #icon><ReloadOutlined /></template>
+        重新转写
+      </a-button>
+      <a-button
         class="export-btn"
         type="primary"
         :loading="exporting"
@@ -31,6 +41,35 @@
         导出
       </a-button>
     </header>
+
+    <!-- 重新转写进度条 -->
+    <div v-if="rt.visible" class="rt-strip" :class="rt.status">
+      <div class="rt-head">
+        <ReloadOutlined v-if="rt.status === 'pending' || rt.status === 'running'" spin />
+        <CheckCircleFilled v-else-if="rt.status === 'completed'" />
+        <CloseCircleFilled v-else />
+        <span class="rt-label">
+          {{
+            rt.status === 'completed'
+              ? '重新转写完成'
+              : rt.status === 'failed'
+                ? '重新转写失败'
+                : '重新转写中…'
+          }}
+        </span>
+        <span class="rt-pct">{{ rt.progress }}%</span>
+      </div>
+      <a-progress
+        class="rt-bar"
+        :percent="rt.progress"
+        :status="rt.status === 'failed' ? 'exception' : rt.status === 'completed' ? 'success' : 'active'"
+        :show-info="false"
+        size="small"
+      />
+      <div class="rt-step">
+        {{ rt.step || '' }}<span v-if="rt.error" class="rt-error"> · {{ rt.error }}</span>
+      </div>
+    </div>
 
     <!-- 会议转写（虚拟列表） -->
     <a-card class="transcript-card" variant="borderless" :styles="{ body: { padding: '0' } }">
@@ -176,6 +215,9 @@ import {
   BackwardOutlined,
   ForwardOutlined,
   DownloadOutlined,
+  ReloadOutlined,
+  CheckCircleFilled,
+  CloseCircleFilled,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
@@ -533,7 +575,74 @@ onMounted(async () => {
   await loadTranscripts();
 });
 
+// ---- 重新转写（实时 / 离线会议均基于已归档音频调用离线转写） ----
+const retranscribing = ref(false);
+/** 重新转写进度条状态 */
+const rt = ref<{
+  visible: boolean;
+  status: 'pending' | 'running' | 'completed' | 'failed' | '';
+  progress: number;
+  step: string;
+  error: string;
+}>({ visible: false, status: '', progress: 0, step: '', error: '' });
+let rtTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopRtPoll() {
+  if (rtTimer) {
+    clearInterval(rtTimer);
+    rtTimer = null;
+  }
+}
+
+async function handleRetranscribe() {
+  if (!meeting.value || retranscribing.value || !meeting.value.audio_url) return;
+  // 停止音频播放并重置页面状态（避免旧转录/播放状态残留）
+  destroyWave();
+  stopRtPoll();
+  transcripts.value = [];
+  rt.value = { visible: true, status: 'pending', progress: 0, step: '正在提交转写任务…', error: '' };
+  retranscribing.value = true;
+  try {
+    await meetingApi.retranscribeMeeting(meetingId.value);
+    pollRtProgress();
+  } catch (e) {
+    retranscribing.value = false;
+    rt.value = { ...rt.value, status: 'failed', error: (e as { message?: string })?.message || '未知错误' };
+    message.error('触发重新转写失败：' + ((e as { message?: string })?.message || '未知错误'));
+  }
+}
+
+function pollRtProgress() {
+  stopRtPoll();
+  rtTimer = setInterval(async () => {
+    try {
+      const p = await meetingApi.getTranscriptionProgress(meetingId.value);
+      rt.value = {
+        visible: true,
+        status: p.status,
+        progress: p.progress || 0,
+        step: p.current_step || '',
+        error: p.error_message || '',
+      };
+      if (p.status === 'completed') {
+        stopRtPoll();
+        retranscribing.value = false;
+        await Promise.all([loadTranscripts(), loadMeeting()]);
+        message.success('重新转写完成');
+        rt.value = { ...rt.value, visible: false };
+      } else if (p.status === 'failed') {
+        stopRtPoll();
+        retranscribing.value = false;
+        message.error('重新转写失败：' + (p.error_message || '未知错误'));
+      }
+    } catch {
+      // 网络抖动时继续轮询，由完成/失败状态决定结束
+    }
+  }, 1500);
+}
+
 onUnmounted(() => {
+  stopRtPoll();
   destroyWave();
 });
 
@@ -567,6 +676,61 @@ watch(
 .detail-topbar .export-btn {
   margin-top: 4px;
   flex-shrink: 0;
+}
+.detail-topbar .retrans-btn {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+/* 重新转写进度条 */
+.rt-strip {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+.rt-strip.completed {
+  border-color: rgba(16, 185, 129, 0.5);
+}
+.rt-strip.failed {
+  border-color: rgba(239, 68, 68, 0.5);
+}
+.rt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.rt-head .anticon {
+  color: var(--color-primary, #6366f1);
+}
+.rt-strip.completed .rt-head .anticon {
+  color: #10b981;
+}
+.rt-strip.failed .rt-head .anticon {
+  color: #ef4444;
+}
+.rt-label {
+  font-weight: 600;
+  color: var(--color-text);
+}
+.rt-pct {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.rt-bar {
+  margin-bottom: 4px;
+}
+.rt-step {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  word-break: break-word;
+}
+.rt-error {
+  color: #ef4444;
 }
 .topbar-title {
   flex: 1;

@@ -145,6 +145,10 @@ export const meetingApi = {
    *  转写在后台执行，通过 getTranscriptionProgress 查询进度。 */
   startTranscription: (id: number) => http.post<void>(`/api/meeting/${id}/transcribe`),
 
+  /** 重新转写：无论实时还是离线会议，均基于已归档音频调用离线转写，
+   *  并清空旧转写记录。转写在后台执行，通过 getTranscriptionProgress 查询进度。 */
+  retranscribeMeeting: (id: number) => http.post<void>(`/api/meeting/${id}/retranscribe`),
+
   /** 离线转写：查询转写进度（status / progress 0-100 / current_step / error_message）。 */
   getTranscriptionProgress: (id: number) =>
     http.get<TranscriptionProgress>(`/api/meeting/${id}/progress`),
