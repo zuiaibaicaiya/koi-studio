@@ -836,13 +836,13 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 52px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%);
+  background: linear-gradient(135deg, #2f54eb 0%, #597ef7 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 24px;
   color: #fff;
-  box-shadow: 0 4px 20px rgba(22, 119, 255, 0.3);
+  box-shadow: 0 4px 20px rgba(47, 84, 235, 0.3);
   flex-shrink: 0;
 }
 .title-text h1 {
@@ -1095,9 +1095,9 @@ onBeforeUnmount(() => {
   font-size: 15px !important;
   font-weight: 600 !important;
   border-radius: var(--radius-md) !important;
-  background: linear-gradient(135deg, #1677ff 0%, #4096ff 100%) !important;
+  background: linear-gradient(135deg, #2f54eb 0%, #597ef7 100%) !important;
   border: none !important;
-  box-shadow: 0 4px 20px rgba(22, 119, 255, 0.3);
+  box-shadow: 0 4px 20px rgba(47, 84, 235, 0.3);
   transition: all var(--transition-base);
   letter-spacing: 0.02em;
 }
@@ -1199,7 +1199,7 @@ onBeforeUnmount(() => {
 .preview-progress-bar {
   height: 100%;
   border-radius: 2px;
-  background: linear-gradient(90deg, #1677ff, #4096ff);
+  background: linear-gradient(90deg, #2f54eb, #597ef7);
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 

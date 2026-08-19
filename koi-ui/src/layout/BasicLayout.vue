@@ -235,6 +235,6 @@ function goHome() {
   width: 100%;
   box-sizing: border-box;
   padding: 0 var(--layout-gutter);
-  margin: 16px 0;
+  margin: 20px 0;
 }
 </style>

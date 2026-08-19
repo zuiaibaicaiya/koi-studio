@@ -351,7 +351,7 @@ function confirmRemoveWord(record: LibraryWord) {
             </a-tag>
           </template>
           <template v-else-if="column.key === 'wordCount'">
-            <a-badge :count="record.wordCount" :number-style="{ backgroundColor: '#1677ff' }" />
+            <a-badge :count="record.wordCount" :number-style="{ backgroundColor: '#2f54eb' }" />
             <span class="count-text">{{ record.wordCount }} 条</span>
           </template>
           <template v-else-if="column.key === 'action'">

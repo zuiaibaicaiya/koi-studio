@@ -72,11 +72,11 @@ const gridLines = computed(() => {
     >
       {{ g.val }}
     </text>
-    <path :d="areaPath" :fill="color || '#1677ff'" fill-opacity="0.15" />
+    <path :d="areaPath" :fill="color || '#2f54eb'" fill-opacity="0.15" />
     <path
       :d="linePath"
       fill="none"
-      :stroke="color || '#1677ff'"
+      :stroke="color || '#2f54eb'"
       stroke-width="2"
       stroke-linejoin="round"
       stroke-linecap="round"
@@ -87,7 +87,7 @@ const gridLines = computed(() => {
       :cx="p.x"
       :cy="p.y"
       r="3"
-      :fill="color || '#1677ff'"
+      :fill="color || '#2f54eb'"
     />
     <text
       v-for="(p, i) in points"

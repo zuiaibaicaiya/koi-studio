@@ -65,7 +65,7 @@ const cards = computed(() => [
     title: '用户总数',
     value: userStore.list.length,
     icon: TeamOutlined,
-    color: '#1677ff',
+    color: '#2f54eb',
     to: 'users',
   },
   {
@@ -117,7 +117,7 @@ function go(name: string) {
     <a-row :gutter="16" class="mt-16">
       <a-col :xs="24" :lg="16">
         <a-card title="近 7 日新增用户趋势" class="chart-card">
-          <BaseLineChart :data="trend" color="#1677ff" :height="240" />
+          <BaseLineChart :data="trend" color="#2f54eb" :height="240" />
         </a-card>
       </a-col>
       <a-col :xs="24" :lg="8">

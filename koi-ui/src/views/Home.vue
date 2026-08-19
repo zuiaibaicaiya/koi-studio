@@ -63,7 +63,7 @@ const modules = [
     title: '实时会议',
     desc: '发起或加入实时音视频会议，支持同声转写与字幕。',
     icon: VideoCameraOutlined,
-    color: '#1677ff',
+    color: '#2f54eb',
     to: 'liveCreate',
   },
   {
