@@ -533,6 +533,51 @@ func (ctrl *MeetingController) StartTranscription(ctx http.Context) http.Respons
 	})
 }
 
+// Retranscribe 重新转写会议音频（实时会议与离线会议均可调用）。
+//
+// 无论会议模式，均基于会议已归档的音频文件调用离线转写流程，并清空旧转写记录。
+// 转写在后台异步执行，进度可通过 GET /meeting/{id}/progress 查询。
+// @Route POST /meeting/{id}/retranscribe
+func (ctrl *MeetingController) Retranscribe(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	meeting, err := ctrl.meetingService.GetMeetingById(id)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+	if meeting.AudioFilePath == "" {
+		return ctrl.ApiErrorMsg(ctx, "会议暂无可重新转写的音频文件（实时会议需先结束并归档）")
+	}
+
+	offlineSvc, progressMgr, err := ctrl.resolveOfflineServices()
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, err.Error())
+	}
+
+	// 已有进行中的任务，直接复用进度，避免重复提交。
+	if _, perr := progressMgr.Get(uint(id)); perr == nil {
+		return ctrl.ApiSuccess(ctx, map[string]any{
+			"meeting_id": meeting.ID,
+			"status":     "running",
+			"message":    "已有转写任务进行中，可通过 progress 接口查询进度",
+		})
+	}
+
+	if terr := offlineSvc.RetranscribeMeeting(uint(id)); terr != nil {
+		facades.Log().WithContext(ctx).Error("触发重新转写失败: " + terr.Error())
+		return ctrl.ApiErrorMsg(ctx, "触发重新转写失败: "+terr.Error())
+	}
+
+	return ctrl.ApiSuccess(ctx, map[string]any{
+		"meeting_id": meeting.ID,
+		"status":     "started",
+		"message":    "重新转写任务已提交，可通过 progress 接口查询进度",
+	})
+}
+
 // GetTranscriptionProgress 查询离线转写的进度
 //
 // 返回：状态（pending/running/completed/failed）、百分比、当前步骤、错误信息等。
@@ -546,9 +591,6 @@ func (ctrl *MeetingController) GetTranscriptionProgress(ctx http.Context) http.R
 	meeting, err := ctrl.meetingService.GetMeetingById(id)
 	if err != nil {
 		return ctrl.ApiErrorMsg(ctx, "会议不存在")
-	}
-	if meeting.Mode != models.MeetingModeAudio {
-		return ctrl.ApiErrorMsg(ctx, "仅音频转写模式的会议支持进度查询")
 	}
 
 	_, progressMgr, err := ctrl.resolveOfflineServices()

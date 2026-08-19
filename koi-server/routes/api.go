@@ -114,6 +114,7 @@ func Api() {
 		// 音频文件离线转写接口（mode=audio）。
 		router.Post("/meeting/{id}/audio", meetingController.UploadAudio)
 		router.Post("/meeting/{id}/transcribe", meetingController.StartTranscription)
+		router.Post("/meeting/{id}/retranscribe", meetingController.Retranscribe)
 		router.Get("/meeting/{id}/progress", meetingController.GetTranscriptionProgress)
 	})
 }

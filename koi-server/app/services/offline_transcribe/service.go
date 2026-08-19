@@ -184,6 +184,34 @@ func (s *Service) TranscribeMeeting(meetingID uint) error {
 	return nil
 }
 
+// RetranscribeMeeting 重新转写指定会议：无论会议模式（实时或离线），
+// 都基于会议已归档的音频文件调用离线转写流程，并清空旧的转写记录。
+//
+// 与 TranscribeMeeting 的区别：
+//   - 不受 meeting.Mode 限制，实时会议（归档后已有音频）与离线会议均可调用；
+//   - 触发前强制清理旧的转写记录与进度，确保从空白重新转写；
+//   - 若已有进行中的任务则直接复用，避免重复提交。
+func (s *Service) RetranscribeMeeting(meetingID uint) error {
+	meeting, err := s.deps.MeetingService.GetMeetingById(int(meetingID))
+	if err != nil {
+		return errors.New("会议不存在: " + err.Error())
+	}
+
+	if meeting.AudioFilePath == "" {
+		return errors.New("会议暂无可重新转写的音频文件（实时会议需先结束并归档）")
+	}
+
+	// 清理旧的转写记录，避免新旧转写混合。
+	if err := s.deps.TranscriptService.DeleteByMeetingID(meetingID); err != nil {
+		return errors.New("清理旧转写记录失败: " + err.Error())
+	}
+
+	// 移除可能残留的进度记录，使得下方 TranscribeMeeting 可重新提交任务。
+	s.deps.Progress.Remove(meetingID)
+
+	return s.TranscribeMeeting(meetingID)
+}
+
 // doTranscribe 实际执行转写逻辑（在独立协程中运行）
 func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 	s.deps.Progress.Start(meetingID)
