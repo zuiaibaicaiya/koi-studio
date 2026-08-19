@@ -15,6 +15,13 @@ type chunk struct {
 	last bool
 }
 
+// tokenEmit 记录一个 token 在实时解码中被发射时的真实音频采样位置，
+// 用于把字/词级时间戳对齐到音频实际时间（而非按字符数均匀插值）。
+type tokenEmit struct {
+	token     string
+	samplePos int64
+}
+
 // session 表示单个客户端的转写会话。
 //
 // 并发模型：
@@ -61,6 +68,12 @@ type session struct {
 	// --- 说话人识别（仅工作协程访问，无需加锁）---
 	// utterancePCM 当前语音段的原始 PCM 缓冲（16bit 小端），用于说话人识别。
 	utterancePCM []byte
+
+	// --- 实时 token 时间戳追踪（仅工作协程访问，无需加锁）---
+	// emittedTokens 当前语音段已发射的 token 及其被解码时的真实采样位置。
+	emittedTokens []tokenEmit
+	// lastTokenCount 上一次 GetResult 返回的 token 数量，用于增量记录新 token。
+	lastTokenCount int
 }
 
 // newSession 创建会话，队列容量由配置决定。
@@ -133,6 +146,8 @@ func (s *session) resetUtterance() {
 	s.utteranceAt = now
 	s.lastSentText = ""
 	s.lastSentAt = now
+	s.emittedTokens = nil
+	s.lastTokenCount = 0
 }
 
 // requestStop 通知工作协程收尾退出，可安全重复调用。
@@ -184,6 +199,20 @@ func (s *session) resetUtteranceTracking() {
 	s.lastCommitEnd = s.totalSamples
 	s.utteranceHasText = false
 	s.utterancePCM = s.utterancePCM[:0]
+	s.emittedTokens = nil
+	s.lastTokenCount = 0
+}
+
+// trackTokens 增量记录本次 GetResult 新出现的 token，并标注其发射时的真实采样位置。
+func (s *session) trackTokens(tokens []string) {
+	if len(tokens) <= s.lastTokenCount {
+		return
+	}
+	pos := s.totalSamples // 当前真实音频采样位置（会话累计）
+	for i := s.lastTokenCount; i < len(tokens); i++ {
+		s.emittedTokens = append(s.emittedTokens, tokenEmit{token: tokens[i], samplePos: pos})
+	}
+	s.lastTokenCount = len(tokens)
 }
 
 // --- 说话人识别 PCM 缓冲 ---

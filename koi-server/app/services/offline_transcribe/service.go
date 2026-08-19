@@ -18,10 +18,11 @@ import (
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 
 	contractsspeaker "koi-server/app/contracts/speaker"
-	audiosvc "koi-server/app/services/audio"
 	"koi-server/app/facades"
 	"koi-server/app/models"
 	"koi-server/app/services"
+	audiosvc "koi-server/app/services/audio"
+	"koi-server/app/services/transcript"
 )
 
 const (
@@ -279,7 +280,7 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 
 		if result != "" {
 			// 按句子分段（基于简单标点和长度）
-			sentences := splitSentencesWithTimestamps(result, timestamps, sampleRate, chunkSamplesData, start)
+			sentences := splitSentencesWithTimestamps(result, timestamps, sampleRate, chunkSamplesData)
 			for _, seg := range sentences {
 				// 说话人识别
 				speakerName, speakerID := "未知说话人", (*uint)(nil)
@@ -293,8 +294,8 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 					}
 				}
 
-				// 写入数据库
-				wt, _ := json.Marshal(seg.wordTimestamps)
+				// 写入数据库（词级时间戳同样对齐到整段音频的全局时间）
+				wt, _ := json.Marshal(offsetWordTimestamps(seg.wordTimestamps, globalOffsetMs))
 				tr := &models.MeetingTranscript{
 					MeetingID:      meetingID,
 					SpeakerID:      speakerID,
@@ -363,288 +364,170 @@ func (s *Service) decodeChunk(samples []float32, sampleRate int) (string, []sher
 
 // sentenceSegment 分句后的片段，带时间戳
 type sentenceSegment struct {
-	text            string
-	startMs         int64
-	endMs           int64
-	chunkStart      int // 在 chunk samples 中的起始样本下标
-	chunkEnd        int // 在 chunk samples 中的结束样本下标
-	wordTimestamps  []models.WordTimestamp
+	text           string
+	startMs        int64
+	endMs          int64
+	chunkStart     int // 在 chunk samples 中的起始样本下标
+	chunkEnd       int // 在 chunk samples 中的结束样本下标
+	wordTimestamps []models.WordTimestamp
 }
 
-// splitSentencesWithTimestamps 将整段文本按标点和长度切分为句，并估算每句的起止时间。
-func splitSentencesWithTimestamps(text string, results []sherpa.OfflineRecognizerResult, sampleRate int, samples []float32, globalSampleStart int) []sentenceSegment {
+// splitSentencesWithTimestamps 将整段文本按标点和长度切分为句，并为每个字生成
+// 与音频真实时间对齐的时间戳。优先使用模型返回的 token 级时间戳（精确到字），
+// 若无时间戳则退化为按音频时长在句间、句内按比例估算（仍为毫秒，区间与音频对齐）。
+func splitSentencesWithTimestamps(text string, results []sherpa.OfflineRecognizerResult, sampleRate int, samples []float32) []sentenceSegment {
 	if text == "" {
 		return nil
 	}
 
-	// 使用第一个（通常也是唯一一个）结果的 Timestamps
+	// 合并所有结果的 token 与 token 级时间戳（离线解码可能返回多个结果段）。
 	var ts []float32
 	var tokens []string
 	for _, r := range results {
-		if len(r.Timestamps) > 0 {
-			ts = r.Timestamps
-			tokens = r.Tokens
-			break
+		ts = append(ts, r.Timestamps...)
+		tokens = append(tokens, r.Tokens...)
+	}
+
+	// 优先：模型产出 token 级时间戳，逐字对齐到音频真实时间。
+	if len(ts) > 0 && len(ts) == len(tokens) {
+		tokenTimes := make([]transcript.TokenTimestamp, len(tokens))
+		for i := range tokens {
+			tokenTimes[i] = transcript.TokenTimestamp{Token: tokens[i], TimeSec: ts[i]}
+		}
+		if charTimes, ok := transcript.AlignCharTimes(text, tokenTimes); ok {
+			return buildSentenceSegments(text, charTimes, samples, sampleRate)
 		}
 	}
 
-	// 如果模型没有返回时间戳，则按整段估算
-	if len(ts) == 0 || len(ts) != len(tokens) {
-		totalMs := int64(float64(len(samples)) / float64(sampleRate) * 1000)
-		// 简单分句
-		sents := simpleSplitSentences(text)
-		var segs []sentenceSegment
-		cursor := int64(0)
-		for _, s := range sents {
-			ratio := float64(len([]rune(s))) / float64(len([]rune(text)))
-			dur := int64(float64(totalMs) * ratio)
-			end := cursor + dur
-			if end > totalMs {
-				end = totalMs
-			}
-			segs = append(segs, sentenceSegment{
-				text:           s,
-				startMs:        cursor,
-				endMs:          end,
-				chunkStart:     int(float64(cursor) / 1000.0 * float64(sampleRate)),
-				chunkEnd:       int(float64(end) / 1000.0 * float64(sampleRate)),
-				wordTimestamps: computeWordTimestampsApprox(s, cursor, end),
-			})
-			cursor = end
-		}
-		return segs
-	}
-
-	// 有 token 级时间戳，先组合为字/词级，再分句
-	type tokenInfo struct {
-		tok  string
-		tSec float32
-	}
-	tis := make([]tokenInfo, 0, len(tokens))
-	for i, tok := range tokens {
-		tis = append(tis, tokenInfo{tok: tok, tSec: ts[i]})
-	}
-
-	// 将 BPE tokens 组合成可读文本（去 ▁ 空格）
-	// 这里简化处理：按标点断句，同时按 token 进度估算句时间
-	type charInfo struct {
-		r    rune
-		tSec float32
-	}
-	var chars []charInfo
-	for _, ti := range tis {
-		tok := strings.TrimPrefix(ti.tok, "▁")
-		if tok == "" {
-			continue
-		}
-		for _, r := range tok {
-			chars = append(chars, charInfo{r: r, tSec: ti.tSec})
-		}
-	}
-
-	// 构建文本与逐字符时间
-	fullRunes := make([]rune, 0, len(chars))
-	charTimes := make([]float32, 0, len(chars))
-	for _, c := range chars {
-		fullRunes = append(fullRunes, c.r)
-		charTimes = append(charTimes, c.tSec)
-	}
-	_ = fullRunes
-	_ = charTimes
-
-	// 回退到按文本+原始结果首尾时间戳估算
-	startSec := float32(0.0)
-	endSec := float32(float64(len(samples)) / float64(sampleRate))
-	if len(ts) > 0 {
-		startSec = ts[0]
-		endSec = ts[len(ts)-1]
-		if len(results) > 0 && len(results[0].Durations) > 0 {
-			endSec = startSec + results[0].Durations[len(results[0].Durations)-1]
-		}
-	}
-	startMs := int64(startSec * 1000)
-	endMs := int64(endSec * 1000)
-	if endMs <= startMs {
-		endMs = startMs + int64(float64(len(samples))/float64(sampleRate)*1000)
-	}
-
-	sents := simpleSplitSentences(text)
-	var segs []sentenceSegment
-	totalRunes := len([]rune(text))
-	cursor := startMs
-	chunkSampleStart := int(float64(startSec) * float64(sampleRate))
-	chunkSampleEnd := len(samples)
-	if int(float64(endSec)*float64(sampleRate)) < chunkSampleEnd {
-		chunkSampleEnd = int(float64(endSec) * float64(sampleRate))
-	}
-
-	for si, s := range sents {
-		srunes := len([]rune(s))
-		if totalRunes == 0 {
-			continue
-		}
-		ratio := float64(srunes) / float64(totalRunes)
-		dur := int64(float64(endMs-startMs) * ratio)
-		sEnd := cursor + dur
-		if si == len(sents)-1 {
-			sEnd = endMs
-		}
-
-		relStart := float64(cursor-startMs) / float64(endMs-startMs)
-		relEnd := float64(sEnd-startMs) / float64(endMs-startMs)
-		cs := chunkSampleStart + int(float64(chunkSampleEnd-chunkSampleStart)*relStart)
-		ce := chunkSampleStart + int(float64(chunkSampleEnd-chunkSampleStart)*relEnd)
-		if cs < 0 {
-			cs = 0
-		}
-		if ce > len(samples) {
-			ce = len(samples)
-		}
-
-		segs = append(segs, sentenceSegment{
-			text:           s,
-			startMs:        cursor,
-			endMs:          sEnd,
-			chunkStart:     cs,
-			chunkEnd:       ce,
-			wordTimestamps: computeWordTimestampsApprox(s, cursor, sEnd),
-		})
-		cursor = sEnd
-	}
-
-	return segs
+	// 退化：无 token 时间戳时，按整段音频时长在句间、句内按比例分配（毫秒）。
+	return buildSentenceSegmentsApprox(text, samples, sampleRate)
 }
 
-// simpleSplitSentences 按中英文标点和长度简单断句
-func simpleSplitSentences(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-
-	// 先按主要标点切
-	var parts []string
-	var cur strings.Builder
+// buildSentenceSegments 基于逐字时间戳（秒）生成句子分段与字级词时间戳。
+func buildSentenceSegments(text string, charTimes []float32, samples []float32, sampleRate int) []sentenceSegment {
 	runes := []rune(text)
-	for i, r := range runes {
-		cur.WriteRune(r)
-		switch r {
-		case '。', '！', '？', '.', '!', '?', '；', ';', '，', ',':
-			// 在标点处切句，但至少保留 4 个字符
-			if cur.Len() >= 4 {
-				parts = append(parts, strings.TrimSpace(cur.String()))
-				cur.Reset()
-			}
-		default:
-			// 超过 60 字也强制切句（避免超长）
-			if cur.Len() >= 60 && (unicode.IsSpace(r) || i == len(runes)-1) {
-				parts = append(parts, strings.TrimSpace(cur.String()))
-				cur.Reset()
-			}
+	if len(charTimes) != len(runes) {
+		return buildSentenceSegmentsApprox(text, samples, sampleRate)
+	}
+	spans := simpleSplitSentences(text)
+	var out []sentenceSegment
+	for _, sp := range spans {
+		a, b := sp.start, sp.end
+		if b > len(runes) {
+			b = len(runes)
 		}
-	}
-	if cur.Len() > 0 {
-		parts = append(parts, strings.TrimSpace(cur.String()))
-	}
-
-	// 过滤空
-	var out []string
-	for _, p := range parts {
-		if p != "" {
-			out = append(out, p)
+		if b <= a {
+			continue
 		}
-	}
-	if len(out) == 0 {
-		out = []string{text}
+		startMs := int64(charTimes[a] * 1000)
+		endMs := int64(charTimes[b-1] * 1000)
+		words := transcript.WordsFromCharTimes(sp.text, charTimes[a:b])
+		out = append(out, sentenceSegment{
+			text:           sp.text,
+			startMs:        startMs,
+			endMs:          endMs,
+			chunkStart:     int(float64(startMs) / 1000.0 * float64(sampleRate)),
+			chunkEnd:       int(float64(endMs) / 1000.0 * float64(sampleRate)),
+			wordTimestamps: words,
+		})
 	}
 	return out
 }
 
-// computeWordTimestampsApprox 近似计算词级时间戳（复用 audio 包思路）
-func computeWordTimestampsApprox(text string, startMs, endMs int64) []models.WordTimestamp {
-	// 直接复用 audiosvc 包的实现（它是公有的吗？不是，故复制一份简化版）
-	if text == "" || endMs <= startMs {
-		return nil
+// buildSentenceSegmentsApprox 在没有 token 时间戳时，按音频时长在句子与字词间
+// 近似分配时间戳（仍为毫秒，区间与音频对齐），保证前端能正确定位。
+func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int) []sentenceSegment {
+	totalMs := int64(float64(len(samples)) / float64(sampleRate) * 1000)
+	spans := simpleSplitSentences(text)
+	totalRunes := 0
+	for _, sp := range spans {
+		totalRunes += sp.end - sp.start
 	}
-	words := splitWordsLocal(text)
-	if len(words) == 0 {
-		return nil
+	if totalRunes == 0 {
+		totalRunes = 1
 	}
-	totalDur := endMs - startMs
-	charTotal := 0
-	for _, w := range words {
-		charTotal += charCountLocal(w)
-	}
-	if charTotal == 0 {
-		return nil
-	}
-	timestamps := make([]models.WordTimestamp, 0, len(words))
-	cursor := startMs
-	for _, w := range words {
-		wc := charCountLocal(w)
-		if wc == 0 {
-			continue
+	var out []sentenceSegment
+	for _, sp := range spans {
+		segStartMs := int64(float64(totalMs) * float64(sp.start) / float64(totalRunes))
+		segEndMs := int64(float64(totalMs) * float64(sp.end) / float64(totalRunes))
+		// 在句内按字符数线性铺开逐字时间（退化的近似对齐）。
+		runes := []rune(sp.text)
+		sub := make([]float32, len(runes))
+		span := float64(segEndMs - segStartMs)
+		for i := range runes {
+			sub[i] = float32(segStartMs+int64(span*float64(i)/float64(len(runes)))) / 1000.0
 		}
-		dur := int64(float64(totalDur) * float64(wc) / float64(charTotal))
-		wEnd := cursor + dur
-		if wEnd > endMs {
-			wEnd = endMs
-		}
-		timestamps = append(timestamps, models.WordTimestamp{
-			Word:    w,
-			StartMs: cursor,
-			EndMs:   wEnd,
+		words := transcript.WordsFromCharTimes(sp.text, sub)
+		cs := int(float64(len(samples)) * float64(sp.start) / float64(totalRunes))
+		ce := int(float64(len(samples)) * float64(sp.end) / float64(totalRunes))
+		out = append(out, sentenceSegment{
+			text:           sp.text,
+			startMs:        segStartMs,
+			endMs:          segEndMs,
+			chunkStart:     cs,
+			chunkEnd:       ce,
+			wordTimestamps: words,
 		})
-		cursor = wEnd
 	}
-	return timestamps
+	return out
 }
 
-func splitWordsLocal(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
+// offsetWordTimestamps 将词级时间戳整体偏移 offsetMs（用于对齐到整段音频的全局时间）。
+func offsetWordTimestamps(wts []models.WordTimestamp, offsetMs int64) []models.WordTimestamp {
+	if offsetMs == 0 || len(wts) == 0 {
+		return wts
+	}
+	out := make([]models.WordTimestamp, len(wts))
+	for i, w := range wts {
+		out[i] = models.WordTimestamp{Word: w.Word, StartMs: w.StartMs + offsetMs, EndMs: w.EndMs + offsetMs}
+	}
+	return out
+}
+
+// textSpan 表示 text 中的一个句子片段及其在原文中的 rune 区间（含标点）。
+// 片段区间可直接用于从逐字时间戳切片，不依赖重新拼接。
+type textSpan struct {
+	text  string
+	start int // 原文 rune 起始下标（含）
+	end   int // 原文 rune 结束下标（不含）
+}
+
+// simpleSplitSentences 按中英文标点和长度简单断句，返回的每个片段保留其原始标点，
+// 且携带在原文中的 rune 区间，便于从逐字时间戳精确切片。
+func simpleSplitSentences(text string) []textSpan {
+	src := []rune(text)
+	if len(src) == 0 {
 		return nil
 	}
-	hasCJK := false
-	for _, r := range text {
-		if unicode.Is(unicode.Han, r) {
-			hasCJK = true
-			break
-		}
-	}
-	if hasCJK {
-		var words []string
-		var cur strings.Builder
-		for _, r := range text {
-			if unicode.Is(unicode.Han, r) {
-				if cur.Len() > 0 {
-					words = append(words, cur.String())
-					cur.Reset()
-				}
-				words = append(words, string(r))
-			} else if r == ' ' {
-				if cur.Len() > 0 {
-					words = append(words, cur.String())
-					cur.Reset()
-				}
-			} else {
-				cur.WriteRune(r)
+	var out []textSpan
+	curStart := 0
+	var cur []rune
+	for i, r := range src {
+		cur = append(cur, r)
+		switch r {
+		case '。', '！', '？', '.', '!', '?', '；', ';', '，', ',':
+			// 在标点处切句，但至少保留 4 个字符
+			if len(cur) >= 4 {
+				out = append(out, textSpan{text: string(cur), start: curStart, end: i + 1})
+				cur = nil
+				curStart = i + 1
+			}
+		default:
+			// 超过 60 字也强制切句（避免超长）
+			if len(cur) >= 60 && (unicode.IsSpace(r) || i == len(src)-1) {
+				out = append(out, textSpan{text: string(cur), start: curStart, end: i + 1})
+				cur = nil
+				curStart = i + 1
 			}
 		}
-		if cur.Len() > 0 {
-			words = append(words, cur.String())
-		}
-		return words
 	}
-	return strings.Fields(text)
-}
-
-func charCountLocal(word string) int {
-	c := 0
-	for range word {
-		c++
+	if len(cur) > 0 {
+		out = append(out, textSpan{text: string(cur), start: curStart, end: len(src)})
 	}
-	return c
+	if len(out) == 0 {
+		out = []textSpan{{text: text, start: 0, end: len(src)}}
+	}
+	return out
 }
 
 // identifyInChunk 在 chunk 样本中的指定区间，提取声纹并做说话人识别。

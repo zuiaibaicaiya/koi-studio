@@ -27,6 +27,7 @@ import (
 	contractsspeaker "koi-server/app/contracts/speaker"
 	"koi-server/app/models"
 	"koi-server/app/services"
+	"koi-server/app/services/transcript"
 )
 
 const (
@@ -553,9 +554,16 @@ func (s *Service) decode(sess *session) {
 	// 攒批解码以降低 CPU 占用；检测到端点时立即解码保证响应速度。
 	if sess.batch%s.cfg.DecodeBatch == 0 || sess.recognizer.IsEndpoint(sess.stream) {
 		var partial string
+		var tokens []string
 		for sess.recognizer.IsReady(sess.stream) {
 			sess.recognizer.Decode(sess.stream)
-			partial = sess.recognizer.GetResult(sess.stream).Text
+			res := sess.recognizer.GetResult(sess.stream)
+			partial = res.Text
+			tokens = res.Tokens
+		}
+		// 记录 token 发射时的真实采样位置，供字级时间戳对齐音频。
+		if len(tokens) > 0 {
+			sess.trackTokens(tokens)
 		}
 
 		// 文本出现时标记语音段起始。
@@ -582,6 +590,9 @@ func (s *Service) decode(sess *session) {
 		sess.stream.InputFinished()
 		for sess.recognizer.IsReady(sess.stream) {
 			sess.recognizer.Decode(sess.stream)
+			if t := sess.recognizer.GetResult(sess.stream).Tokens; len(t) > 0 {
+				sess.trackTokens(t)
+			}
 		}
 		s.commitUtterance(sess)
 	}
@@ -603,8 +614,15 @@ func (s *Service) commitUtterance(sess *session) {
 	startMs := sess.utteranceStartMs(s.cfg.SampleRate)
 	endMs := sess.commitEndMs(s.cfg.SampleRate)
 
-	// 2. 计算词级时间戳
-	wordTimestamps := computeWordTimestamps(text, startMs, endMs)
+	// 2. 计算词级时间戳（优先基于 token 发射时的真实采样位置对齐音频，
+	//    流模型不产出 token 时间戳时退化为按音频时长的近似对齐）。
+	var wordTimestamps []models.WordTimestamp
+	if len(sess.emittedTokens) > 0 {
+		wordTimestamps = buildRealtimeWordTimestamps(text, sess.emittedTokens, s.cfg.SampleRate, startMs, endMs)
+	}
+	if len(wordTimestamps) == 0 {
+		wordTimestamps = computeWordTimestamps(text, startMs, endMs)
+	}
 	wordTimestampsJSON, _ := json.Marshal(wordTimestamps)
 
 	// 3. 说话人识别
@@ -984,6 +1002,61 @@ func computeWordTimestamps(text string, startMs, endMs int64) []models.WordTimes
 	}
 
 	return timestamps
+}
+
+// buildRealtimeWordTimestamps 基于实时解码时记录的 token 发射采样位置，将字/词级
+// 时间戳对齐到音频真实时间。tokenTimes 提供逐字（去掉 ▁ 前缀后的字符）时间戳，
+// 再由 transcript.WordsFromCharTimes 切分为中文字/英文词；若模型未产出 token 时间戳
+// 或字符数无法对齐，返回 nil，由调用方退化为近似方案。
+func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate int, startMs, endMs int64) []models.WordTimestamp {
+	if len(emitted) == 0 || sampleRate <= 0 || endMs <= startMs {
+		return nil
+	}
+	type tokTime struct {
+		tok  string
+		tSec float32
+	}
+	tts := make([]transcript.TokenTimestamp, 0, len(emitted))
+	for _, e := range emitted {
+		tts = append(tts, transcript.TokenTimestamp{
+			Token:   e.token,
+			TimeSec: float32(e.samplePos) / float32(sampleRate),
+		})
+	}
+	charTimes, ok := transcript.AlignCharTimes(text, tts)
+	if !ok {
+		return nil
+	}
+	words := transcript.WordsFromCharTimes(text, charTimes)
+	return clampWords(words, startMs, endMs)
+}
+
+// clampWords 将词级时间戳裁剪到 [startMs, endMs] 并强制单调递增。
+func clampWords(words []models.WordTimestamp, startMs, endMs int64) []models.WordTimestamp {
+	if len(words) == 0 {
+		return nil
+	}
+	out := make([]models.WordTimestamp, 0, len(words))
+	last := startMs
+	for _, w := range words {
+		s := w.StartMs
+		if s < startMs {
+			s = startMs
+		}
+		if s < last {
+			s = last
+		}
+		e := w.EndMs
+		if e < s {
+			e = s
+		}
+		if e > endMs {
+			e = endMs
+		}
+		out = append(out, models.WordTimestamp{Word: w.Word, StartMs: s, EndMs: e})
+		last = e
+	}
+	return out
 }
 
 // splitWords 将文本分词（中文按字，英文按空格分词）。
