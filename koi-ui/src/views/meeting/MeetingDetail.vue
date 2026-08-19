@@ -250,24 +250,29 @@ function utteranceClock(startMs: number): string {
   return '00:00';
 }
 
-/** 解析后端 word_timestamps（JSON 数组），并转为毫秒时间轴 */
+/** 解析后端 word_timestamps（新版为 JSON 数组，旧版为 JSON 字符串），转为毫秒时间轴 */
 function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
   if (!t || !t.word_timestamps) return [];
-  try {
-    const raw = JSON.parse(t.word_timestamps);
-    if (!Array.isArray(raw)) return [];
-    const spans: WordSpan[] = [];
-    for (const w of raw) {
-      if (!w || typeof w.word !== 'string') continue;
-      const start = Number(w.start_ms);
-      const end = Number(w.end_ms);
-      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-      spans.push({ word: w.word, startMs: start, endMs: end });
+  let raw: unknown;
+  if (typeof t.word_timestamps === 'string') {
+    try {
+      raw = JSON.parse(t.word_timestamps);
+    } catch {
+      return [];
     }
-    return spans;
-  } catch {
-    return [];
+  } else {
+    raw = t.word_timestamps;
   }
+  if (!Array.isArray(raw)) return [];
+  const spans: WordSpan[] = [];
+  for (const w of raw) {
+    if (!w || typeof w.word !== 'string') continue;
+    const start = Number(w.start_ms);
+    const end = Number(w.end_ms);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    spans.push({ word: w.word, startMs: start, endMs: end });
+  }
+  return spans;
 }
 
 function toSegment(t: MeetingTranscriptDTO): TranscriptItem {

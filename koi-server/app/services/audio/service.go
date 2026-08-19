@@ -629,7 +629,7 @@ func (s *Service) commitUtterance(sess *session) {
 	speakerName, speakerID, speaker := s.identifySpeaker(sess)
 
 	// 4. 入库存储
-	s.storeTranscript(sess, text, startMs, endMs, string(wordTimestampsJSON), speakerName, speakerID)
+	s.storeTranscript(sess, text, startMs, endMs, wordTimestamps, speakerName, speakerID)
 
 	// 5. 发布增强结果
 	s.publishFinalResult(sess, text, startMs, endMs, speakerName, speakerID, speaker, string(wordTimestampsJSON))
@@ -732,7 +732,7 @@ func (s *Service) findSpeakerByName(name string, speakerIDs []uint) (models.Spea
 }
 
 // storeTranscript 将一条转写记录写入数据库。
-func (s *Service) storeTranscript(sess *session, text string, startMs, endMs int64, wordTimestampsJSON, speakerName string, speakerID *uint) {
+func (s *Service) storeTranscript(sess *session, text string, startMs, endMs int64, wordTimestamps []models.WordTimestamp, speakerName string, speakerID *uint) {
 	if s.deps.TranscriptService == nil {
 		return
 	}
@@ -751,7 +751,7 @@ func (s *Service) storeTranscript(sess *session, text string, startMs, endMs int
 		Text:           text,
 		StartMs:        startMs,
 		EndMs:          endMs,
-		WordTimestamps: wordTimestampsJSON,
+		WordTimestamps: wordTimestamps,
 		IsFinal:        true,
 	}
 

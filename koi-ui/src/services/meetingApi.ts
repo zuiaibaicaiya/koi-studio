@@ -63,6 +63,13 @@ export interface PaginatedResult<T> {
   pageSize: number;
 }
 
+/** 词级时间戳 DTO（见 koi-server/app/models/meeting_transcript.go 的 WordTimestamp） */
+export interface WordTimestampDTO {
+  word: string;
+  start_ms: number;
+  end_ms: number;
+}
+
 /** 会议转写记录 DTO（见 koi-server/app/models/meeting_transcript.go） */
 export interface MeetingTranscriptDTO {
   id: number;
@@ -72,7 +79,7 @@ export interface MeetingTranscriptDTO {
   text: string;
   start_ms: number;
   end_ms: number;
-  word_timestamps: string;
+  word_timestamps: WordTimestampDTO[];
   is_final: boolean;
   created_at?: string;
 }

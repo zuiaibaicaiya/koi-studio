@@ -1,8 +1,6 @@
 package models
 
 import (
-	"encoding/json"
-
 	"github.com/goravel/framework/database/orm"
 )
 
@@ -32,8 +30,8 @@ type MeetingTranscript struct {
 	StartMs int64 `json:"start_ms" gorm:"column:start_ms" example:"1200"`
 	// EndMs 语句结束相对时间（毫秒，相对于音频开始位置）
 	EndMs int64 `json:"end_ms" gorm:"column:end_ms" example:"5800"`
-	// WordTimestamps 词级时间戳，JSON 数组文本
-	WordTimestamps string `json:"word_timestamps" gorm:"column:word_timestamps" example:"[{\"word\":\"今天\",\"start_ms\":1200,\"end_ms\":1450}]"`
+	// WordTimestamps 词级时间戳切片，由 GORM serializer:json 自动序列化/反序列化
+	WordTimestamps []WordTimestamp `json:"word_timestamps" gorm:"column:word_timestamps;type:json;serializer:json" example:"[{\"word\":\"今天\",\"start_ms\":1200,\"end_ms\":1450}]"`
 	// IsFinal 是否为最终结果
 	IsFinal bool `json:"is_final" gorm:"column:is_final" example:"true"`
 }
@@ -41,30 +39,4 @@ type MeetingTranscript struct {
 // TableName 自定义表名
 func (MeetingTranscript) TableName() string {
 	return "meeting_transcripts"
-}
-
-// SetWordTimestamps 将词级时间戳切片序列化后写入 WordTimestamps 字段
-func (mt *MeetingTranscript) SetWordTimestamps(timestamps []WordTimestamp) error {
-	encoded, err := json.Marshal(timestamps)
-	if err != nil {
-		return err
-	}
-
-	mt.WordTimestamps = string(encoded)
-
-	return nil
-}
-
-// GetWordTimestamps 将 WordTimestamps 字段反序列化为词级时间戳切片
-func (mt *MeetingTranscript) GetWordTimestamps() ([]WordTimestamp, error) {
-	if mt.WordTimestamps == "" {
-		return nil, nil
-	}
-
-	var timestamps []WordTimestamp
-	if err := json.Unmarshal([]byte(mt.WordTimestamps), &timestamps); err != nil {
-		return nil, err
-	}
-
-	return timestamps, nil
 }

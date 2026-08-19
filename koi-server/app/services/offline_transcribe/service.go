@@ -1,7 +1,6 @@
 package offlinetranscribe
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -295,7 +294,6 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 				}
 
 				// 写入数据库（词级时间戳同样对齐到整段音频的全局时间）
-				wt, _ := json.Marshal(offsetWordTimestamps(seg.wordTimestamps, globalOffsetMs))
 				tr := &models.MeetingTranscript{
 					MeetingID:      meetingID,
 					SpeakerID:      speakerID,
@@ -303,7 +301,7 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 					Text:           seg.text,
 					StartMs:        seg.startMs + globalOffsetMs,
 					EndMs:          seg.endMs + globalOffsetMs,
-					WordTimestamps: string(wt),
+					WordTimestamps: offsetWordTimestamps(seg.wordTimestamps, globalOffsetMs),
 					IsFinal:        true,
 				}
 				if err := s.deps.TranscriptService.Create(tr); err != nil {
