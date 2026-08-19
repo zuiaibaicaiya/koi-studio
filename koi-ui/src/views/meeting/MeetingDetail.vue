@@ -78,7 +78,7 @@
                         :key="wi"
                         class="word-span"
                         :class="wordState(item, span)"
-                        :title="`${fmt(span.startMs / 1000)} 起`"
+                        :title="`${fmtMs(span.startMs)} → ${fmtMs(span.endMs)}`"
                         @click.stop="seekToSpan(item, span)"
                         >{{ span.word }}</span
                       ><span v-if="span && !isCJK(span.word)" class="word-space"> </span>
@@ -264,13 +264,29 @@ function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
     raw = t.word_timestamps;
   }
   if (!Array.isArray(raw)) return [];
+  const segEnd = Number(t.end_ms);
   const spans: WordSpan[] = [];
   for (const w of raw) {
     if (!w || typeof w.word !== 'string') continue;
     const start = Number(w.start_ms);
     const end = Number(w.end_ms);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-    spans.push({ word: w.word, startMs: start, endMs: end });
+    if (!Number.isFinite(start)) continue;
+    // 后端常只给出“起始时刻”（end_ms === start_ms），非法结束时刻先退化为起始时刻，
+    // 下面统一推算一个有效的结束时刻，保证逐字高亮区间长度 > 0。
+    spans.push({ word: w.word, startMs: start, endMs: Number.isFinite(end) && end > start ? end : start });
+  }
+  // 为长度为 0/负 的字推算结束时刻：取下一字的起始时刻；最后一字取整段 end_ms，
+  // 都没有则给一个最小兜底宽度，避免“正在播放”高亮永远无法命中。
+  for (let i = 0; i < spans.length; i++) {
+    const cur = spans[i];
+    if (cur.endMs > cur.startMs) continue;
+    const next = spans[i + 1];
+    const naturalEnd = next
+      ? next.startMs
+      : Number.isFinite(segEnd) && segEnd > cur.startMs
+        ? segEnd
+        : cur.startMs + 60;
+    cur.endMs = Math.max(naturalEnd, cur.startMs + 1);
   }
   return spans;
 }
@@ -373,6 +389,16 @@ function fmt(sec: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+/** 毫秒级时间格式化（MM:SS.mmm），用于逐字高亮 tooltip */
+function fmtMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  const totalSec = ms / 1000;
+  const m = Math.floor(totalSec / 60);
+  const s = Math.floor(totalSec % 60);
+  const msPart = Math.round(ms % 1000);
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(msPart).padStart(3, '0')}`;
+}
+
 function destroyWave() {
   if (wave.value) {
     wave.value.destroy();
@@ -451,12 +477,12 @@ function seekToSpan(item: TranscriptItem, span: WordSpan) {
 /** 当前播放位置（毫秒，相对音频开头），由 wavesurfer 的 timeupdate 驱动 */
 const currentMs = computed(() => currentTime.value * 1000);
 
-/** 判断某个词/字的高亮状态：active=正在播放，played=已播放过（从本次播放起点开始），''=未播放 */
+/** 判断某个词/字的高亮状态：active=播放头当前所在字，played=已播放过（从本次播放起点开始），''=未播放 */
 function wordState(item: TranscriptItem, span: WordSpan): string {
   // 已播放：从该次播放起点(anchor)起、且已被播放头越过结尾的字
   if (span.startMs >= playAnchorMs.value && span.endMs <= currentMs.value) return 'played';
-  // 正在播放的当前字
-  if (playing.value && currentMs.value >= span.startMs && currentMs.value < span.endMs) return 'active';
+  // 播放头当前所在字（无论是否暂停都指示当前进度位置）
+  if (currentMs.value >= span.startMs && currentMs.value < span.endMs) return 'active';
   return '';
 }
 
