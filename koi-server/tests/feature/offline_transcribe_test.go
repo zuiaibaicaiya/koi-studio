@@ -214,7 +214,9 @@ func (s *OfflineTranscribeTestSuite) TestStep3_StartTranscription() {
 		return
 	}
 
-	s.Equal("started", result.Data["status"], "成功触发时 status=started")
+	// UploadAudio 已自动触发转写时，手动触发会复用进度返回 running；
+	// 首次触发返回 started。两者都表示任务已启动/进行中。
+	s.Contains([]string{"started", "running"}, result.Data["status"], "成功触发时 status 为 started 或 running")
 	s.T().Log("转写任务已异步启动")
 }
 

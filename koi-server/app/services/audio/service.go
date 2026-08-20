@@ -467,7 +467,7 @@ func (s *Service) acquire(clientID string) (*session, error) {
 		s.deps.Log.Warning(fmt.Sprintf("audio: temp file unavailable for client %s, recording disabled: %v", clientID, err))
 	}
 
-	sess = newSession(clientID, s.cfg.QueueSize, s.shared, stream, tempFile, tempName)
+	sess = newSession(clientID, s.cfg.QueueSize, s.shared, stream, tempFile, tempName, s.cfg.SampleRate)
 	s.sessions[clientID] = sess
 
 	go s.work(sess)
@@ -543,27 +543,37 @@ func (s *Service) consume(sess *session, data []byte) {
 	sess.collectUtterancePCM(data)
 
 	sess.samples = PCMToSamples(data, sess.samples)
+	// 语音段尚未开始时用帧能量检测真实语音起点，供时间戳对齐音频实际时间。
+	sess.detectVoiceStart()
 	s.decode(sess)
 }
 
 // decode 把采样点送入识别流，按批解码并下发中间/最终结果。
 func (s *Service) decode(sess *session) {
+	// 记录本次解码窗口（当前帧）的起点采样位置，并初始化当前语音段的流起点。
+	// 流式模型固定 token 需要前置上下文，token 时间戳以流起点为基准，
+	// 可避免解码延迟把时间戳整体往后推。
+	sess.windowStartSample = sess.totalSamples - int64(len(sess.samples))
+	if sess.utteranceStreamStart < 0 {
+		sess.utteranceStreamStart = sess.windowStartSample
+	}
 	sess.stream.AcceptWaveform(s.cfg.SampleRate, sess.samples)
 	sess.batch++
 
 	// 攒批解码以降低 CPU 占用；检测到端点时立即解码保证响应速度。
 	if sess.batch%s.cfg.DecodeBatch == 0 || sess.recognizer.IsEndpoint(sess.stream) {
 		var partial string
-		var tokens []string
+		var result *sherpa.OnlineRecognizerResult
 		for sess.recognizer.IsReady(sess.stream) {
 			sess.recognizer.Decode(sess.stream)
-			res := sess.recognizer.GetResult(sess.stream)
-			partial = res.Text
-			tokens = res.Tokens
+			result = sess.recognizer.GetResult(sess.stream)
+			partial = result.Text
 		}
-		// 记录 token 发射时的真实采样位置，供字级时间戳对齐音频。
-		if len(tokens) > 0 {
-			sess.trackTokens(tokens)
+		// 记录 token 对应的真实音频采样位置，供字级时间戳对齐音频。
+		// 优先使用模型产出的 token 级时间戳，消除「token 被解码发现晚于
+		// 其实际发音」带来的系统性时间漂移。
+		if result != nil && len(result.Tokens) > 0 {
+			sess.trackTokens(result)
 		}
 
 		// 文本出现时标记语音段起始。
@@ -590,8 +600,8 @@ func (s *Service) decode(sess *session) {
 		sess.stream.InputFinished()
 		for sess.recognizer.IsReady(sess.stream) {
 			sess.recognizer.Decode(sess.stream)
-			if t := sess.recognizer.GetResult(sess.stream).Tokens; len(t) > 0 {
-				sess.trackTokens(t)
+			if result := sess.recognizer.GetResult(sess.stream); len(result.Tokens) > 0 {
+				sess.trackTokens(result)
 			}
 		}
 		s.commitUtterance(sess)
@@ -611,8 +621,8 @@ func (s *Service) commitUtterance(sess *session) {
 	sess.markUtteranceStart()
 
 	// 1. 计算时间戳
-	startMs := sess.utteranceStartMs(s.cfg.SampleRate)
-	endMs := sess.commitEndMs(s.cfg.SampleRate)
+	startMs := sess.utteranceStartMs()
+	endMs := sess.commitEndMs()
 
 	// 2. 计算词级时间戳（优先基于 token 发射时的真实采样位置对齐音频，
 	//    流模型不产出 token 时间戳时退化为按音频时长的近似对齐）。
@@ -667,13 +677,13 @@ func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker
 
 	// 检查语音段时长是否足够
 	minDuration := s.cfg.SpeakerIdentifyMinDuration
-	if sess.utteranceDuration(s.cfg.SampleRate) < minDuration {
+	if sess.utteranceDuration() < minDuration {
 		return "未知说话人", nil, nil
 	}
 
 	// 检查 PCM 缓冲是否超限
 	maxBufferDuration := s.cfg.SpeakerIdentifyMaxBuffer
-	if maxBufferDuration > 0 && sess.utteranceDuration(s.cfg.SampleRate) > maxBufferDuration {
+	if maxBufferDuration > 0 && sess.utteranceDuration() > maxBufferDuration {
 		return "未知说话人", nil, nil
 	}
 
@@ -815,8 +825,27 @@ func (s *Service) publishSpeakerIdentified(sess *session, speakerName string, sp
 	s.deps.Publisher.Publish(result)
 }
 
-// publishIntermediate 发布中间（仍可能变化）的转写结果。
+// publishIntermediate 发布中间（仍可能变化）的转写结果，带时间戳与词级时间戳。
+//
+// 中间结果与最终结果共享同一语音段起点（StartMs 稳定不跳变），EndMs 基于当前
+// 已发射 token 的末尾时间且单调递增（绝不回退），保证流式时间戳稳定、连续、无跳变。
 func (s *Service) publishIntermediate(sess *session, text string) {
+	startMs := sess.utteranceStartMs()
+	endMs := sess.currentTokenEndMs()
+	if endMs < startMs {
+		endMs = startMs
+	}
+	if endMs < sess.lastSentEndMs {
+		endMs = sess.lastSentEndMs
+	}
+	sess.lastSentEndMs = endMs
+
+	var wordTimestamps []models.WordTimestamp
+	if len(sess.emittedTokens) > 0 {
+		wordTimestamps = buildRealtimeWordTimestamps(text, sess.emittedTokens, s.cfg.SampleRate, startMs, endMs)
+	}
+	wordTimestampsJSON, _ := json.Marshal(wordTimestamps)
+
 	var meetingID uint
 	if s.deps.SessionMgr != nil {
 		if ctx := s.deps.SessionMgr.Context(sess.clientID); ctx != nil {
@@ -825,10 +854,13 @@ func (s *Service) publishIntermediate(sess *session, text string) {
 	}
 
 	s.deps.Publisher.Publish(contracts.Result{
-		ClientID:  sess.clientID,
-		Text:      text,
-		IsFinal:   false,
-		MeetingID: meetingID,
+		ClientID:       sess.clientID,
+		Text:           text,
+		IsFinal:        false,
+		StartMs:        startMs,
+		EndMs:          endMs,
+		MeetingID:      meetingID,
+		WordTimestamps: string(wordTimestampsJSON),
 	})
 }
 
@@ -1004,10 +1036,11 @@ func computeWordTimestamps(text string, startMs, endMs int64) []models.WordTimes
 	return timestamps
 }
 
-// buildRealtimeWordTimestamps 基于实时解码时记录的 token 发射采样位置，将字/词级
-// 时间戳对齐到音频真实时间。tokenTimes 提供逐字（去掉 ▁ 前缀后的字符）时间戳，
-// 再由 transcript.WordsFromCharTimes 切分为中文字/英文词；若模型未产出 token 时间戳
-// 或字符数无法对齐，返回 nil，由调用方退化为近似方案。
+// buildRealtimeWordTimestamps 基于实时解码时记录的 token 真实音频采样位置（优先
+// 模型产出的 token 级时间戳，其次为窗口起点估计），将字/词级时间戳对齐到音频
+// 实际时间。tokenTimes 提供逐字（去掉 ▁ 前缀后的字符）时间戳，再由
+// transcript.WordsFromCharTimes 切分为中文字/英文词；若字符无法对齐，返回 nil，
+// 由调用方退化为近似方案。
 func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate int, startMs, endMs int64) []models.WordTimestamp {
 	if len(emitted) == 0 || sampleRate <= 0 || endMs <= startMs {
 		return nil
@@ -1032,6 +1065,9 @@ func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate in
 }
 
 // clampWords 将词级时间戳裁剪到 [startMs, endMs] 并强制单调递增。
+//
+// 裁剪后始终保证 StartMs <= EndMs：当词的起点本身超出 endMs（理论/近似时间戳
+// 超前）时，起点与终点一并钳制到 endMs，避免出现时间倒挂。
 func clampWords(words []models.WordTimestamp, startMs, endMs int64) []models.WordTimestamp {
 	if len(words) == 0 {
 		return nil
@@ -1052,6 +1088,10 @@ func clampWords(words []models.WordTimestamp, startMs, endMs int64) []models.Wor
 		}
 		if e > endMs {
 			e = endMs
+		}
+		if s > e {
+			// 起点超出 endMs：随终点一起钳制，保证不倒挂。
+			s = e
 		}
 		out = append(out, models.WordTimestamp{Word: w.Word, StartMs: s, EndMs: e})
 		last = e

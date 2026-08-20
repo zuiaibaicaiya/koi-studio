@@ -17,10 +17,12 @@ type TokenTimestamp struct {
 
 // AlignCharTimes 将 token 级时间戳展开为 text 中每个字符（rune）的时间戳（秒）。
 //
-// 思路：先去掉空白，把各 token（去掉 "▁" 前缀）展开成的字符序列与 text 逐字对齐；
-// 若两者字符数不一致（模型分词结果与文本存在不可对齐的差异），返回 ok=false，
-// 由调用方退化为近似方案。返回的切片长度等于 []rune(text)，其中的空格符会继承
-// 相邻非空格字符的时间，从而保证每个可见字都能拿到与音频对齐的时间。
+// 思路：先去掉空白，把各 token（去掉 "▁" 前缀）展开成的字符序列与 text 逐字对齐。
+// 两者字符数一致时按位置一一对应；不一致（中英混合场景下模型 BPE 分词、标点、
+// 大小写等与最终文本存在差异）时基于最长公共子序列（LCS）做容错对齐：text 中
+// 无法匹配的字符继承最近一个匹配 token 的时间。返回的切片长度等于 []rune(text)，
+// 其中的空格符会继承相邻非空格字符的时间，从而保证每个可见字都能拿到与音频
+// 对齐的时间。
 func AlignCharTimes(text string, tokenTimes []TokenTimestamp) (charTimes []float32, ok bool) {
 	type ct struct {
 		r rune
@@ -41,12 +43,23 @@ func AlignCharTimes(text string, tokenTimes []TokenTimestamp) (charTimes []float
 	}
 
 	cleanText := removeSpaces(text)
-	cleanChars := make([]rune, 0, len(chars))
-	for _, c := range chars {
-		cleanChars = append(cleanChars, c.r)
-	}
-	if len(cleanText) != len(cleanChars) {
-		return nil, false
+	var cleanTimes []float32
+	if len(cleanText) == len(chars) {
+		cleanTimes = make([]float32, len(cleanText))
+		for i := range cleanText {
+			cleanTimes[i] = chars[i].t
+		}
+	} else {
+		cleanChars := make([]rune, len(chars))
+		charsTimes := make([]float32, len(chars))
+		for i, c := range chars {
+			cleanChars[i] = c.r
+			charsTimes[i] = c.t
+		}
+		cleanTimes = alignByLCS(cleanText, cleanChars, charsTimes)
+		if cleanTimes == nil {
+			return nil, false
+		}
 	}
 
 	runes := []rune(text)
@@ -56,7 +69,7 @@ func AlignCharTimes(text string, tokenTimes []TokenTimestamp) (charTimes []float
 		if unicode.IsSpace(r) {
 			continue
 		}
-		out[i] = chars[ci].t
+		out[i] = cleanTimes[ci]
 		ci++
 	}
 	// 空白字符继承相邻非空白字符的时间（先向后填充，再向前处理开头空格）。
@@ -75,7 +88,83 @@ func AlignCharTimes(text string, tokenTimes []TokenTimestamp) (charTimes []float
 			last = out[i]
 		}
 	}
+	// 对齐结果若没有任何有效时间戳（例如模型 tokens 与 text 完全无法对应时，
+	// LCS 会退化为全 0），视为无有效时间戳，由调用方退化为近似方案，
+	// 避免产出 0-0 的错误句子时间戳。
+	has := false
+	for _, t := range out {
+		if t > 0 {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return nil, false
+	}
 	return out, true
+}
+
+// alignByLCS 基于最长公共子序列（LCS）将 text 字符序列与 token 展开的字符序列
+// 对齐，返回长度为 len(text) 的时间数组（单位秒）。
+//
+// text 中无法匹配任何 token 字符的字符（如文本中的标点、大小写差异）继承最近
+// 一个匹配 token 的时间；token 中多出的字符（BPE 子词等）被跳过。字符序列过长
+// 时返回 nil，由调用方退化为近似方案。
+func alignByLCS(text, chars []rune, times []float32) []float32 {
+	const maxAlignRunes = 2048
+	if len(text) > maxAlignRunes || len(chars) > maxAlignRunes || len(times) != len(chars) {
+		return nil
+	}
+	n, m := len(text), len(chars)
+	// dp[i][j] 表示 text[i:] 与 chars[j:] 的 LCS 长度（反向计算，便于正向回溯）。
+	dp := make([][]int16, n+1)
+	for i := range dp {
+		dp[i] = make([]int16, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if runeEq(text[i], chars[j]) {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+	result := make([]float32, n)
+	i, j := 0, 0
+	lastT := float32(0)
+	for i < n && j < m {
+		if runeEq(text[i], chars[j]) {
+			lastT = times[j]
+			result[i] = lastT
+			i++
+			j++
+			continue
+		}
+		if dp[i+1][j] >= dp[i][j+1] {
+			// text[i] 在最优对齐中无匹配 token：继承最近匹配的时间。
+			result[i] = lastT
+			i++
+		} else {
+			j++ // 跳过 token 中多出的字符（BPE 子词等）。
+		}
+	}
+	for ; i < n; i++ {
+		result[i] = lastT
+	}
+	return result
+}
+
+// runeEq 判断两个字符在时间戳对齐中是否视为相同：
+// 完全相等，或同为 ASCII 字母且忽略大小写相等（兼容英文大小写差异）。
+func runeEq(a, b rune) bool {
+	if a == b {
+		return true
+	}
+	la, lb := unicode.ToLower(a), unicode.ToLower(b)
+	return la == lb && la >= 'a' && la <= 'z'
 }
 
 func removeSpaces(s string) []rune {

@@ -516,6 +516,19 @@ func (ctrl *MeetingController) StartTranscription(ctx http.Context) http.Respons
 		return ctrl.ApiErrorMsg(ctx, "请先上传音频文件")
 	}
 
+	// 已有进行中的任务（通常由 UploadAudio 自动触发），直接复用进度，
+	// 避免清理旧记录与转写写入产生 SQLite 锁竞争，也避免并发重复转写。
+	if _, progressMgr, err := ctrl.resolveOfflineServices(); err == nil {
+		if p, perr := progressMgr.Get(uint(id)); perr == nil &&
+			(p.Status == offlinetranscribe.StatusPending || p.Status == offlinetranscribe.StatusRunning) {
+			return ctrl.ApiSuccess(ctx, map[string]any{
+				"meeting_id": meeting.ID,
+				"status":     "running",
+				"message":    "已有转写任务进行中，可通过 progress 接口查询进度",
+			})
+		}
+	}
+
 	// 清理可能残留的旧转写记录
 	if cerr := ctrl.transcriptService.DeleteByMeetingID(uint(id)); cerr != nil {
 		facades.Log().WithContext(ctx).Warning("清理旧转写记录失败: " + cerr.Error())
@@ -557,8 +570,10 @@ func (ctrl *MeetingController) Retranscribe(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, err.Error())
 	}
 
-	// 已有进行中的任务，直接复用进度，避免重复提交。
-	if _, perr := progressMgr.Get(uint(id)); perr == nil {
+	// 已有进行中的任务（pending/running），直接复用进度，避免重复提交；
+	// 已完成/失败的任务允许重新转写。
+	if p, perr := progressMgr.Get(uint(id)); perr == nil &&
+		(p.Status == offlinetranscribe.StatusPending || p.Status == offlinetranscribe.StatusRunning) {
 		return ctrl.ApiSuccess(ctx, map[string]any{
 			"meeting_id": meeting.ID,
 			"status":     "running",
