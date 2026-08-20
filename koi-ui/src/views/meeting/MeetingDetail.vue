@@ -319,17 +319,26 @@ function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
     // 下面统一推算一个有效的结束时刻，保证逐字高亮区间长度 > 0。
     spans.push({ word: w.word, startMs: start, endMs: Number.isFinite(end) && end > start ? end : start });
   }
-  // 为长度为 0/负 的字推算结束时刻：取下一字的起始时刻；最后一字取整段 end_ms，
-  // 都没有则给一个最小兜底宽度，避免“正在播放”高亮永远无法命中。
+  // 为“零宽”（end_ms === start_ms，后端只给起始时刻）的字/词推算结束时刻。
+  // 相邻字的开始时间互不相同（严格递增），因此每个字的自然结束就是其后
+  // 第一个“严格更大”的起始时刻；句末字取整段 end_ms，都没有则给最小兜底宽度。
+  // 这样每个字都有可感知的高亮区间，播放时按音频进度依次命中、依次高亮。
   for (let i = 0; i < spans.length; i++) {
     const cur = spans[i];
     if (cur.endMs > cur.startMs) continue;
-    const next = spans[i + 1];
-    const naturalEnd = next
-      ? next.startMs
-      : Number.isFinite(segEnd) && segEnd > cur.startMs
-        ? segEnd
-        : cur.startMs + 60;
+    let nextStart = -1;
+    for (let j = i + 1; j < spans.length; j++) {
+      if (spans[j].startMs > cur.startMs) {
+        nextStart = spans[j].startMs;
+        break;
+      }
+    }
+    const naturalEnd =
+      nextStart >= 0
+        ? nextStart
+        : Number.isFinite(segEnd) && segEnd > cur.startMs
+          ? segEnd
+          : cur.startMs + 60;
     cur.endMs = Math.max(naturalEnd, cur.startMs + 1);
   }
   return spans;
@@ -478,6 +487,11 @@ function initWave() {
   });
   ws.on('timeupdate', (t: number) => {
     currentTime.value = t;
+  });
+  // 用户点击/拖动波形 seek：以新位置作为本轮“已播放”高亮的起点，
+  // 避免拖动后整段旧位置的字仍停留在 played 高亮状态。
+  ws.on('interaction', () => {
+    playAnchorMs.value = ws.getCurrentTime() * 1000;
   });
   ws.on('play', () => (playing.value = true));
   ws.on('pause', () => (playing.value = false));

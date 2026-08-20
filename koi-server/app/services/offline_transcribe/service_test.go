@@ -367,6 +367,92 @@ func (s *SentenceTimestampTestSuite) TestApproxSpeechStartAligns() {
 	}
 }
 
+// 退化近似路径应保留中间静音：音频有多段语音时，文字时间只铺在语音段内，
+// 不能把静音区间压缩掉（否则文字时间与音频实际发音位置对不上）。
+func (s *SentenceTimestampTestSuite) TestApproxMultiSpeechSegmentsKeepSilence() {
+	const sampleRate = 16000
+	// 12s：3s 静音 + 2s 语音 + 3s 静音 + 3s 语音 + 1s 静音
+	samples := make([]float32, sampleRate*12)
+	for i := sampleRate * 3; i < sampleRate*5; i++ {
+		samples[i] = 0.1 // 语音段 1：3s~5s
+	}
+	for i := sampleRate * 8; i < sampleRate*11; i++ {
+		samples[i] = 0.1 // 语音段 2：8s~11s
+	}
+
+	segs := buildSentenceSegmentsApprox(longSentenceText, samples, sampleRate)
+
+	s.Len(segs, 3)
+	// 没有任何句子时间戳落在中间静音区间 [5000ms, 8000ms]
+	for _, seg := range segs {
+		s.True(seg.startMs <= 5000 || seg.startMs >= 8000, "句子起点不应落在中间静音区间: %d", seg.startMs)
+		s.True(seg.endMs <= 5000 || seg.endMs >= 8000, "句子终点不应落在中间静音区间: %d", seg.endMs)
+		s.True(seg.chunkStart >= 0 && seg.chunkEnd <= len(samples), "chunk 区间越界")
+		s.True(seg.chunkStart <= seg.chunkEnd, "chunk 区间倒置")
+	}
+	// 首句起点对齐第一段语音起点（3s=3000ms）
+	s.Equal(int64(3000), segs[0].startMs)
+	// 末句终点对齐最后一段语音终点（11s=11000ms），而非整个 chunk 末尾 12s
+	s.Equal(int64(11000), segs[2].endMs)
+	s.Equal(len(samples)-sampleRate, segs[2].chunkEnd) // 距音频末尾还有 1s 尾部静音
+	// 句内逐字时间戳单调且不越出所在句子的时间区间
+	for _, seg := range segs {
+		for i := 1; i < len(seg.wordTimestamps); i++ {
+			s.True(seg.wordTimestamps[i].StartMs >= seg.wordTimestamps[i-1].StartMs)
+		}
+		if len(seg.wordTimestamps) > 0 {
+			s.True(seg.wordTimestamps[0].StartMs >= seg.startMs)
+			s.True(seg.wordTimestamps[len(seg.wordTimestamps)-1].EndMs <= seg.endMs)
+		}
+	}
+}
+
+// detectSpeechSegments：全静音返回空，单段/多段语音检测正确，
+// 短暂停顿（≤300ms）合并为同一段，非法参数返回空。
+func (s *SentenceTimestampTestSuite) TestDetectSpeechSegments() {
+	const sampleRate = 16000
+	// 全静音
+	silent := make([]float32, sampleRate*2)
+	s.Empty(detectSpeechSegments(silent, sampleRate))
+
+	// 单段：2s~5s 有语音
+	single := make([]float32, sampleRate*5)
+	for i := sampleRate * 2; i < len(single); i++ {
+		single[i] = 0.1
+	}
+	segs := detectSpeechSegments(single, sampleRate)
+	s.Len(segs, 1)
+	s.Equal([2]int{sampleRate * 2, sampleRate * 5}, segs[0])
+
+	// 两段：3s~5s 与 8s~11s，中间 3s 静音不合并
+	two := make([]float32, sampleRate*12)
+	for i := sampleRate * 3; i < sampleRate*5; i++ {
+		two[i] = 0.1
+	}
+	for i := sampleRate * 8; i < sampleRate*11; i++ {
+		two[i] = 0.1
+	}
+	segs = detectSpeechSegments(two, sampleRate)
+	s.Len(segs, 2)
+	s.Equal([2]int{sampleRate * 3, sampleRate * 5}, segs[0])
+	s.Equal([2]int{sampleRate * 8, sampleRate * 11}, segs[1])
+
+	// 200ms 短暂停顿应合并为同一段
+	merged := make([]float32, sampleRate*5)
+	for i := range merged {
+		merged[i] = 0.1
+	}
+	for i := sampleRate*2 - 1600; i < sampleRate*2+1600; i++ {
+		merged[i] = 0
+	}
+	segs = detectSpeechSegments(merged, sampleRate)
+	s.Len(segs, 1)
+
+	// 非法参数返回空
+	s.Empty(detectSpeechSegments(nil, sampleRate))
+	s.Empty(detectSpeechSegments(silent, 0))
+}
+
 // 无标点长文本（离线模型常见输出）按长度强制切句，避免整块音频变成一条超长记录。
 func (s *SentenceTimestampTestSuite) TestSimpleSplitSentencesNoPunctForceSplit() {
 	text := "现在是八月二十日周四十九点二十二分现在识别出来是李大爷在说话但是时间圈不知道准确不准确"

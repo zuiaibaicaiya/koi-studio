@@ -508,7 +508,9 @@ func buildSentenceSegments(text string, charTimes []float32, samples []float32, 
 
 // buildSentenceSegmentsApprox 在没有 token 时间戳时，按音频时长在句子与字词间
 // 近似分配时间戳（仍为毫秒，区间与音频对齐），保证前端能正确定位。
-// 近似时间轴从音频中第一个有语音的位置开始铺开，避免把前导静音算进第一句。
+// 近似时间轴只覆盖有语音的区间：先检测音频中的所有语音段，文本按比例铺在
+// 各语音段内部，静音段不分配任何文字时间。这样中间的静音不会被压缩/跳过，
+// 文字时间戳与音频实际发音位置一一对应。
 func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int) []sentenceSegment {
 	spans := simpleSplitSentences(text)
 	totalRunes := 0
@@ -519,23 +521,59 @@ func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int)
 		totalRunes = 1
 	}
 
-	// 检测语音起点：把近似时间轴的 0 点对齐到真实语音开始处。
-	speechStartSample := detectSpeechStart(samples, sampleRate)
-	if speechStartSample < 0 || speechStartSample > len(samples) {
-		speechStartSample = 0
+	// 检测所有语音段；全静音时退化为整段音频（与旧行为一致）。
+	segs := detectSpeechSegments(samples, sampleRate)
+	if len(segs) == 0 {
+		segs = [][2]int{{0, len(samples)}}
 	}
-	speechStartMs := int64(float64(speechStartSample) / float64(sampleRate) * 1000)
-	usableSamples := len(samples) - speechStartSample
-	if usableSamples <= 0 {
-		usableSamples = len(samples)
-		speechStartSample = 0
-		speechStartMs = 0
+	totalSpeech := 0
+	for _, sg := range segs {
+		totalSpeech += sg[1] - sg[0]
+	}
+	if totalSpeech <= 0 {
+		totalSpeech = 1
+	}
+
+	// pref[i] = 前 i 段累计语音时长（样本数），用于把字符比例位置定位到语音段。
+	pref := make([]int, len(segs)+1)
+	for i, sg := range segs {
+		pref[i+1] = pref[i] + (sg[1] - sg[0])
+	}
+
+	// charToSample：把字符序号（0..totalRunes）按比例落在"总语音时长"轴上，
+	// 再映射回真实音频采样位置（只落在语音段内，静音段不产生任何文字时间）。
+	charToSample := func(runeIdx int) int {
+		p := int(math.Round(float64(totalSpeech) * float64(runeIdx) / float64(totalRunes)))
+		if p < 0 {
+			p = 0
+		}
+		if p >= totalSpeech {
+			return segs[len(segs)-1][1]
+		}
+		lo, hi := 0, len(segs)
+		for lo+1 < hi {
+			mid := (lo + hi) / 2
+			if pref[mid] <= p {
+				lo = mid
+			} else {
+				hi = mid
+			}
+		}
+		return segs[lo][0] + (p - pref[lo])
 	}
 
 	var out []sentenceSegment
 	for _, sp := range spans {
-		segStartMs := speechStartMs + int64(float64(usableSamples)*float64(sp.start)/float64(totalRunes)/float64(sampleRate)*1000)
-		segEndMs := speechStartMs + int64(float64(usableSamples)*float64(sp.end)/float64(totalRunes)/float64(sampleRate)*1000)
+		cs := charToSample(sp.start)
+		ce := charToSample(sp.end)
+		if ce <= cs {
+			ce = cs + 1 // 至少 1 个采样，保证区间非空
+		}
+		segStartMs := int64(float64(cs) / float64(sampleRate) * 1000)
+		segEndMs := int64(float64(ce) / float64(sampleRate) * 1000)
+		if segEndMs < segStartMs {
+			segEndMs = segStartMs
+		}
 		// 在句内按字符数线性铺开逐字时间（退化的近似对齐）。
 		runes := []rune(sp.text)
 		sub := make([]float32, len(runes))
@@ -544,8 +582,6 @@ func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int)
 			sub[i] = float32(segStartMs+int64(span*float64(i)/float64(len(runes)))) / 1000.0
 		}
 		words := transcript.WordsFromCharTimes(sp.text, sub)
-		cs := speechStartSample + int(float64(usableSamples)*float64(sp.start)/float64(totalRunes))
-		ce := speechStartSample + int(float64(usableSamples)*float64(sp.end)/float64(totalRunes))
 		out = append(out, sentenceSegment{
 			text:           sp.text,
 			startMs:        segStartMs,
@@ -558,17 +594,21 @@ func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int)
 	return out
 }
 
-// detectSpeechStart 返回音频中第一个有语音的采样位置（毫秒对齐到 100ms 帧）。
-// 以短时 RMS 能量超过阈值判断，阈值与实时转写保持一致（0.03）。
-// 找不到语音（全静音）时返回 0。
-func detectSpeechStart(samples []float32, sampleRate int) int {
+// detectSpeechSegments 检测音频中所有有语音的采样区间（[start, end)，样本序号）。
+// 以 100ms 帧的短时 RMS 能量超过阈值判断，阈值与实时转写保持一致（0.03）。
+// 相邻语音段之间的静音间隙不超过 300ms 时合并为同一段（说话中的短暂停顿），
+// 避免单帧噪声或极短停顿造成过多碎片段。全静音时返回空切片。
+func detectSpeechSegments(samples []float32, sampleRate int) [][2]int {
 	if len(samples) == 0 || sampleRate <= 0 {
-		return 0
+		return nil
 	}
 	frame := sampleRate / 10 // 100ms 一帧
 	if frame <= 0 {
 		frame = 1
 	}
+	minGap := frame * 3 // 300ms
+
+	var segs [][2]int
 	for start := 0; start < len(samples); start += frame {
 		end := start + frame
 		if end > len(samples) {
@@ -578,11 +618,27 @@ func detectSpeechStart(samples []float32, sampleRate int) int {
 		for _, v := range samples[start:end] {
 			sum += float64(v) * float64(v)
 		}
-		if end > start && math.Sqrt(sum/float64(end-start)) > 0.03 {
-			return start
+		if end <= start || math.Sqrt(sum/float64(end-start)) <= 0.03 {
+			continue // 静音帧
+		}
+		if len(segs) > 0 && start-segs[len(segs)-1][1] <= minGap {
+			// 与前一段的静音间隙 ≤ 300ms，视为同一语音段，扩展其末尾。
+			segs[len(segs)-1][1] = end
+		} else {
+			segs = append(segs, [2]int{start, end})
 		}
 	}
-	return 0
+	return segs
+}
+
+// detectSpeechStart 返回音频中第一个有语音的采样位置（毫秒对齐到 100ms 帧）。
+// 复用 detectSpeechSegments 的结果，找不到语音（全静音）时返回 0。
+func detectSpeechStart(samples []float32, sampleRate int) int {
+	segs := detectSpeechSegments(samples, sampleRate)
+	if len(segs) == 0 {
+		return 0
+	}
+	return segs[0][0]
 }
 
 // offsetWordTimestamps 将词级时间戳整体偏移 offsetMs（用于对齐到整段音频的全局时间）。
