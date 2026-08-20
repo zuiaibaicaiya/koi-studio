@@ -279,17 +279,19 @@ function speakerColor(name: string): string {
   return SPEAKER_COLORS[h % SPEAKER_COLORS.length];
 }
 
-function utteranceClock(startMs: number): string {
-  const base = meeting.value?.start_time;
-  if (base) {
-    const d = new Date(String(base).replace(' ', 'T'));
-    if (!Number.isNaN(d.getTime())) {
-      const t = new Date(d.getTime() + startMs);
-      const pad = (n: number) => String(n).padStart(2, '0');
-      return `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`;
-    }
-  }
-  return '00:00';
+/**
+ * 将相对音频开头的毫秒偏移格式化为说话时间（MM:SS，超 1 小时显示 HH:MM:SS）。
+ * 与音频播放器时间轴、段落跳转、逐字高亮、导出文件使用同一坐标系，
+ * 不依赖会议的 start_time（对离线转写/重新转写，start_time 与音频录制时间无关）。
+ */
+function formatOffset(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
 }
 
 /** 解析后端 word_timestamps（新版为 JSON 数组，旧版为 JSON 字符串），转为毫秒时间轴 */
@@ -343,7 +345,7 @@ function toSegment(t: MeetingTranscriptDTO): TranscriptItem {
     startMs: t.start_ms,
     endMs: t.end_ms,
     isFinal: t.is_final,
-    clock: utteranceClock(t.start_ms),
+    clock: t.end_ms > t.start_ms ? `${formatOffset(t.start_ms)} - ${formatOffset(t.end_ms)}` : formatOffset(t.start_ms),
     color: speakerColor(speaker),
     words,
   };
