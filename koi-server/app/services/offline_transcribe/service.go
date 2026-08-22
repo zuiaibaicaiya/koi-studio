@@ -70,13 +70,19 @@ func (d Dependencies) validate() error {
 	return nil
 }
 
-// Service 离线转写服务，单例持有一个 OfflineRecognizer。
+// Service 离线转写服务，单例持有一个 OnlineRecognizer（用于离线批量转写）。
+//
+// 注意：所采用的模型是流式 zipformer（如 bilingual zh-en 模型），其 encoder 输入为
+// 带 chunk 上下文的 [N, 39, 80]，无法作为普通离线 transducer 一次性整段喂入
+// （会报 "Expected: 39" 维度错误）。因此这里统一使用 OnlineRecognizer，在离线批处理时
+// 把整段音频一次性喂入（AcceptWaveform + InputFinished），由其在内部完成 chunk 化与缓存，
+// 效果等同于离线转写，同时兼容流式模型并提供 token 级时间戳。
 type Service struct {
 	cfg  Config
 	deps Dependencies
 
 	mu         sync.RWMutex
-	recognizer *sherpa.OfflineRecognizer
+	recognizer *sherpa.OnlineRecognizer
 	loaded     bool
 	loadErr    error
 	closed     bool
@@ -129,7 +135,7 @@ func (s *Service) Close() error {
 	}
 	s.closed = true
 	if s.recognizer != nil {
-		sherpa.DeleteOfflineRecognizer(s.recognizer)
+		sherpa.DeleteOnlineRecognizer(s.recognizer)
 		s.recognizer = nil
 	}
 	s.loaded = false
@@ -393,29 +399,41 @@ func chunkWindows(totalSamples, chunkSamples, overlapSamples int) []int {
 }
 
 // decodeChunk 对一段音频采样执行离线解码，返回文本与词级时间戳。
-func (s *Service) decodeChunk(samples []float32, sampleRate int) (string, []sherpa.OfflineRecognizerResult, error) {
+//
+// 底层使用 OnlineRecognizer：把整段音频一次性喂入（AcceptWaveform + InputFinished），
+// 再通过 IsReady/Decode 循环完成 chunk 化解码，最后取 GetResult。这与流式模型的
+// 输入要求一致，同时能得到 token 级时间戳用于句子对齐。
+//
+// 重要：解码全程持有 s.mu 的读锁，保证 applyHotwords / preloadModel 在替换（删除并重建）
+// 识别器时必须等待当前解码结束，避免对已删除的 C 识别器指针产生 use-after-free 导致
+// 后端崩溃（SIGSEGV）。
+func (s *Service) decodeChunk(samples []float32, sampleRate int) (string, []sherpa.OnlineRecognizerResult, error) {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	recognizer := s.recognizer
-	s.mu.RUnlock()
 	if recognizer == nil {
 		return "", nil, ErrModelNotLoaded
 	}
 
-	stream := sherpa.NewOfflineStream(recognizer)
+	stream := sherpa.NewOnlineStream(recognizer)
 	if stream == nil {
-		return "", nil, errors.New("offline: failed to create offline stream")
+		return "", nil, errors.New("offline: failed to create online stream")
 	}
-	defer sherpa.DeleteOfflineStream(stream)
+	defer sherpa.DeleteOnlineStream(stream)
 
 	stream.AcceptWaveform(sampleRate, samples)
-	recognizer.Decode(stream)
-	result := stream.GetResult()
+	stream.InputFinished()
+	for recognizer.IsReady(stream) {
+		recognizer.Decode(stream)
+	}
+	result := recognizer.GetResult(stream)
 	if result == nil {
 		return "", nil, ErrNoTranscript
 	}
 
-	// 收集多条结果（尽管非流式通常是一条）
-	var all []sherpa.OfflineRecognizerResult
+	// 收集多条结果（流式模型每次 Decode 出一个片段，循环已消费完，这里取最终结果）。
+	var all []sherpa.OnlineRecognizerResult
 	all = append(all, *result)
 
 	return result.Text, all, nil
@@ -434,7 +452,7 @@ type sentenceSegment struct {
 // splitSentencesWithTimestamps 将整段文本按标点和长度切分为句，并为每个字生成
 // 与音频真实时间对齐的时间戳。优先使用模型返回的 token 级时间戳（精确到字），
 // 若无时间戳则退化为按音频时长在句间、句内按比例估算（仍为毫秒，区间与音频对齐）。
-func splitSentencesWithTimestamps(text string, results []sherpa.OfflineRecognizerResult, sampleRate int, samples []float32) []sentenceSegment {
+func splitSentencesWithTimestamps(text string, results []sherpa.OnlineRecognizerResult, sampleRate int, samples []float32) []sentenceSegment {
 	if text == "" {
 		return nil
 	}
@@ -817,12 +835,18 @@ func (s *Service) applyHotwords(hotwords string) error {
 	if hotwords != "" {
 		cfg.HotwordsFile = tmpPath
 		cfg.HotwordsScore = s.cfg.HotwordsScore
+		// sherpa 要求提供热词文件时必须使用 modified_beam_search，
+		// 否则配置非法、识别器创建失败（返回 nil），进而在解码时崩溃。
+		cfg.DecodingMethod = "modified_beam_search"
+		if cfg.MaxActivePaths <= 0 {
+			cfg.MaxActivePaths = 4
+		}
 	} else {
 		cfg.HotwordsFile = ""
 		cfg.HotwordsScore = 0
 	}
 
-	newRec := sherpa.NewOfflineRecognizer(&cfg)
+	newRec := sherpa.NewOnlineRecognizer(&cfg)
 	if newRec == nil {
 		_ = os.Remove(tmpPath)
 		return ErrModelLoadFailed
@@ -830,7 +854,7 @@ func (s *Service) applyHotwords(hotwords string) error {
 
 	// 替换旧识别器，删除旧热词文件
 	if s.recognizer != nil {
-		sherpa.DeleteOfflineRecognizer(s.recognizer)
+		sherpa.DeleteOnlineRecognizer(s.recognizer)
 	}
 	s.recognizer = newRec
 	if s.hotwordsFile != "" {
@@ -842,17 +866,22 @@ func (s *Service) applyHotwords(hotwords string) error {
 	return nil
 }
 
-// buildRecognizerConfig 根据 Config 组装离线识别器参数
-func (s *Service) buildRecognizerConfig() sherpa.OfflineRecognizerConfig {
-	cfg := sherpa.OfflineRecognizerConfig{
+// buildRecognizerConfig 根据 Config 组装识别器参数（OnlineRecognizer，用于离线批量转写）。
+//
+// 采用 OnlineRecognizer 以兼容流式 zipformer 模型：流式模型的 encoder 需要 chunk 化的
+// 输入（[N, 39, 80]），离线 transducer 一次性整段喂入会报维度错误。
+func (s *Service) buildRecognizerConfig() sherpa.OnlineRecognizerConfig {
+	cfg := sherpa.OnlineRecognizerConfig{
 		FeatConfig: sherpa.FeatureConfig{
 			SampleRate: s.cfg.SampleRate,
 			FeatureDim: s.cfg.FeatureDim,
 		},
-		ModelConfig: sherpa.OfflineModelConfig{
-			Tokens:     s.cfg.modelPath(s.cfg.Tokens),
-			NumThreads: s.cfg.NumThreads,
-			Provider:   s.cfg.Provider,
+		ModelConfig: sherpa.OnlineModelConfig{
+			Tokens:        s.cfg.modelPath(s.cfg.Tokens),
+			NumThreads:    s.cfg.NumThreads,
+			Provider:      s.cfg.Provider,
+			ModelingUnit:  s.cfg.ModelingUnit,
+			BpeVocab:      s.cfg.modelPath(s.cfg.BpeVocab),
 		},
 		DecodingMethod: s.cfg.DecodingMethod,
 		MaxActivePaths: s.cfg.MaxActivePaths,
@@ -861,18 +890,19 @@ func (s *Service) buildRecognizerConfig() sherpa.OfflineRecognizerConfig {
 
 	switch strings.ToLower(s.cfg.ModelType) {
 	case "transducer":
-		cfg.ModelConfig.Transducer = sherpa.OfflineTransducerModelConfig{
+		cfg.ModelConfig.Transducer = sherpa.OnlineTransducerModelConfig{
 			Encoder: s.cfg.modelPath(s.cfg.Encoder),
 			Decoder: s.cfg.modelPath(s.cfg.Decoder),
 			Joiner:  s.cfg.modelPath(s.cfg.Joiner),
 		}
 	case "paraformer":
-		cfg.ModelConfig.Paraformer = sherpa.OfflineParaformerModelConfig{
-			Model: s.cfg.modelPath(s.cfg.Model),
+		cfg.ModelConfig.Paraformer = sherpa.OnlineParaformerModelConfig{
+			Encoder: s.cfg.modelPath(s.cfg.Model),
+			Decoder: s.cfg.modelPath(s.cfg.Model),
 		}
 	default:
 		// zipformer_ctc（默认）
-		cfg.ModelConfig.ZipformerCtc = sherpa.OfflineZipformerCtcModelConfig{
+		cfg.ModelConfig.Zipformer2Ctc = sherpa.OnlineZipformer2CtcModelConfig{
 			Model: s.cfg.modelPath(s.cfg.Model),
 		}
 	}
@@ -892,10 +922,10 @@ func (s *Service) preloadModel() {
 	}()
 
 	start := time.Now()
-	s.deps.Log.Info("offline: preloading offline ASR model...")
+	s.deps.Log.Info("offline: preloading offline ASR model (online recognizer)...")
 
 	cfg := s.buildRecognizerConfig()
-	rec := sherpa.NewOfflineRecognizer(&cfg)
+	rec := sherpa.NewOnlineRecognizer(&cfg)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -906,7 +936,7 @@ func (s *Service) preloadModel() {
 		return
 	}
 	if s.closed {
-		sherpa.DeleteOfflineRecognizer(rec)
+		sherpa.DeleteOnlineRecognizer(rec)
 		return
 	}
 	s.recognizer = rec

@@ -34,13 +34,19 @@ func init() {
 		"offline_model": map[string]any{
 			// 离线模型类型：zipformer_ctc | transducer | paraformer
 			"model_type":       config.Env("OFFLINE_MODEL_TYPE", "transducer"),
-			"dir":              config.Env("OFFLINE_MODEL_DIR", "models/sherpa-onnx-zipformer-zh-en-2023-11-22"),
+			"dir":              config.Env("OFFLINE_MODEL_DIR", "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"),
 			"model":            config.Env("OFFLINE_MODEL_FILE", "model.onnx"),
-			// transducer 类型模型专用（三文件）
-			"encoder":          config.Env("OFFLINE_MODEL_ENCODER", "encoder-epoch-34-avg-19.onnx"),
-			"decoder":          config.Env("OFFLINE_MODEL_DECODER", "decoder-epoch-34-avg-19.onnx"),
-			"joiner":           config.Env("OFFLINE_MODEL_JOINER", "joiner-epoch-34-avg-19.onnx"),
+			// transducer 类型模型专用（三文件）。
+			// 复用与流式同一个 bilingual zipformer 模型，离线批量转写与重新转写均走此模型。
+			"encoder":          config.Env("OFFLINE_MODEL_ENCODER", "encoder-epoch-99-avg-1.onnx"),
+			"decoder":          config.Env("OFFLINE_MODEL_DECODER", "decoder-epoch-99-avg-1.onnx"),
+			"joiner":           config.Env("OFFLINE_MODEL_JOINER", "joiner-epoch-99-avg-1.onnx"),
 			"tokens":           config.Env("OFFLINE_MODEL_TOKENS", "tokens.txt"),
+			// bilingual 模型使用 BPE 建模单元，需指定 bpe.vocab 才能正确解码。
+			"modeling_unit":    config.Env("OFFLINE_MODEL_MODELING_UNIT", "bpe"),
+			"bpe_vocab":        config.Env("OFFLINE_MODEL_BPE_VOCAB", "bpe.vocab"),
+			// bilingual 流式 zipformer 的 fbank 特征维度为 80（与实时流一致）。
+			"feature_dim":      config.Env("OFFLINE_MODEL_FEATURE_DIM", 80),
 			"num_threads":      config.Env("OFFLINE_MODEL_NUM_THREADS", 4),
 			"provider":         config.Env("OFFLINE_MODEL_PROVIDER", ""),
 			"decoding_method":  config.Env("OFFLINE_DECODING_METHOD", "greedy_search"),

@@ -11,7 +11,6 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
-    AAlert: typeof import('antdv-next')['Alert']
     AAvatar: typeof import('antdv-next')['Avatar']
     ABreadcrumb: typeof import('antdv-next')['Breadcrumb']
     ABreadcrumbItem: typeof import('antdv-next')['BreadcrumbItem']
@@ -19,7 +18,6 @@ declare module 'vue' {
     ACard: typeof import('antdv-next')['Card']
     ACol: typeof import('antdv-next')['Col']
     AConfigProvider: typeof import('antdv-next')['ConfigProvider']
-    ADrawer: typeof import('antdv-next')['Drawer']
     ADropdown: typeof import('antdv-next')['Dropdown']
     AEmpty: typeof import('antdv-next')['Empty']
     AForm: typeof import('antdv-next')['Form']
@@ -34,10 +32,7 @@ declare module 'vue' {
     AMenuDivider: typeof import('antdv-next')['MenuDivider']
     AMenuItem: typeof import('antdv-next')['MenuItem']
     AMenuItemGroup: typeof import('antdv-next')['MenuItemGroup']
-    AModal: typeof import('antdv-next')['Modal']
     AProgress: typeof import('antdv-next')['Progress']
-    ARadioButton: typeof import('antdv-next')['RadioButton']
-    ARadioGroup: typeof import('antdv-next')['RadioGroup']
     ARangePicker: typeof import('antdv-next')['DateRangePicker']
     ARow: typeof import('antdv-next')['Row']
     ASelect: typeof import('antdv-next')['Select']
@@ -46,8 +41,7 @@ declare module 'vue' {
     ASpin: typeof import('antdv-next')['Spin']
     ATable: typeof import('antdv-next')['Table']
     ATag: typeof import('antdv-next')['Tag']
-    ATextarea: typeof import('antdv-next')['TextArea']
-    AUpload: typeof import('antdv-next')['Upload']
+    AUploadDragger: typeof import('antdv-next')['UploadDragger']
     BaseBarChart: typeof import('./components/charts/BaseBarChart.vue')['default']
     BaseLineChart: typeof import('./components/charts/BaseLineChart.vue')['default']
     BasePieChart: typeof import('./components/charts/BasePieChart.vue')['default']

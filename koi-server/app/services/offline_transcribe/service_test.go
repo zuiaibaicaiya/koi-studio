@@ -181,7 +181,7 @@ func (s *SentenceTimestampTestSuite) TestSplitSentencesWithTimestampsTokenPath()
 	tokens, times := runeTokens(longSentenceText, 0.5)
 	samples := make([]float32, 16000*5) // 5s 音频
 
-	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OfflineRecognizerResult{
+	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OnlineRecognizerResult{
 		{Tokens: tokens, Timestamps: times},
 	}, 16000, samples)
 
@@ -214,7 +214,7 @@ func (s *SentenceTimestampTestSuite) TestSplitSentencesWithTimestampsTokenPath()
 // 句子时间戳单调且不越出音频总时长。
 func (s *SentenceTimestampTestSuite) TestSplitSentencesWithTimestampsFallsBackApprox() {
 	samples := make([]float32, 16000*5) // 5s 音频
-	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OfflineRecognizerResult{
+	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OnlineRecognizerResult{
 		{Tokens: []string{"今天天气很好，我们一起去公园散步吧！你觉得怎么样？"}},
 	}, 16000, samples)
 
@@ -321,7 +321,7 @@ func (s *SentenceTimestampTestSuite) TestSplitSentencesWithTimestampsZeroTimesta
 	tokens, _ := runeTokens(longSentenceText, 0) // 时间戳全 0
 	samples := make([]float32, 16000*5)          // 5s 音频
 
-	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OfflineRecognizerResult{
+	segs := splitSentencesWithTimestamps(longSentenceText, []sherpa.OnlineRecognizerResult{
 		{Tokens: tokens, Timestamps: make([]float32, len(tokens))},
 	}, 16000, samples)
 
