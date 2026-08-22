@@ -97,7 +97,6 @@
               :item="item"
               :active="true"
               :data-index="index"
-              :size-dependencies="[item.text, item.words && item.words.length]"
             >
               <div class="transcript-item" :class="{ final: item.isFinal }" @click="seekTo(item)">
                 <a-avatar class="speaker-avatar" :style="{ backgroundColor: item.color }">
@@ -111,16 +110,16 @@
                   </div>
                   <div class="transcript-text">
                     <template v-if="item.words && item.words.length && item.words[0]">
-                      <span
-                        v-for="(span, wi) in item.words"
-                        v-show="span"
-                        :key="wi"
-                        class="word-span"
-                        :class="wordState(item, span)"
-                        :title="`${fmtMs(span.startMs)} → ${fmtMs(span.endMs)}`"
-                        @click.stop="seekToSpan(item, span)"
-                        >{{ span.word }}</span
-                      ><span v-if="span && !isCJK(span.word)" class="word-space"> </span>
+                      <template v-for="(span, wi) in item.words" :key="wi">
+                        <span
+                          v-show="span"
+                          class="word-span"
+                          :class="wordState(item, span)"
+                          :title="`${fmtMs(span.startMs)} → ${fmtMs(span.endMs)}`"
+                          @click.stop="seekToSpan(item, span)"
+                          >{{ span.word }}</span
+                        ><span v-if="span && !isCJK(span.word)" class="word-space"> </span>
+                      </template>
                     </template>
                     <template v-else>{{ item.text }}</template>
                   </div>
