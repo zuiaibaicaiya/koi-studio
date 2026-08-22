@@ -424,6 +424,16 @@ func TestBilingualOfflineTranscribeLiDyeWordTimestamps(t *testing.T) {
 		assert.GreaterOrEqual(t, w.EndMs, w.StartMs, "结束时间不应早于开始时间: %q", w.Word)
 		last = w.EndMs
 	}
+
+	// 回归断言：每个字的时长必须被限制在合理范围内，语音停顿/静音
+	// 不得整段归到前一个字上（根因：WordsFromCharTimesIntervals 把字 i 的结束
+	// 时间直接设为字 i+1 的开始时间，导致静音前一个字被拉长到数秒）。
+	// 本音频全文为中文单字，单字最长估计时长为 500ms；留出余量取 1000ms 判定。
+	for _, w := range words {
+		dur := w.EndMs - w.StartMs
+		assert.LessOrEqual(t, dur, int64(1000),
+			"字 %q 时长异常 (%dms)：语音停顿/静音被错误归到该字上", w.Word, dur)
+	}
 }
 
 // wordTimestampsFromModel 复现线上 offline_transcribe 的文字级时间戳生成策略：

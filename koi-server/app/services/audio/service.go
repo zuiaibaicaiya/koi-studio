@@ -1060,7 +1060,11 @@ func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate in
 	if !ok {
 		return nil
 	}
-	words := transcript.WordsFromCharTimes(text, charTimes)
+	// 使用区间语义（WordsFromCharTimesIntervals）而非逐点语义（WordsFromCharTimes）：
+	// 前者为每个字/词生成首尾相接的区间，并把语音停顿/静音从词区间中截断，
+	// 避免前端按“下一个字的开始时间”推算结束时刻时把静音整段归到前一个字上，
+	// 导致点击某字播放的内容与实际发音位置不符。
+	words := transcript.WordsFromCharTimesIntervals(text, charTimes)
 	return clampWords(words, startMs, endMs)
 }
 

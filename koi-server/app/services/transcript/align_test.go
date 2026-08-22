@@ -218,7 +218,8 @@ func (s *AlignTestSuite) TestWordsFromCharTimesLengthMismatch() {
 }
 
 // WordsFromCharTimesIntervals：时间点展开为区间——字/词 i 的结束时间 =
-// 下一个字/词的开始时间，末字/词结束时间对齐文本真实结尾。
+// 下一个字/词的开始时间（连续语音时），但不超过按词长估计的最长时长；
+// 静音间隙（此处"好"与"world"间隔 1s）会被截断，不会整段归到前一个字上。
 func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMixed() {
 	text := "你好 world"
 	times := []float32{0.5, 0.8, 0.8, 1.8, 1.9, 2.0, 2.1, 2.2}
@@ -229,10 +230,10 @@ func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMixed() {
 	s.Equal(int64(800), words[0].EndMs) // 展开到下一字开始
 	s.Equal("好", words[1].Word)
 	s.Equal(int64(800), words[1].StartMs)
-	s.Equal(int64(1800), words[1].EndMs)
+	s.Equal(int64(1300), words[1].EndMs) // 单字上限 500ms，静音间隙被截断
 	s.Equal("world", words[2].Word)
 	s.Equal(int64(1800), words[2].StartMs)
-	s.Equal(int64(2200), words[2].EndMs) // 末词到文本结尾
+	s.Equal(int64(2200), words[2].EndMs) // 末词保留末字真实结尾
 }
 
 // WordsFromCharTimesIntervals：与 WordsFromCharTimes 相同的输入校验。
@@ -241,7 +242,8 @@ func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsInvalidInput() {
 	s.Nil(WordsFromCharTimesIntervals("", nil))
 }
 
-// WordsFromCharTimesIntervals：长文本区间首尾相接、时间单调不减，除末字外每个字都有非零时长。
+// WordsFromCharTimesIntervals：连续语音（字间距 ≤ 500ms 上限）时区间首尾相接、
+// 时间单调不减，除末字外每个字都有非零时长。
 func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMonotonic() {
 	text := "一二三四五六七八九十"
 	times := make([]float32, 10)
@@ -257,4 +259,30 @@ func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMonotonic() {
 	for i := 0; i < len(words)-1; i++ {
 		s.Greater(words[i].EndMs, words[i].StartMs, "字 %q 应有非零时长", words[i].Word)
 	}
+}
+
+// WordsFromCharTimesIntervals：词间存在长静音时，静音时长不得整段归到前一个词上——
+// 每个词的时长应被限制在按词长估计的上限内（单字 ≤ 500ms）。
+func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsCapsSilenceGap() {
+	// "播放" 与 "现在" 之间约 5.4s 静音（复现 李大爷.wav 中 "放" 字被拉长到 5.48s 的根因）。
+	text := "播放现在是"
+	// 播=6.24s 放=6.68s 现=12.16s 在=12.24s 是=12.52s（放 与 现 之间 5.48s 静音）
+	times := []float32{6.24, 6.68, 12.16, 12.24, 12.52}
+	words := WordsFromCharTimesIntervals(text, times)
+	s.Len(words, 5)
+
+	// 每个单字时长不超过 500ms（CJK 单字上限）。
+	for _, w := range words {
+		dur := w.EndMs - w.StartMs
+		s.LessOrEqual(dur, int64(maxCJKCharDurationMs), "字 %q 时长 %dms 超出上限，静音可能被错误归到该字上", w.Word, dur)
+		s.Greater(dur, int64(0), "字 %q 应有非零时长", w.Word)
+	}
+
+	// 关键回归：紧邻 5.48s 静音之前的 "放" 字不得跨过静音。
+	s.Equal("放", words[1].Word)
+	s.Equal(int64(6680), words[1].StartMs)
+	s.Equal(int64(7180), words[1].EndMs) // 6680 + 500ms，而非下一字 "现" 的 12160
+
+	// "现" 的起点保持其真实时间（不被前一词的截断终点所移动）。
+	s.Equal(int64(12160), words[2].StartMs)
 }

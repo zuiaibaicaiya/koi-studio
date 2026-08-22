@@ -319,12 +319,15 @@ function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
     spans.push({ word: w.word, startMs: start, endMs: Number.isFinite(end) && end > start ? end : start });
   }
   // 为“零宽”（end_ms === start_ms，后端只给起始时刻）的字/词推算结束时刻。
-  // 相邻字的开始时间互不相同（严格递增），因此每个字的自然结束就是其后
-  // 第一个“严格更大”的起始时刻；句末字取整段 end_ms，都没有则给最小兜底宽度。
-  // 这样每个字都有可感知的高亮区间，播放时按音频进度依次命中、依次高亮。
+  // 注意：绝不能直接取“下一个字的开始时间”作为本字结束——那会把字与字之间
+  // 的语音停顿/静音整段归到前一个字上（播放该字时听到的是后面的静音甚至下一句）。
+  // 这里改为按“词长估计的最长时长”做有上限的截断，与后端 WordsFromCharTimesIntervals
+  // 的语义一致：单字汉字最长约 500ms，其余字符约 200ms；末字取整段 end_ms 兜底。
   for (let i = 0; i < spans.length; i++) {
     const cur = spans[i];
     if (cur.endMs > cur.startMs) continue;
+    const maxDur = estimatedWordDurationMs(cur.word);
+    // 自然终点：优先取后一个“严格更大”的起始时刻，但不得超过按词长估计的上限。
     let nextStart = -1;
     for (let j = i + 1; j < spans.length; j++) {
       if (spans[j].startMs > cur.startMs) {
@@ -332,15 +335,29 @@ function parseWordTimestamps(t: MeetingTranscriptDTO): WordSpan[] {
         break;
       }
     }
-    const naturalEnd =
-      nextStart >= 0
-        ? nextStart
-        : Number.isFinite(segEnd) && segEnd > cur.startMs
-          ? segEnd
-          : cur.startMs + 60;
-    cur.endMs = Math.max(naturalEnd, cur.startMs + 1);
+    if (nextStart >= 0 && nextStart - cur.startMs <= maxDur) {
+      cur.endMs = nextStart;
+    } else if (i === spans.length - 1 && Number.isFinite(segEnd) && segEnd > cur.startMs) {
+      // 末字：用整段 end_ms 兜底（但同样受上限约束，避免静音尾部被吞）
+      cur.endMs = segEnd - cur.startMs <= maxDur ? segEnd : cur.startMs + maxDur;
+    } else {
+      cur.endMs = cur.startMs + maxDur;
+    }
   }
   return spans;
+}
+
+/** 单个字/词按词长估计的最长合理时长（毫秒）：
+ *  汉字按 500ms/字、其余字符按 200ms/字符累加；空词兜底 500ms。 */
+function estimatedWordDurationMs(word: string): number {
+  let total = 0;
+  let n = 0;
+  for (const ch of word) {
+    n++;
+    // 汉字区间判断，与后端 unicode.Is(unicode.Han) 语义一致（含扩展区）
+    total += /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(ch) ? 500 : 200;
+  }
+  return n === 0 || total <= 0 ? 500 : total;
 }
 
 function toSegment(t: MeetingTranscriptDTO): TranscriptItem {

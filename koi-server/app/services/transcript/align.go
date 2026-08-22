@@ -259,20 +259,66 @@ func WordsFromCharTimes(text string, times []float32) []models.WordTimestamp {
 
 // WordsFromCharTimesIntervals 基于逐字时间戳（秒）生成“文字级”时间戳（毫秒），
 // 与 WordsFromCharTimes 的区别是：每个字/词占据一段连续时间区间——
-// 字/词 i 的结束时间 = 字/词 i+1 的开始时间，末字/词的结束时间为其在文本中
-// 的真实结尾时间点。这样每个文字都有可用的起止区间，便于前端定位/高亮。
+// 字/词 i 的结束时间优先取字/词 i+1 的开始时间（连续语音时区间首尾相接），
+// 但不会超过本词按词长估计的最长时长，从而避免语音停顿/静音被错误归到
+// 前一个词上（此前“播放”与“现在是”之间的 5s 停顿会整段算到“放”字上）。
+// 末字/词在 WordsFromCharTimes 给出零时长（单字/单词元）时用估计时长兜底。
 func WordsFromCharTimesIntervals(text string, times []float32) []models.WordTimestamp {
 	words := WordsFromCharTimes(text, times)
 	if len(words) == 0 {
 		return nil
 	}
-	for i := 0; i < len(words)-1; i++ {
-		// WordsFromCharTimes 已保证 words[i].EndMs <= words[i+1].StartMs，
-		// 此处仅作防御性钳制，避免模型时间戳异常时出现负区间。
-		if words[i+1].StartMs < words[i].EndMs {
-			words[i+1].StartMs = words[i].EndMs
+	for i := range words {
+		start := words[i].StartMs
+		if start < 0 {
+			start = 0
 		}
-		words[i].EndMs = words[i+1].StartMs
+		maxDur := estimatedWordDurationMs(words[i].Word)
+
+		// 自然终点：非末词取下一词起点，末词取 WordsFromCharTimes 的末字时间。
+		natural := int64(-1)
+		if i+1 < len(words) {
+			natural = words[i+1].StartMs
+		} else {
+			natural = words[i].EndMs
+		}
+
+		// 终点取自然终点，但必须落在 (start, start+maxDur] 内：
+		// 自然终点过小（<= start，零时长）或过大（> start+maxDur，静音被吸收）
+		// 时，一律用 start+maxDur 兜底/截断。
+		if natural > start && natural-start <= maxDur {
+			words[i].EndMs = natural
+		} else {
+			words[i].EndMs = start + maxDur
+		}
 	}
 	return words
+}
+
+// maxCJKCharDurationMs 单个汉字在词级时间戳区间中的最长估计时长（毫秒）。
+// 正常语速下汉字约 0.2~0.4s；取 500ms 作为保守上限，在语音停顿处截断词区间。
+const maxCJKCharDurationMs = 500
+
+// maxASCIICharDurationMs 单个英文字母/数字在词级时间戳区间中的最长估计时长（毫秒）。
+// 英文字母语速明显快于汉字（约 0.08~0.15s/字母），取 200ms 作为上限。
+const maxASCIICharDurationMs = 200
+
+// estimatedWordDurationMs 按词长估计一个词的最长合理时长（毫秒）：
+// 汉字按 500ms/字、其余字符（英文字母、数字、标点等）按 200ms/字符累加，
+// 空词兜底为一个汉字时长。用于词级时间戳区间的截断上限。
+func estimatedWordDurationMs(word string) int64 {
+	var total int64
+	n := 0
+	for _, r := range word {
+		n++
+		if unicode.Is(unicode.Han, r) {
+			total += maxCJKCharDurationMs
+		} else {
+			total += maxASCIICharDurationMs
+		}
+	}
+	if n == 0 || total <= 0 {
+		return maxCJKCharDurationMs
+	}
+	return total
 }
