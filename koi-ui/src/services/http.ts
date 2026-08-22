@@ -1,4 +1,5 @@
 import { useAuthStore } from '../store/auth';
+import { clearAuthStorage, redirectToLogin } from '../utils/authCleanup';
 
 /** 后端统一响应结构（见 base_controller.go）：{ code, msg, data } */
 export interface ApiEnvelope<T = unknown> {
@@ -43,19 +44,16 @@ function handleUnauthorized(): Promise<void> {
   if (unauthorizedHandled) return unauthorizedHandled;
 
   unauthorizedHandled = (async () => {
-    // 1. 清除本地存储中的 token 与用户信息（pinia persist 会同步到 localStorage）
+    // 1. 清除本地会话：token 与用户信息，并彻底清理
+    //    localStorage / sessionStorage / Cookie 中的认证相关信息
+    //    （clearSession 内部会调用 clearAuthStorage 兜底，此处再显式执行一次保证覆盖）
     const auth = useAuthStore();
     auth.clearSession();
+    clearAuthStorage();
 
-    // 2. 跳转到登录页，并通过 redirect 记录用户原本访问的页面
-    const { default: router } = await import('../router');
-    const current = router.currentRoute.value;
-    if (current.name !== 'login') {
-      await router.replace({
-        name: 'login',
-        query: current.fullPath ? { redirect: current.fullPath } : {},
-      });
-    }
+    // 2. 跳转登录页，并通过 redirect 记录用户原本访问的页面；
+    //    已在登录页时内部自动跳过，避免重复跳转
+    await redirectToLogin();
   })().finally(() => {
     unauthorizedHandled = null;
   });

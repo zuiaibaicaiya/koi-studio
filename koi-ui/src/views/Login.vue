@@ -32,8 +32,12 @@ async function onLoginFinish(values: { username: string; password: string }) {
   try {
     await auth.login(values);
     message.success('登录成功');
+    // 校验 redirect 指向有效内部页面：外部 URL / 登录页自身 / 不存在的路由一律回退首页，
+    // 保证认证失败后能安全返回原页面
     const redirect = (route.query.redirect as string) || '/home';
-    router.replace(redirect);
+    const resolved = router.resolve(redirect);
+    const target = resolved.name && resolved.name !== 'login' ? resolved.fullPath : '/home';
+    router.replace(target);
   } catch (err) {
     message.error((err as Error).message || '登录失败');
   }

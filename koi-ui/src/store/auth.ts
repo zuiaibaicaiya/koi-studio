@@ -7,6 +7,7 @@ import userApi, {
   type ChangePasswordPayload,
   type AuthResult,
 } from '../services/userApi';
+import { clearAuthStorage } from '../utils/authCleanup';
 
 /** 用户信息（与后端 User 模型对齐） */
 export { type UserDTO as UserInfo };
@@ -66,10 +67,15 @@ export const useAuthStore = defineStore(
       return await userApi.changePassword(payload);
     }
 
-    /** 清除本地会话（token + 用户信息），并同步持久化存储。 */
+    /**
+     * 清除本地会话（token + 用户信息），并彻底清理认证相关本地存储
+     * （localStorage / sessionStorage / Cookie）。
+     * 覆盖所有登出 / 失效场景：主动 logout、启动探活 401、接口 401 统一走此方法。
+     */
     function clearSession() {
       token.value = '';
       user.value = null;
+      clearAuthStorage();
     }
 
     /**
