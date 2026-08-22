@@ -216,3 +216,45 @@ func (s *AlignTestSuite) TestWordsFromCharTimesLengthMismatch() {
 	words := WordsFromCharTimes("你好", []float32{0.5})
 	s.Nil(words)
 }
+
+// WordsFromCharTimesIntervals：时间点展开为区间——字/词 i 的结束时间 =
+// 下一个字/词的开始时间，末字/词结束时间对齐文本真实结尾。
+func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMixed() {
+	text := "你好 world"
+	times := []float32{0.5, 0.8, 0.8, 1.8, 1.9, 2.0, 2.1, 2.2}
+	words := WordsFromCharTimesIntervals(text, times)
+	s.Len(words, 3)
+	s.Equal("你", words[0].Word)
+	s.Equal(int64(500), words[0].StartMs)
+	s.Equal(int64(800), words[0].EndMs) // 展开到下一字开始
+	s.Equal("好", words[1].Word)
+	s.Equal(int64(800), words[1].StartMs)
+	s.Equal(int64(1800), words[1].EndMs)
+	s.Equal("world", words[2].Word)
+	s.Equal(int64(1800), words[2].StartMs)
+	s.Equal(int64(2200), words[2].EndMs) // 末词到文本结尾
+}
+
+// WordsFromCharTimesIntervals：与 WordsFromCharTimes 相同的输入校验。
+func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsInvalidInput() {
+	s.Nil(WordsFromCharTimesIntervals("你好", []float32{0.5}))
+	s.Nil(WordsFromCharTimesIntervals("", nil))
+}
+
+// WordsFromCharTimesIntervals：长文本区间首尾相接、时间单调不减，除末字外每个字都有非零时长。
+func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMonotonic() {
+	text := "一二三四五六七八九十"
+	times := make([]float32, 10)
+	for i := range times {
+		times[i] = 1.0 + 0.5*float32(i)
+	}
+	words := WordsFromCharTimesIntervals(text, times)
+	s.Len(words, 10)
+	for i := 1; i < len(words); i++ {
+		s.Equal(words[i-1].EndMs, words[i].StartMs, "区间应首尾相接")
+		s.GreaterOrEqual(words[i].StartMs, words[i-1].StartMs)
+	}
+	for i := 0; i < len(words)-1; i++ {
+		s.Greater(words[i].EndMs, words[i].StartMs, "字 %q 应有非零时长", words[i].Word)
+	}
+}

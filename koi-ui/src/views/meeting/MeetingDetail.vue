@@ -424,7 +424,25 @@ function onScroll(event: Event) {
 // 音频播放（wavesurfer.js）
 const waveRef = ref<HTMLElement | null>(null);
 const wave = shallowRef<WaveSurfer | null>(null);
-const audioSrc = computed(() => meeting.value?.audio_url || '');
+/** 音频 URL：追加基于会议更新时间的版本号（如 /a.wav?v=1724...），
+ *  重新上传/更新音频后 updated_at 变化，浏览器会重新拉取音频而非命中旧缓存。 */
+const audioSrc = computed(() => {
+  const url = meeting.value?.audio_url;
+  if (!url) return '';
+  const version = audioVersion.value;
+  if (!version) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}v=${version}`;
+});
+
+/** 音频版本号：优先取会议更新时间（毫秒时间戳），缺失时用当前时间兜底 */
+const audioVersion = computed(() => {
+  const updatedAt = meeting.value?.updatedAt;
+  if (updatedAt) {
+    const ts = Date.parse(updatedAt);
+    if (Number.isFinite(ts)) return String(ts);
+  }
+  return String(Date.now());
+});
 const playing = ref(false);
 const ready = ref(false);
 const currentTime = ref(0);
@@ -662,9 +680,9 @@ onUnmounted(() => {
   destroyWave();
 });
 
-// 当前会议切换时重建波形（flush:'post' 确保在 DOM 渲染、waveRef 绑定后再初始化）
+// 音频源变化（URL 或版本号变化）时重建波形（flush:'post' 确保在 DOM 渲染、waveRef 绑定后再初始化）
 watch(
-  () => meeting.value?.audio_url,
+  audioSrc,
   (url) => {
     if (url) initWave();
     else destroyWave();

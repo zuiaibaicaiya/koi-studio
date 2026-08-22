@@ -1,6 +1,7 @@
 package asr
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,7 +11,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"koi-server/app/models"
 	offlinetranscribe "koi-server/app/services/offline_transcribe"
+	"koi-server/app/services/transcript"
 )
 
 // 本包参考 https://github.com/k2-fsa/sherpa-onnx/tree/master/go-api-examples/non-streaming-decode-files
@@ -271,4 +274,280 @@ func TestBilingualOfflineHotwordsBeamSearch(t *testing.T) {
 // 避免解码时出现 “index: 2 Got: 39 Expected: 80” 的维度不匹配导致 SIGABRT。
 func TestBilingualOfflineFeatureDimIsEighty(t *testing.T) {
 	assert.Equal(t, 80, offlinetranscribe.DefaultFeatureDim(), "离线模型特征维度必须固定为 80")
+}
+
+// decodeWavDetailed 读取单声道 wav 并用在线识别器解码，返回文本、token 级时间戳
+// 与音频元信息（采样率、总时长秒），供详细转写输出使用。
+func decodeWavDetailed(t *testing.T, rec *sherpa.OnlineRecognizer, wavPath string) (text string, tokens []string, timestamps []float32, sampleRate int, durationSec float64) {
+	t.Helper()
+	wave := sherpa.ReadWave(wavPath)
+	require.NotNil(t, wave, "ReadWave 不应为 nil: %s", wavPath)
+
+	stream := sherpa.NewOnlineStream(rec)
+	require.NotNil(t, stream, "NewOnlineStream 不应为 nil")
+	defer sherpa.DeleteOnlineStream(stream)
+
+	stream.AcceptWaveform(wave.SampleRate, wave.Samples)
+	stream.InputFinished()
+	for rec.IsReady(stream) {
+		rec.Decode(stream)
+	}
+	result := rec.GetResult(stream)
+	require.NotNil(t, result, "GetResult 不应为 nil")
+
+	return result.Text, result.Tokens, result.Timestamps,
+		wave.SampleRate, float64(len(wave.Samples)) / float64(wave.SampleRate)
+}
+
+// formatMs 把毫秒格式化为 mm:ss.mmm 便于阅读。
+func formatMs(ms int64) string {
+	return fmt.Sprintf("%02d:%02d.%03d", ms/60000, (ms%60000)/1000, ms%1000)
+}
+
+// hasAnyValidTimestamp 判断模型产出的 token 级时间戳是否真实可用
+// （与线上 offline_transcribe 的 hasValidTimestamps 规则一致：全 0 视为无效）。
+func hasAnyValidTimestamp(ts []float32) bool {
+	for _, t := range ts {
+		if t > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBilingualOfflineTranscribeLiDyeDetailed
+// 对项目根目录的 李大爷.wav 执行离线转写，输出“详细的转写内容”：
+//
+//	1) 音频元信息（采样率、总时长）；
+//	2) 完整转写文本；
+//	3) token 级时间戳（模型若产出；bilingual 离线 transducer 可能为全 0，此时退化按音频时长近似）；
+//	4) 按标点/长度切分的句子分段，每句带起止时间戳。
+//
+// 分句与时间戳策略与线上 offline_transcribe（splitSentencesWithTimestamps）保持一致：
+// 优先使用模型 token 级时间戳，无效时退化为按整段音频时长在句间按字符比例分配。
+func TestBilingualOfflineTranscribeLiDyeDetailed(t *testing.T) {
+	if os.Getenv("SKIP_ASR_TESTS") == "1" {
+		t.Skip("SKIP_ASR_TESTS=1，跳过 ASR 解码测试")
+	}
+	requireProjectRoot(t)
+
+	const wav = "李大爷.wav"
+	require.FileExists(t, wav, "李大爷.wav 应位于项目根目录")
+
+	rec := newBilingualRecognizer(t)
+	defer sherpa.DeleteOnlineRecognizer(rec)
+
+	text, tokens, timestamps, sampleRate, durationSec := decodeWavDetailed(t, rec, wav)
+
+	// 1) 音频元信息
+	t.Logf("===== 离线转写详情: %s =====", wav)
+	t.Logf("音频: 采样率=%d Hz, 总时长=%.3f 秒", sampleRate, durationSec)
+
+	// 2) 完整文本
+	t.Logf("完整文本: %q", text)
+	assert.NotEmpty(t, text, "离线转写结果不应为空（请确认 BpeVocab 已正确设置）")
+	assert.Len(t, tokens, len(timestamps), "tokens 与 timestamps 应等长")
+
+	// 3) token 级时间戳
+	if hasAnyValidTimestamp(timestamps) {
+		t.Logf("token 级时间戳（模型产出）:")
+		for i := range tokens {
+			start := int64(timestamps[i] * 1000)
+			end := start
+			if i+1 < len(timestamps) {
+				end = int64(timestamps[i+1] * 1000)
+			}
+			t.Logf("  [%s - %s] %q", formatMs(start), formatMs(end), tokens[i])
+		}
+	} else {
+		t.Logf("模型未产出有效 token 级时间戳（全 0），句子时间戳按音频时长近似分配")
+	}
+
+	// 4) 句子分段（含起止时间）
+	segs := splitSentencesWithApproxTime(text, timestamps, sampleRate, durationSec)
+	t.Logf("句子分段 (%d 句):", len(segs))
+	for _, seg := range segs {
+		t.Logf("  [%s - %s] %s", formatMs(seg.startMs), formatMs(seg.endMs), seg.text)
+	}
+	assert.NotEmpty(t, segs, "应至少切分出一句")
+	for i := 1; i < len(segs); i++ {
+		assert.GreaterOrEqual(t, segs[i].startMs, segs[i-1].startMs,
+			"句子时间戳应单调不减（防止时间轴错乱）")
+	}
+}
+
+// TestBilingualOfflineTranscribeLiDyeWordTimestamps
+// 对项目根目录的 李大爷.wav 执行离线转写，输出“文字级别”的时间戳：
+// 每个字（中文）/词（英文）对应 [起始时间, 结束时间]，毫秒精度。
+//
+// 时间戳来源与线上 offline_transcribe（splitSentencesWithTimestamps）一致：
+//   - 优先：模型 token 级时间戳 -> transcript.AlignCharTimes 展开为逐字时间戳
+//     -> transcript.WordsFromCharTimesIntervals 聚合成带时间区间的字/词级时间戳；
+//   - 退化：模型未产出有效时间戳时，按整段音频时长对逐字线性近似后再聚合。
+//
+// 可用 -run TestBilingualOfflineTranscribeLiDye 同时运行详细版与文字级版本。
+func TestBilingualOfflineTranscribeLiDyeWordTimestamps(t *testing.T) {
+	if os.Getenv("SKIP_ASR_TESTS") == "1" {
+		t.Skip("SKIP_ASR_TESTS=1，跳过 ASR 解码测试")
+	}
+	requireProjectRoot(t)
+
+	const wav = "李大爷.wav"
+	require.FileExists(t, wav, "李大爷.wav 应位于项目根目录")
+
+	rec := newBilingualRecognizer(t)
+	defer sherpa.DeleteOnlineRecognizer(rec)
+
+	text, tokens, timestamps, sampleRate, durationSec := decodeWavDetailed(t, rec, wav)
+
+	t.Logf("===== 离线转写 文字级时间戳: %s =====", wav)
+	t.Logf("音频: 采样率=%d Hz, 总时长=%.3f 秒", sampleRate, durationSec)
+	t.Logf("完整文本: %q", text)
+	assert.NotEmpty(t, text, "离线转写结果不应为空（请确认 BpeVocab 已正确设置）")
+
+	// 与线上 splitSentencesWithTimestamps 相同的两条路径：模型时间戳优先，否则按音频时长近似。
+	words, ok := wordTimestampsFromModel(text, tokens, timestamps)
+	if !ok {
+		words = approxWordTimestamps(text, durationSec)
+	}
+	require.NotEmpty(t, words, "文字级时间戳不应为空")
+
+	t.Logf("文字级时间戳 (%d 个，中文按字、英文按词):", len(words))
+	for _, w := range words {
+		t.Logf("  [%s - %s] %s", formatMs(w.StartMs), formatMs(w.EndMs), w.Word)
+	}
+
+	// 时间必须单调不减，与音频时间轴一致。
+	last := int64(0)
+	for _, w := range words {
+		assert.GreaterOrEqual(t, w.StartMs, last, "文字时间戳应单调不减: %q", w.Word)
+		assert.GreaterOrEqual(t, w.EndMs, w.StartMs, "结束时间不应早于开始时间: %q", w.Word)
+		last = w.EndMs
+	}
+}
+
+// wordTimestampsFromModel 复现线上 offline_transcribe 的文字级时间戳生成策略：
+// 模型 token 级时间戳有效时用 transcript.AlignCharTimes + WordsFromCharTimesIntervals，
+// 返回带时间区间的字/词级时间戳；模型时间戳无效时 ok=false。
+func wordTimestampsFromModel(text string, tokens []string, timestamps []float32) ([]models.WordTimestamp, bool) {
+	if !hasAnyValidTimestamp(timestamps) || len(timestamps) != len(tokens) {
+		return nil, false
+	}
+	tokenTimes := make([]transcript.TokenTimestamp, len(tokens))
+	for i := range tokens {
+		tokenTimes[i] = transcript.TokenTimestamp{Token: tokens[i], TimeSec: timestamps[i]}
+	}
+	charTimes, ok := transcript.AlignCharTimes(text, tokenTimes)
+	if !ok {
+		return nil, false
+	}
+	return transcript.WordsFromCharTimesIntervals(text, charTimes), true
+}
+
+// approxWordTimestamps 退化方案：没有模型时间戳时，把整段音频时长按字符数
+// 均匀铺开得到逐字时间戳，再聚合为带区间的字/词级时间戳（仅用于展示，非线上逻辑）。
+func approxWordTimestamps(text string, durationSec float64) []models.WordTimestamp {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return nil
+	}
+	charTimes := make([]float32, len(runes))
+	for i := range runes {
+		charTimes[i] = float32(durationSec * float64(i) / float64(len(runes)))
+	}
+	return transcript.WordsFromCharTimesIntervals(text, charTimes)
+}
+
+// detailSentence 测试内的句子分段（仅用于详细输出展示）。
+type detailSentence struct {
+	text    string
+	startMs int64
+	endMs   int64
+}
+
+// splitSentencesWithApproxTime 在测试内复现线上 splitSentencesWithTimestamps 的分句与
+// 时间戳策略：
+//   - 分句：按标点（。！？.!?；;，,）切句（不足 4 字不切），超 20 字强制切句；
+//   - 时间戳：模型 token 级时间戳有效则按 token 对齐；否则按整段音频时长、
+//     在句间按字符比例线性近似（简化版：不做语音段检测，适合短音频展示）。
+func splitSentencesWithApproxTime(text string, timestamps []float32, sampleRate int, durationSec float64) []detailSentence {
+	src := []rune(text)
+	if len(src) == 0 {
+		return nil
+	}
+	// 分句（与 simpleSplitSentences 相同的规则）
+	var spans []struct{ text string; start, end int }
+	curStart := 0
+	var cur []rune
+	for i, r := range src {
+		cur = append(cur, r)
+		switch r {
+		case '。', '！', '？', '.', '!', '?', '；', ';', '，', ',':
+			if len(cur) >= 4 {
+				spans = append(spans, struct {
+					text         string
+					start, end int
+				}{string(cur), curStart, i + 1})
+				cur = nil
+				curStart = i + 1
+			}
+		default:
+			if len(cur) >= 20 {
+				spans = append(spans, struct {
+					text         string
+					start, end int
+				}{string(cur), curStart, i + 1})
+				cur = nil
+				curStart = i + 1
+			}
+		}
+	}
+	if len(cur) > 0 {
+		spans = append(spans, struct {
+			text         string
+			start, end int
+		}{string(cur), curStart, len(src)})
+	}
+	if len(spans) == 0 {
+		spans = append(spans, struct {
+			text         string
+			start, end int
+		}{text, 0, len(src)})
+	}
+
+	totalRunes := 0
+	for _, sp := range spans {
+		totalRunes += sp.end - sp.start
+	}
+	if totalRunes == 0 {
+		totalRunes = 1
+	}
+
+	// 模型 token 级时间戳有效：按 token 序号映射字符位置（token 序近似字符序）。
+	if hasAnyValidTimestamp(timestamps) && len(timestamps) == len([]rune(text)) {
+		_ = sampleRate
+		var out []detailSentence
+		for _, sp := range spans {
+			startMs := int64(timestamps[sp.start] * 1000)
+			endMs := int64(timestamps[sp.end-1] * 1000)
+			if endMs < startMs {
+				endMs = startMs
+			}
+			out = append(out, detailSentence{text: sp.text, startMs: startMs, endMs: endMs})
+		}
+		return out
+	}
+
+	// 退化：按整段音频时长、字符比例近似分配。
+	totalMs := int64(durationSec * 1000)
+	var out []detailSentence
+	for _, sp := range spans {
+		startMs := int64(float64(totalMs) * float64(sp.start) / float64(totalRunes))
+		endMs := int64(float64(totalMs) * float64(sp.end) / float64(totalRunes))
+		if endMs < startMs {
+			endMs = startMs
+		}
+		out = append(out, detailSentence{text: sp.text, startMs: startMs, endMs: endMs})
+	}
+	return out
 }

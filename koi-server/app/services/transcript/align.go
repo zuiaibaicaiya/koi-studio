@@ -256,3 +256,23 @@ func WordsFromCharTimes(text string, times []float32) []models.WordTimestamp {
 	result[len(result)-1].EndMs = int64(times[len(times)-1] * 1000)
 	return result
 }
+
+// WordsFromCharTimesIntervals 基于逐字时间戳（秒）生成“文字级”时间戳（毫秒），
+// 与 WordsFromCharTimes 的区别是：每个字/词占据一段连续时间区间——
+// 字/词 i 的结束时间 = 字/词 i+1 的开始时间，末字/词的结束时间为其在文本中
+// 的真实结尾时间点。这样每个文字都有可用的起止区间，便于前端定位/高亮。
+func WordsFromCharTimesIntervals(text string, times []float32) []models.WordTimestamp {
+	words := WordsFromCharTimes(text, times)
+	if len(words) == 0 {
+		return nil
+	}
+	for i := 0; i < len(words)-1; i++ {
+		// WordsFromCharTimes 已保证 words[i].EndMs <= words[i+1].StartMs，
+		// 此处仅作防御性钳制，避免模型时间戳异常时出现负区间。
+		if words[i+1].StartMs < words[i].EndMs {
+			words[i+1].StartMs = words[i].EndMs
+		}
+		words[i].EndMs = words[i+1].StartMs
+	}
+	return words
+}

@@ -511,7 +511,7 @@ func buildSentenceSegments(text string, charTimes []float32, samples []float32, 
 		}
 		startMs := int64(charTimes[a] * 1000)
 		endMs := int64(charTimes[b-1] * 1000)
-		words := transcript.WordsFromCharTimes(sp.text, charTimes[a:b])
+		words := transcript.WordsFromCharTimesIntervals(sp.text, charTimes[a:b])
 		out = append(out, sentenceSegment{
 			text:           sp.text,
 			startMs:        startMs,
@@ -599,7 +599,7 @@ func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int)
 		for i := range runes {
 			sub[i] = float32(segStartMs+int64(span*float64(i)/float64(len(runes)))) / 1000.0
 		}
-		words := transcript.WordsFromCharTimes(sp.text, sub)
+		words := transcript.WordsFromCharTimesIntervals(sp.text, sub)
 		out = append(out, sentenceSegment{
 			text:           sp.text,
 			startMs:        segStartMs,
