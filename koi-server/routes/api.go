@@ -50,6 +50,7 @@ func Api() {
 	speakerController := api.NewSpeakerController()
 	speakerAudioController := api.NewSpeakerAudioController()
 	meetingController := api.NewMeetingController(meetingService, transcriptService, sessionMgr)
+	dashboardController := api.NewDashboardController()
 
 	// 登录和注册接口，无需认证。
 	facades.Route().Post("/api/user/login", userController.Login)
@@ -116,5 +117,8 @@ func Api() {
 		router.Post("/meeting/{id}/transcribe", meetingController.StartTranscription)
 		router.Post("/meeting/{id}/retranscribe", meetingController.Retranscribe)
 		router.Get("/meeting/{id}/progress", meetingController.GetTranscriptionProgress)
+
+		// 仪表盘统计接口，返回全局聚合指标与趋势。
+		router.Get("/dashboard/stats", dashboardController.Stats)
 	})
 }

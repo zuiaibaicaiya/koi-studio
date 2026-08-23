@@ -32,7 +32,7 @@ const segments = computed(() => {
 <template>
   <div class="pie-wrap">
     <svg viewBox="0 0 180 180" class="pie" :style="{ height: (height ?? 180) + 'px' }">
-      <circle cx="90" cy="90" :r="R" fill="none" stroke="rgba(255,255,255,0.08)" :stroke-width="22" />
+      <circle cx="90" cy="90" :r="R" fill="none" stroke="var(--color-border-secondary)" :stroke-width="22" />
       <circle
         v-for="(s, i) in segments"
         :key="i"
@@ -71,11 +71,11 @@ const segments = computed(() => {
   flex: none;
 }
 .total-label {
-  fill: rgba(255, 255, 255, 0.55);
+  fill: var(--color-text-muted);
   font-size: 12px;
 }
 .total-value {
-  fill: #fff;
+  fill: var(--color-text);
   font-size: 18px;
   font-weight: 600;
 }
@@ -91,7 +91,7 @@ const segments = computed(() => {
   align-items: center;
   gap: 8px;
   padding: 3px 0;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--color-text-secondary);
   font-size: 13px;
 }
 .legend i {
@@ -104,6 +104,6 @@ const segments = computed(() => {
   flex: 1;
 }
 .legend b {
-  color: #fff;
+  color: var(--color-text);
 }
 </style>

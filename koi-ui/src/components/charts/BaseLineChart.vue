@@ -60,7 +60,7 @@ const gridLines = computed(() => {
       :x2="W - padR"
       :y1="g.y"
       :y2="g.y"
-      stroke="rgba(255,255,255,0.12)"
+      stroke="var(--color-border-secondary)"
     />
     <text
       v-for="(g, i) in gridLines"
@@ -118,11 +118,11 @@ const gridLines = computed(() => {
   height: auto;
 }
 .axis {
-  fill: rgba(255, 255, 255, 0.6);
+  fill: var(--color-text-muted);
   font-size: 11px;
 }
 .val {
-  fill: rgba(255, 255, 255, 0.85);
+  fill: var(--color-text);
   font-size: 10px;
 }
 </style>
