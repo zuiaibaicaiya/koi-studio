@@ -186,19 +186,21 @@ func (s *SentenceTimestampTestSuite) TestSplitSentencesWithTimestampsTokenPath()
 	}, 16000, samples)
 
 	s.Len(segs, 3)
-	// 第 1 句 "今天天气很好，"：rune[0:7]，时间 0.5~1.1s
+	// 第 1 句 "今天天气很好，"：rune[0:7]，首字 token 时间 0.5s、末字 1.1s。
+	// 模型时间戳是字的“发音结束时刻”，故首字区间向前回退 300ms -> 0.2s 起。
 	s.Equal("今天天气很好，", segs[0].text)
-	s.Equal(int64(500), segs[0].startMs)
+	s.Equal(int64(200), segs[0].startMs)
 	s.Equal(int64(1100), segs[0].endMs)
-	s.Equal(int(8000), segs[0].chunkStart)
+	s.Equal(int(3200), segs[0].chunkStart)
 	s.Equal(int(17600), segs[0].chunkEnd)
-	// 第 2 句 "我们一起去公园散步吧！"：rune[7:18]，时间 1.2~2.2s
+	// 第 2 句 "我们一起去公园散步吧！"：rune[7:18]，首字 token 1.2s、末字 2.2s。
+	// 首字与第 1 句末字连续，起点紧接上一句结束时刻，句间不重叠、不留缝。
 	s.Equal("我们一起去公园散步吧！", segs[1].text)
-	s.Equal(int64(1200), segs[1].startMs)
+	s.Equal(int64(1100), segs[1].startMs)
 	s.Equal(int64(2200), segs[1].endMs)
-	// 第 3 句 "你觉得怎么样？"：rune[18:25]，时间 2.3~2.9s
+	// 第 3 句 "你觉得怎么样？"：rune[18:25]，首字 token 2.3s、末字 2.9s。
 	s.Equal("你觉得怎么样？", segs[2].text)
-	s.Equal(int64(2300), segs[2].startMs)
+	s.Equal(int64(2200), segs[2].startMs)
 	s.Equal(int64(2900), segs[2].endMs)
 	s.Equal(int(46400), segs[2].chunkEnd)
 

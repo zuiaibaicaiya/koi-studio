@@ -215,7 +215,12 @@ func splitWordSpans(text string) []wordSpan {
 	return spans
 }
 
-// WordsFromCharTimes 依据逐字时间戳（秒）生成与音频对齐的字/词级时间戳（毫秒）。
+// WordsFromCharTimes 依据逐字时间戳（秒）生成字/词级“时间点”时间戳（毫秒）。
+//
+// 注意：times 来自模型 token 时间戳，语义是该字发音的【结束】时刻，因此本函数
+// 产出的 StartMs/EndMs 也只是“结束时刻”，字/词区间长度为 0（单词素）。
+// 需要真正的时间区间请改用 WordsFromCharTimesIntervals。
+//
 // times 长度必须等于 []rune(text)；否则返回 nil，由调用方退化为近似方案。
 func WordsFromCharTimes(text string, times []float32) []models.WordTimestamp {
 	if len(times) != len([]rune(text)) {
@@ -257,55 +262,128 @@ func WordsFromCharTimes(text string, times []float32) []models.WordTimestamp {
 	return result
 }
 
-// WordsFromCharTimesIntervals 基于逐字时间戳（秒）生成“文字级”时间戳（毫秒），
-// 与 WordsFromCharTimes 的区别是：每个字/词占据一段连续时间区间——
-// 字/词 i 的结束时间优先取字/词 i+1 的开始时间（连续语音时区间首尾相接），
-// 但不会超过本词按词长估计的最长时长，从而避免语音停顿/静音被错误归到
-// 前一个词上（此前“播放”与“现在是”之间的 5s 停顿会整段算到“放”字上）。
-// 末字/词在 WordsFromCharTimes 给出零时长（单字/单词元）时用估计时长兜底。
+// WordsFromCharTimesIntervals 基于逐字时间戳（秒）生成“文字级”时间戳（毫秒）：
+// 每个字/词占据一段连续且与音频真实发音对齐的时间区间。
+//
+// 关键语义：sherpa-onnx 在线识别器产出的 token 时间戳是该 token「被识别出来」的
+// 时刻，实测约等于该字发音的【结束】时刻，而不是开始时刻。对照实验
+// （tests/asr/synthonset_test.go：把已知边界的单字拼成连续语音）结果：
+//
+//	真实区间 [2.00, 2.38] -> 模型时间戳 2.24
+//	真实区间 [2.38, 2.76] -> 模型时间戳 2.64
+//	真实区间 [2.76, 3.06] -> 模型时间戳 3.08
+//
+// 即时间戳落在字的末尾而非开头。因此这里把 times[i] 作为本字/词的【结束】时刻，
+// 起始时刻按如下规则向前回溯：
+//
+//   - 与上一个字/词的结束时刻间距在「按词长估计的最长发音时长」内：视为连续语音，
+//     起点直接取上一个字/词的结束时刻，区间首尾相接；
+//   - 否则（间距过大，说明中间是停顿/静音；或本字/词是第一个）：按词长向前回退
+//     一个常规发音时长。
+//
+// 这样既不会把停顿/静音整段算到前一个字上，也不会把每个字的时间整体推后约一个字
+// （此前把时间戳当作起始时刻，导致点击第 i 个字实际播放的是第 i+1 个字的音频）。
 func WordsFromCharTimesIntervals(text string, times []float32) []models.WordTimestamp {
-	words := WordsFromCharTimes(text, times)
-	if len(words) == 0 {
+	ivs := WordsWithSpansFromCharTimes(text, times)
+	if len(ivs) == 0 {
 		return nil
 	}
-	for i := range words {
-		start := words[i].StartMs
-		if start < 0 {
-			start = 0
-		}
-		maxDur := estimatedWordDurationMs(words[i].Word)
-
-		// 自然终点：非末词取下一词起点，末词取 WordsFromCharTimes 的末字时间。
-		natural := int64(-1)
-		if i+1 < len(words) {
-			natural = words[i+1].StartMs
-		} else {
-			natural = words[i].EndMs
-		}
-
-		// 终点取自然终点，但必须落在 (start, start+maxDur] 内：
-		// 自然终点过小（<= start，零时长）或过大（> start+maxDur，静音被吸收）
-		// 时，一律用 start+maxDur 兜底/截断。
-		if natural > start && natural-start <= maxDur {
-			words[i].EndMs = natural
-		} else {
-			words[i].EndMs = start + maxDur
-		}
+	out := make([]models.WordTimestamp, 0, len(ivs))
+	for _, iv := range ivs {
+		out = append(out, models.WordTimestamp{Word: iv.Word, StartMs: iv.StartMs, EndMs: iv.EndMs})
 	}
-	return words
+	return out
+}
+
+// WordInterval 描述文本中一个字/词的位置（rune 区间）与它在音频上的时间区间。
+type WordInterval struct {
+	Word    string
+	Start   int // 在 []rune(text) 中的起始下标（含）
+	End     int // 在 []rune(text) 中的结束下标（不含）
+	StartMs int64
+	EndMs   int64
+}
+
+// WordsWithSpansFromCharTimes 与 WordsFromCharTimesIntervals 的时间计算完全一致，
+// 但额外返回每个字/词的 rune 区间，便于调用方在不重新分词的前提下按句子切分。
+//
+// 注意：字/词区间必须基于【整段文本】一次性计算后再切分。若逐句独立计算，
+// 每句首字都会因为没有前驱时间戳而向前回退一个常规发音时长，导致相邻句子的
+// 时间区间相互重叠、且首字起点偏早。
+func WordsWithSpansFromCharTimes(text string, times []float32) []WordInterval {
+	runes := []rune(text)
+	if len(times) != len(runes) || len(runes) == 0 {
+		return nil
+	}
+	spans := splitWordSpans(text)
+	if len(spans) == 0 {
+		return nil
+	}
+
+	var result []WordInterval
+	prevEnd := int64(-1) // 上一个字/词的结束时刻；-1 表示尚无前驱
+	for _, sp := range spans {
+		if sp.end <= sp.start || sp.start >= len(times) {
+			continue
+		}
+		end := sp.end
+		if end > len(times) {
+			end = len(times)
+		}
+		if end <= sp.start {
+			continue
+		}
+
+		// 模型时间戳 = 本字/词发音结束的时刻。
+		endMs := int64(times[end-1] * 1000)
+		if endMs < 0 {
+			endMs = 0
+		}
+
+		// 默认起点：按词长向前回退一个常规发音时长。
+		startMs := endMs - nominalWordDurationMs(sp.text)
+		// 连续语音（与前一个字/词的间距在最长发音时长内）时首尾相接。
+		if prevEnd >= 0 && endMs-prevEnd > 0 && endMs-prevEnd <= estimatedWordDurationMs(sp.text) {
+			startMs = prevEnd
+		}
+		if startMs < 0 {
+			startMs = 0
+		}
+		if startMs > endMs {
+			startMs = endMs
+		}
+
+		prevEnd = endMs
+		result = append(result, WordInterval{
+			Word:    sp.text,
+			Start:   sp.start,
+			End:     end,
+			StartMs: startMs,
+			EndMs:   endMs,
+		})
+	}
+	return result
 }
 
 // maxCJKCharDurationMs 单个汉字在词级时间戳区间中的最长估计时长（毫秒）。
-// 正常语速下汉字约 0.2~0.4s；取 500ms 作为保守上限，在语音停顿处截断词区间。
+// 正常语速下汉字约 0.2~0.4s；取 500ms 作为保守上限，用于判断两个字之间是否
+// 属于连续语音（超过该间隔即认为中间存在停顿/静音）。
 const maxCJKCharDurationMs = 500
 
 // maxASCIICharDurationMs 单个英文字母/数字在词级时间戳区间中的最长估计时长（毫秒）。
 // 英文字母语速明显快于汉字（约 0.08~0.15s/字母），取 200ms 作为上限。
 const maxASCIICharDurationMs = 200
 
+// nominalCJKCharDurationMs 正常语速下单字汉字的常规发音时长（毫秒）。
+// 仅在没有前驱时间戳可依据（首字，或前面是停顿/静音）时用于向前回退估算起始时刻。
+const nominalCJKCharDurationMs = 300
+
+// nominalASCIICharDurationMs 正常语速下单个英文字母/数字的常规发音时长（毫秒）。
+const nominalASCIICharDurationMs = 120
+
 // estimatedWordDurationMs 按词长估计一个词的最长合理时长（毫秒）：
 // 汉字按 500ms/字、其余字符（英文字母、数字、标点等）按 200ms/字符累加，
-// 空词兜底为一个汉字时长。用于词级时间戳区间的截断上限。
+// 空词兜底为一个汉字时长。用于判断词与词之间是否连续（间隔超过该值视为停顿）。
 func estimatedWordDurationMs(word string) int64 {
 	var total int64
 	n := 0
@@ -319,6 +397,26 @@ func estimatedWordDurationMs(word string) int64 {
 	}
 	if n == 0 || total <= 0 {
 		return maxCJKCharDurationMs
+	}
+	return total
+}
+
+// nominalWordDurationMs 按词长估计一个词的常规发音时长（毫秒）：
+// 汉字按 300ms/字、其余字符按 120ms/字符累加，空词兜底为一个汉字时长。
+// 用于在没有前驱时间戳可依据时向前回退估算该词的起始时刻。
+func nominalWordDurationMs(word string) int64 {
+	var total int64
+	n := 0
+	for _, r := range word {
+		n++
+		if unicode.Is(unicode.Han, r) {
+			total += nominalCJKCharDurationMs
+		} else {
+			total += nominalASCIICharDurationMs
+		}
+	}
+	if n == 0 || total <= 0 {
+		return nominalCJKCharDurationMs
 	}
 	return total
 }

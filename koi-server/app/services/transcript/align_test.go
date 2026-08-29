@@ -217,23 +217,25 @@ func (s *AlignTestSuite) TestWordsFromCharTimesLengthMismatch() {
 	s.Nil(words)
 }
 
-// WordsFromCharTimesIntervals：时间点展开为区间——字/词 i 的结束时间 =
-// 下一个字/词的开始时间（连续语音时），但不超过按词长估计的最长时长；
-// 静音间隙（此处"好"与"world"间隔 1s）会被截断，不会整段归到前一个字上。
+// WordsFromCharTimesIntervals：模型时间戳是字的“发音结束时刻”，
+// 区间必须向前回溯——连续语音时取上一个字/词的结束时刻作为起点（首尾相接）；
+// 首个字/词没有前驱时按常规发音时长向前回退；静音间隙不会被算进任何一个字。
 func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsMixed() {
 	text := "你好 world"
 	times := []float32{0.5, 0.8, 0.8, 1.8, 1.9, 2.0, 2.1, 2.2}
 	words := WordsFromCharTimesIntervals(text, times)
 	s.Len(words, 3)
 	s.Equal("你", words[0].Word)
-	s.Equal(int64(500), words[0].StartMs)
-	s.Equal(int64(800), words[0].EndMs) // 展开到下一字开始
+	s.Equal(int64(200), words[0].StartMs) // 500 - 单字常规时长 300ms
+	s.Equal(int64(500), words[0].EndMs)   // 模型时间戳 = "你" 的发音结束
 	s.Equal("好", words[1].Word)
-	s.Equal(int64(800), words[1].StartMs)
-	s.Equal(int64(1300), words[1].EndMs) // 单字上限 500ms，静音间隙被截断
+	s.Equal(int64(500), words[1].StartMs) // 紧接上一字结束
+	s.Equal(int64(800), words[1].EndMs)
 	s.Equal("world", words[2].Word)
-	s.Equal(int64(1800), words[2].StartMs)
-	s.Equal(int64(2200), words[2].EndMs) // 末词保留末字真实结尾
+	// "好"(0.8s) 与 "world"(末字母 2.2s) 间隔 1.4s > world 的最长时长 5*200ms，
+	// 判定为停顿，起点按 5 个字母的常规时长(600ms)向前回退，静音不归给任何词。
+	s.Equal(int64(1600), words[2].StartMs)
+	s.Equal(int64(2200), words[2].EndMs)
 }
 
 // WordsFromCharTimesIntervals：与 WordsFromCharTimes 相同的输入校验。
@@ -278,11 +280,14 @@ func (s *AlignTestSuite) TestWordsFromCharTimesIntervalsCapsSilenceGap() {
 		s.Greater(dur, int64(0), "字 %q 应有非零时长", w.Word)
 	}
 
-	// 关键回归：紧邻 5.48s 静音之前的 "放" 字不得跨过静音。
+	// 关键回归：紧邻 5.48s 静音之前的 "放" 字不得跨过静音——
+	// 它的结束时刻就是模型时间戳 6680，起点紧接 "播" 的结束时刻 6240。
 	s.Equal("放", words[1].Word)
-	s.Equal(int64(6680), words[1].StartMs)
-	s.Equal(int64(7180), words[1].EndMs) // 6680 + 500ms，而非下一字 "现" 的 12160
+	s.Equal(int64(6240), words[1].StartMs)
+	s.Equal(int64(6680), words[1].EndMs)
 
-	// "现" 的起点保持其真实时间（不被前一词的截断终点所移动）。
-	s.Equal(int64(12160), words[2].StartMs)
+	// 静音之后的 "现" 同样不得把静音算进来：起点按其常规发音时长(300ms)向前回退。
+	s.Equal("现", words[2].Word)
+	s.Equal(int64(11860), words[2].StartMs)
+	s.Equal(int64(12160), words[2].EndMs)
 }

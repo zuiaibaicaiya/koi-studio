@@ -499,6 +499,9 @@ func buildSentenceSegments(text string, charTimes []float32, samples []float32, 
 	if len(charTimes) != len(runes) {
 		return buildSentenceSegmentsApprox(text, samples, sampleRate)
 	}
+	// 先基于整段文本一次性算出字/词区间，再按句切分：避免逐句独立计算时
+	// 每句首字都向前回退一个常规发音时长，造成相邻句子时间区间重叠。
+	allWords := transcript.WordsWithSpansFromCharTimes(text, charTimes)
 	spans := simpleSplitSentences(text)
 	var out []sentenceSegment
 	for _, sp := range spans {
@@ -509,9 +512,25 @@ func buildSentenceSegments(text string, charTimes []float32, samples []float32, 
 		if b <= a {
 			continue
 		}
+		// 取起点落在 [a, b) 内的字/词：按起点归句，保证每个字/词只属于一句。
+		var words []models.WordTimestamp
+		for _, iv := range allWords {
+			if iv.Start < a {
+				continue
+			}
+			if iv.Start >= b {
+				break
+			}
+			words = append(words, models.WordTimestamp{Word: iv.Word, StartMs: iv.StartMs, EndMs: iv.EndMs})
+		}
+		// 逐字时间戳是“该字发音结束时刻”，句子的起止时间必须取回溯后的
+		// 字/词区间端点，否则整句时间会比真实语音晚约一个字。
 		startMs := int64(charTimes[a] * 1000)
 		endMs := int64(charTimes[b-1] * 1000)
-		words := transcript.WordsFromCharTimesIntervals(sp.text, charTimes[a:b])
+		if len(words) > 0 {
+			startMs = words[0].StartMs
+			endMs = words[len(words)-1].EndMs
+		}
 		out = append(out, sentenceSegment{
 			text:           sp.text,
 			startMs:        startMs,
@@ -592,14 +611,25 @@ func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int)
 		if segEndMs < segStartMs {
 			segEndMs = segStartMs
 		}
-		// 在句内按字符数线性铺开逐字时间（退化的近似对齐）。
+		// 在句内按字符数线性铺开逐字时间（退化的近似对齐）。逐字时间戳语义是
+		// “该字发音结束时刻”，故第 i 个字取区间内的第 (i+1)/n 个等分点，
+		// 使末字结束时刻对齐句末、首字起始时刻对齐句首。
 		runes := []rune(sp.text)
 		sub := make([]float32, len(runes))
 		span := float64(segEndMs - segStartMs)
 		for i := range runes {
-			sub[i] = float32(segStartMs+int64(span*float64(i)/float64(len(runes)))) / 1000.0
+			sub[i] = float32(segStartMs+int64(span*float64(i+1)/float64(len(runes)))) / 1000.0
 		}
 		words := transcript.WordsFromCharTimesIntervals(sp.text, sub)
+		if len(words) > 0 {
+			// 首字没有前驱时间戳，会按常规发音时长向前回退，可能越出本句区间，收敛回来。
+			if words[0].StartMs < segStartMs {
+				words[0].StartMs = segStartMs
+			}
+			if last := words[len(words)-1]; last.EndMs > segEndMs {
+				words[len(words)-1].EndMs = segEndMs
+			}
+		}
 		out = append(out, sentenceSegment{
 			text:           sp.text,
 			startMs:        segStartMs,

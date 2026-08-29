@@ -17,50 +17,52 @@ func TestWordTimestampTestSuite(t *testing.T) {
 }
 
 // buildRealtimeWordTimestamps：中文逐字时间戳，对齐到音频采样位置。
-// 实时路径现使用区间语义（WordsFromCharTimesIntervals）：每个字占据首尾相接的区间，
-// 末字受整段 endMs 约束。
+//
+// 模型 token 时间戳是该字发音的【结束】时刻，因此每个字的区间向前回溯：
+// 连续语音时区间首尾相接，首字按常规发音时长(300ms)向前回退。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsChinese() {
 	emitted := []tokenEmit{
-		{token: "你", samplePos: 8000},   // 0.5s
-		{token: "好", samplePos: 12800},  // 0.8s
-		{token: "世", samplePos: 19200},  // 1.2s
-		{token: "界", samplePos: 24000},  // 1.5s
+		{token: "你", samplePos: 12800}, // 0.8s
+		{token: "好", samplePos: 19200}, // 1.2s
+		{token: "世", samplePos: 24000}, // 1.5s
+		{token: "界", samplePos: 28800}, // 1.8s
 	}
-	words := buildRealtimeWordTimestamps("你好世界", emitted, 16000, 500, 1500)
+	words := buildRealtimeWordTimestamps("你好世界", emitted, 16000, 500, 1800)
 	s.Len(words, 4)
 	s.Equal("你", words[0].Word)
-	s.Equal(int64(500), words[0].StartMs)
-	s.Equal(int64(800), words[0].EndMs) // 结束 = 下一字开始
+	s.Equal(int64(500), words[0].StartMs) // 800 - 300ms 常规发音时长
+	s.Equal(int64(800), words[0].EndMs)   // 结束 = 模型时间戳
 	s.Equal("好", words[1].Word)
-	s.Equal(int64(800), words[1].StartMs)
+	s.Equal(int64(800), words[1].StartMs) // 紧接上一字结束
 	s.Equal(int64(1200), words[1].EndMs)
 	s.Equal("世", words[2].Word)
 	s.Equal(int64(1200), words[2].StartMs)
 	s.Equal(int64(1500), words[2].EndMs)
 	s.Equal("界", words[3].Word)
 	s.Equal(int64(1500), words[3].StartMs)
-	s.Equal(int64(1500), words[3].EndMs) // 末字受整段 endMs=1500 约束
+	s.Equal(int64(1800), words[3].EndMs)
 }
 
 // buildRealtimeWordTimestamps：中英混合，英文词整体一个时间戳，中文逐字。
-// 词间静音（"好"与"world"间隔 1s）被按词长上限截断，不归到前一个字上。
+// 词间静音（"好"结束于 1.2s，"world"结束于 2.6s，间隔 1.4s > world 的最长时长 1s）
+// 判定为停顿，按词长向前回退，静音不归给任何字/词。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsMixed() {
 	emitted := []tokenEmit{
-		{token: "你", samplePos: 8000},    // 0.5s
-		{token: "好", samplePos: 12800},   // 0.8s
-		{token: "▁world", samplePos: 28800}, // 1.8s
+		{token: "你", samplePos: 12800},      // 0.8s
+		{token: "好", samplePos: 19200},      // 1.2s
+		{token: "▁world", samplePos: 41600}, // 2.6s
 	}
-	words := buildRealtimeWordTimestamps("你好 world", emitted, 16000, 500, 2200)
+	words := buildRealtimeWordTimestamps("你好 world", emitted, 16000, 500, 2600)
 	s.Len(words, 3)
 	s.Equal("你", words[0].Word)
 	s.Equal(int64(500), words[0].StartMs)
 	s.Equal(int64(800), words[0].EndMs)
 	s.Equal("好", words[1].Word)
 	s.Equal(int64(800), words[1].StartMs)
-	s.Equal(int64(1300), words[1].EndMs) // 800 + 500ms 上限，静音间隙被截断
+	s.Equal(int64(1200), words[1].EndMs)
 	s.Equal("world", words[2].Word)
-	s.Equal(int64(1800), words[2].StartMs)
-	s.Equal(int64(2200), words[2].EndMs) // 末词到整段 endMs=2200
+	s.Equal(int64(2000), words[2].StartMs) // 2600 - 5 字母常规时长 600ms
+	s.Equal(int64(2600), words[2].EndMs)
 }
 
 // buildRealtimeWordTimestamps：无已发射 token 时返回 nil。
@@ -79,8 +81,8 @@ func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsInvalidRange() {
 // buildRealtimeWordTimestamps：词时间戳必须落在 [startMs, endMs] 内且单调不减。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsClamped() {
 	emitted := []tokenEmit{
-		{token: "你", samplePos: 16000},  // 1.0s
-		{token: "好", samplePos: 48000},  // 3.0s
+		{token: "你", samplePos: 16000}, // 1.0s
+		{token: "好", samplePos: 48000}, // 3.0s
 	}
 	words := buildRealtimeWordTimestamps("你好", emitted, 16000, 1000, 2000)
 	s.Len(words, 2)
