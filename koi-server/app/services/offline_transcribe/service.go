@@ -3,7 +3,6 @@ package offlinetranscribe
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -21,14 +20,11 @@ import (
 	"koi-server/app/models"
 	"koi-server/app/services"
 	audiosvc "koi-server/app/services/audio"
-	"koi-server/app/services/transcript"
 )
 
 const (
-	// maxChunkSeconds 每个分块的最大秒数，用于处理长音频，避免一次性加载占用过多内存。
-	maxChunkSeconds = 30.0
-	// chunkOverlapSeconds 分块之间的重叠秒数，避免在切分点丢失语句。
-	chunkOverlapSeconds = 2.0
+	// minSpeakerDurationSeconds 说话人识别所需的最短语音时长（秒）。
+	minSpeakerDurationSeconds = 1.0
 )
 
 // 错误定义
@@ -88,6 +84,8 @@ type Service struct {
 	closed     bool
 	// 保存热词文件路径（临时文件，每次设置热词时重写）
 	hotwordsFile string
+	// vad 用于按静音切分音频，使识别窗口落在句子边界上。
+	vad *vad
 }
 
 // NewService 构造离线转写服务，后台异步预加载模型。
@@ -98,6 +96,7 @@ func NewService(cfg Config, deps Dependencies) (*Service, error) {
 	s := &Service{
 		cfg:  cfg,
 		deps: deps,
+		vad:  newVAD(cfg, deps.Log),
 	}
 	go s.preloadModel()
 	return s, nil
@@ -137,6 +136,9 @@ func (s *Service) Close() error {
 	if s.recognizer != nil {
 		sherpa.DeleteOnlineRecognizer(s.recognizer)
 		s.recognizer = nil
+	}
+	if s.vad != nil {
+		s.vad.Close()
 	}
 	s.loaded = false
 	// 清理热词临时文件
@@ -287,21 +289,29 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 		}
 	}
 
-	// 6. 分块转写
-	chunkSamples := int(float64(sampleRate) * maxChunkSeconds)
-	overlapSamples := int(float64(sampleRate) * chunkOverlapSeconds)
-	if chunkSamples <= 0 {
-		chunkSamples = totalSamples
-	}
-	windows := chunkWindows(totalSamples, chunkSamples, overlapSamples)
+	// 6. 语音活动检测：找出音频中的语音段，作为切分识别窗口的依据。
+	//    窗口只在静音处切分，因此一句话不会被切到两个窗口里。
+	speechSpans := s.detectSpeech(wave.Samples, sampleRate)
+	sentOpt := s.cfg.sentenceOptions()
 
+	windows := planASRWindows(totalSamples, sampleRate, speechSpans, wave.Samples, s.cfg.chunkOptions())
+	if len(windows) == 0 {
+		windows = uniformWindows(totalSamples, int(s.cfg.MaxChunkSeconds*float64(sampleRate)))
+	}
+	s.deps.Log.Info(fmt.Sprintf("offline: meeting %d planned %d asr window(s) from %d speech span(s), vad=%s",
+		meetingID, len(windows), len(speechSpans), map[bool]string{true: "silero", false: "energy"}[s.vadMode()]))
+
+	// 7. 逐个窗口转写，先收集全部句子（全局时间轴），最后统一合并与入库。
+	//    合并必须在所有窗口转写完成后进行：被窗口边界切断的句子碎片，
+	//    只有拿到后一个窗口的开头才能拼回完整的一句话。
+	var utterances []sentenceSegment
 	index := 0
 
-	for _, start := range windows {
+	for _, win := range windows {
 		if s.isClosed() {
 			break
 		}
-		end := start + chunkSamples
+		start, end := win.Start, win.End
 		if end > totalSamples {
 			end = totalSamples
 		}
@@ -310,68 +320,137 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 		// 进度
 		chunkProgress := 20 + int(float64(start)/float64(totalSamples)*70)
 		s.deps.Progress.Update(meetingID, chunkProgress,
-			fmt.Sprintf("正在转写第 %d 段（%.0f%%）", index+1, float64(start)/float64(totalSamples)*100))
+			fmt.Sprintf("正在转写第 %d/%d 段（%.0f%%）", index+1, len(windows), float64(start)/float64(totalSamples)*100))
 
-		// 本块在全局时间轴上的偏移（毫秒）。直接用块起点采样位置换算，
+		// 本窗口在全局时间轴上的偏移（毫秒）。直接用窗口起点采样位置换算，
 		// 取代旧的逐块累加（globalOffsetMs）方式——旧方式把重叠时长当作
 		// 偏移增量，使每个后续分块的时间戳整体偏晚、在块边界不连续。
 		offsetMs := chunkOffsetMs(start, sampleRate)
 
-		// 实际转写本段
 		result, timestamps, perr := s.decodeChunk(chunkSamplesData, sampleRate)
 		if perr != nil {
-			s.deps.Log.Warning(fmt.Sprintf("offline: decode chunk %d failed: %v", index, perr))
+			s.deps.Log.Warning(fmt.Sprintf("offline: decode window %d failed: %v", index, perr))
 			index++
 			continue
 		}
 
 		if result != "" {
-			// 按句子分段（基于简单标点和长度）
-			sentences := splitSentencesWithTimestamps(result, timestamps, sampleRate, chunkSamplesData)
-			for _, seg := range sentences {
-				// 说话人识别
-				speakerName, speakerID := "未知说话人", (*uint)(nil)
-				if s.deps.Voiceprint != nil && len(speakerIDs) > 0 {
-					// 从本段 PCM 中切出语句部分并做识别
-					if spName, spID, ok := s.identifyInChunk(
-						chunkSamplesData, sampleRate, seg.chunkStart, seg.chunkEnd, speakerIDs, speakerNameByID,
-					); ok {
-						speakerName = spName
-						speakerID = spID
-					}
-				}
-
-				// 写入数据库（词级时间戳同样对齐到整段音频的全局时间）
-				tr := &models.MeetingTranscript{
-					MeetingID:      meetingID,
-					SpeakerID:      speakerID,
-					SpeakerName:    speakerName,
-					Text:           seg.text,
-					StartMs:        seg.startMs + offsetMs,
-					EndMs:          seg.endMs + offsetMs,
-					WordTimestamps: offsetWordTimestamps(seg.wordTimestamps, offsetMs),
-					IsFinal:        true,
-				}
-				if err := s.deps.TranscriptService.Create(tr); err != nil {
-					s.deps.Log.Warning(fmt.Sprintf("offline: store transcript failed: %v", err))
-				}
+			// 窗口内的语音段（换算为窗口内相对下标），用于模型无 token 时间戳时的近似对齐。
+			relSpans := windowSpans(speechSpans, start, end)
+			for _, seg := range splitSentencesWithTimestamps(result, timestamps, sampleRate, chunkSamplesData, relSpans, sentOpt) {
+				seg.startMs += offsetMs
+				seg.endMs += offsetMs
+				seg.wordTimestamps = offsetWordTimestamps(seg.wordTimestamps, offsetMs)
+				// 采样区间改为全局坐标：说话人识别在整段音频上切片。
+				seg.chunkStart = clampInt(seg.chunkStart+start, 0, totalSamples)
+				seg.chunkEnd = clampInt(seg.chunkEnd+start, 0, totalSamples)
+				utterances = append(utterances, seg)
 			}
 		}
 
 		index++
 	}
 
-	// 7. 完成
+	// 8. 合并被切开的句子（含去重）后统一入库。
+	utterances = mergeSentenceFragments(utterances, int64(sentOpt.MergeGapMs), sentOpt.HardMaxRunes*2)
+	for _, seg := range utterances {
+		// 说话人识别：从窗口 PCM 中切出该句对应的音频
+		speakerName, speakerID := "未知说话人", (*uint)(nil)
+		if s.deps.Voiceprint != nil && len(speakerIDs) > 0 && !s.isClosed() {
+			if start, end := seg.chunkStart, seg.chunkEnd; end > start && start >= 0 && end <= totalSamples {
+				if spName, spID, ok := s.identifyUtterance(
+					wave.Samples[start:end], sampleRate, speakerIDs, speakerNameByID,
+				); ok {
+					speakerName = spName
+					speakerID = spID
+				}
+			}
+		}
+
+		tr := &models.MeetingTranscript{
+			MeetingID:      meetingID,
+			SpeakerID:      speakerID,
+			SpeakerName:    speakerName,
+			Text:           trimSentenceText(seg.text),
+			StartMs:        seg.startMs,
+			EndMs:          seg.endMs,
+			WordTimestamps: seg.wordTimestamps,
+			IsFinal:        true,
+		}
+		if tr.Text == "" {
+			continue
+		}
+		if err := s.deps.TranscriptService.Create(tr); err != nil {
+			s.deps.Log.Warning(fmt.Sprintf("offline: store transcript failed: %v", err))
+		}
+	}
+
+	// 9. 完成
 	s.deps.Progress.Update(meetingID, 95, "正在写入最终结果")
 	s.deps.Progress.Complete(meetingID)
 	_ = s.deps.MeetingService.SetMeetingStatus(int(meetingID), models.MeetingStatusFinished)
 
-	s.deps.Log.Info(fmt.Sprintf("offline: meeting %d transcription finished in %d chunks", meetingID, index))
+	s.deps.Log.Info(fmt.Sprintf("offline: meeting %d transcription finished: %d window(s), %d sentence(s)",
+		meetingID, index, len(utterances)))
 }
 
-// chunkOffsetMs 返回以 start 采样位置开头的音频块在全局时间轴上的偏移（毫秒）。
-// 分块使用带重叠的滑动窗口，块的全局起点即其首个采样对应的时间，
-// 直接用采样位置换算，避免逐块累加重叠时长造成时间戳逐块漂移。
+// detectSpeech 检测音频中的语音段，异常时退化为「整段音频视为一个语音段」。
+func (s *Service) detectSpeech(samples []float32, sampleRate int) []speechSpan {
+	if s.vad == nil || len(samples) == 0 {
+		return nil
+	}
+	spans := s.vad.Detect(samples, sampleRate)
+	if len(spans) == 0 {
+		s.deps.Log.Warning(fmt.Sprintf("offline: no speech detected (%.1fs audio), fallback to whole audio",
+			float64(len(samples))/float64(sampleRate)))
+	}
+	return spans
+}
+
+// vadMode 报告当前使用的 VAD 实现（true=Silero，false=能量检测），仅用于日志。
+func (s *Service) vadMode() bool {
+	return s.vad != nil && s.vad.UsesSilero()
+}
+
+// windowSpans 把全局语音段裁剪到窗口 [start, end) 内，并换算为窗口内相对下标。
+func windowSpans(spans []speechSpan, start, end int) []speechSpan {
+	out := make([]speechSpan, 0, len(spans))
+	for _, sp := range spans {
+		if sp.End <= start || sp.Start >= end {
+			continue
+		}
+		s0 := sp.Start - start
+		s1 := sp.End - start
+		if s0 < 0 {
+			s0 = 0
+		}
+		if s1 > end-start {
+			s1 = end - start
+		}
+		if s1 > s0 {
+			out = append(out, speechSpan{Start: s0, End: s1})
+		}
+	}
+	return out
+}
+
+// clampInt 把 v 限制在 [lo, hi] 区间内。
+func clampInt(v, lo, hi int) int {
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// chunkOffsetMs 返回以 start 采样位置开头的识别窗口在全局时间轴上的偏移（毫秒）。
+// 窗口起点即其首个采样对应的时间，直接用采样位置换算，
+// 避免逐块累加重叠时长造成时间戳逐块漂移。
 func chunkOffsetMs(start, sampleRate int) int64 {
 	if sampleRate <= 0 {
 		return 0
@@ -444,40 +523,9 @@ type sentenceSegment struct {
 	text           string
 	startMs        int64
 	endMs          int64
-	chunkStart     int // 在 chunk samples 中的起始样本下标
-	chunkEnd       int // 在 chunk samples 中的结束样本下标
+	chunkStart     int // 全局音频中的起始样本下标（说话人识别据此切片）
+	chunkEnd       int // 全局音频中的结束样本下标
 	wordTimestamps []models.WordTimestamp
-}
-
-// splitSentencesWithTimestamps 将整段文本按标点和长度切分为句，并为每个字生成
-// 与音频真实时间对齐的时间戳。优先使用模型返回的 token 级时间戳（精确到字），
-// 若无时间戳则退化为按音频时长在句间、句内按比例估算（仍为毫秒，区间与音频对齐）。
-func splitSentencesWithTimestamps(text string, results []sherpa.OnlineRecognizerResult, sampleRate int, samples []float32) []sentenceSegment {
-	if text == "" {
-		return nil
-	}
-
-	// 合并所有结果的 token 与 token 级时间戳（离线解码可能返回多个结果段）。
-	var ts []float32
-	var tokens []string
-	for _, r := range results {
-		ts = append(ts, r.Timestamps...)
-		tokens = append(tokens, r.Tokens...)
-	}
-
-	// 优先：模型产出 token 级时间戳，逐字对齐到音频真实时间。
-	if len(ts) > 0 && len(ts) == len(tokens) && hasValidTimestamps(ts) {
-		tokenTimes := make([]transcript.TokenTimestamp, len(tokens))
-		for i := range tokens {
-			tokenTimes[i] = transcript.TokenTimestamp{Token: tokens[i], TimeSec: ts[i]}
-		}
-		if charTimes, ok := transcript.AlignCharTimes(text, tokenTimes); ok {
-			return buildSentenceSegments(text, charTimes, samples, sampleRate)
-		}
-	}
-
-	// 退化：无 token 时间戳时，按整段音频时长在句间、句内按比例分配（毫秒）。
-	return buildSentenceSegmentsApprox(text, samples, sampleRate)
 }
 
 // hasValidTimestamps 判断模型产出的 token 级时间戳是否真实可用。
@@ -491,202 +539,6 @@ func hasValidTimestamps(ts []float32) bool {
 		}
 	}
 	return false
-}
-
-// buildSentenceSegments 基于逐字时间戳（秒）生成句子分段与字级词时间戳。
-func buildSentenceSegments(text string, charTimes []float32, samples []float32, sampleRate int) []sentenceSegment {
-	runes := []rune(text)
-	if len(charTimes) != len(runes) {
-		return buildSentenceSegmentsApprox(text, samples, sampleRate)
-	}
-	// 先基于整段文本一次性算出字/词区间，再按句切分：避免逐句独立计算时
-	// 每句首字都向前回退一个常规发音时长，造成相邻句子时间区间重叠。
-	allWords := transcript.WordsWithSpansFromCharTimes(text, charTimes)
-	spans := simpleSplitSentences(text)
-	var out []sentenceSegment
-	for _, sp := range spans {
-		a, b := sp.start, sp.end
-		if b > len(runes) {
-			b = len(runes)
-		}
-		if b <= a {
-			continue
-		}
-		// 取起点落在 [a, b) 内的字/词：按起点归句，保证每个字/词只属于一句。
-		var words []models.WordTimestamp
-		for _, iv := range allWords {
-			if iv.Start < a {
-				continue
-			}
-			if iv.Start >= b {
-				break
-			}
-			words = append(words, models.WordTimestamp{Word: iv.Word, StartMs: iv.StartMs, EndMs: iv.EndMs})
-		}
-		// 逐字时间戳是“该字发音结束时刻”，句子的起止时间必须取回溯后的
-		// 字/词区间端点，否则整句时间会比真实语音晚约一个字。
-		startMs := int64(charTimes[a] * 1000)
-		endMs := int64(charTimes[b-1] * 1000)
-		if len(words) > 0 {
-			startMs = words[0].StartMs
-			endMs = words[len(words)-1].EndMs
-		}
-		out = append(out, sentenceSegment{
-			text:           sp.text,
-			startMs:        startMs,
-			endMs:          endMs,
-			chunkStart:     int(float64(startMs) / 1000.0 * float64(sampleRate)),
-			chunkEnd:       int(float64(endMs) / 1000.0 * float64(sampleRate)),
-			wordTimestamps: words,
-		})
-	}
-	return out
-}
-
-// buildSentenceSegmentsApprox 在没有 token 时间戳时，按音频时长在句子与字词间
-// 近似分配时间戳（仍为毫秒，区间与音频对齐），保证前端能正确定位。
-// 近似时间轴只覆盖有语音的区间：先检测音频中的所有语音段，文本按比例铺在
-// 各语音段内部，静音段不分配任何文字时间。这样中间的静音不会被压缩/跳过，
-// 文字时间戳与音频实际发音位置一一对应。
-func buildSentenceSegmentsApprox(text string, samples []float32, sampleRate int) []sentenceSegment {
-	spans := simpleSplitSentences(text)
-	totalRunes := 0
-	for _, sp := range spans {
-		totalRunes += sp.end - sp.start
-	}
-	if totalRunes == 0 {
-		totalRunes = 1
-	}
-
-	// 检测所有语音段；全静音时退化为整段音频（与旧行为一致）。
-	segs := detectSpeechSegments(samples, sampleRate)
-	if len(segs) == 0 {
-		segs = [][2]int{{0, len(samples)}}
-	}
-	totalSpeech := 0
-	for _, sg := range segs {
-		totalSpeech += sg[1] - sg[0]
-	}
-	if totalSpeech <= 0 {
-		totalSpeech = 1
-	}
-
-	// pref[i] = 前 i 段累计语音时长（样本数），用于把字符比例位置定位到语音段。
-	pref := make([]int, len(segs)+1)
-	for i, sg := range segs {
-		pref[i+1] = pref[i] + (sg[1] - sg[0])
-	}
-
-	// charToSample：把字符序号（0..totalRunes）按比例落在"总语音时长"轴上，
-	// 再映射回真实音频采样位置（只落在语音段内，静音段不产生任何文字时间）。
-	charToSample := func(runeIdx int) int {
-		p := int(math.Round(float64(totalSpeech) * float64(runeIdx) / float64(totalRunes)))
-		if p < 0 {
-			p = 0
-		}
-		if p >= totalSpeech {
-			return segs[len(segs)-1][1]
-		}
-		lo, hi := 0, len(segs)
-		for lo+1 < hi {
-			mid := (lo + hi) / 2
-			if pref[mid] <= p {
-				lo = mid
-			} else {
-				hi = mid
-			}
-		}
-		return segs[lo][0] + (p - pref[lo])
-	}
-
-	var out []sentenceSegment
-	for _, sp := range spans {
-		cs := charToSample(sp.start)
-		ce := charToSample(sp.end)
-		if ce <= cs {
-			ce = cs + 1 // 至少 1 个采样，保证区间非空
-		}
-		segStartMs := int64(float64(cs) / float64(sampleRate) * 1000)
-		segEndMs := int64(float64(ce) / float64(sampleRate) * 1000)
-		if segEndMs < segStartMs {
-			segEndMs = segStartMs
-		}
-		// 在句内按字符数线性铺开逐字时间（退化的近似对齐）。逐字时间戳语义是
-		// “该字发音结束时刻”，故第 i 个字取区间内的第 (i+1)/n 个等分点，
-		// 使末字结束时刻对齐句末、首字起始时刻对齐句首。
-		runes := []rune(sp.text)
-		sub := make([]float32, len(runes))
-		span := float64(segEndMs - segStartMs)
-		for i := range runes {
-			sub[i] = float32(segStartMs+int64(span*float64(i+1)/float64(len(runes)))) / 1000.0
-		}
-		words := transcript.WordsFromCharTimesIntervals(sp.text, sub)
-		if len(words) > 0 {
-			// 首字没有前驱时间戳，会按常规发音时长向前回退，可能越出本句区间，收敛回来。
-			if words[0].StartMs < segStartMs {
-				words[0].StartMs = segStartMs
-			}
-			if last := words[len(words)-1]; last.EndMs > segEndMs {
-				words[len(words)-1].EndMs = segEndMs
-			}
-		}
-		out = append(out, sentenceSegment{
-			text:           sp.text,
-			startMs:        segStartMs,
-			endMs:          segEndMs,
-			chunkStart:     cs,
-			chunkEnd:       ce,
-			wordTimestamps: words,
-		})
-	}
-	return out
-}
-
-// detectSpeechSegments 检测音频中所有有语音的采样区间（[start, end)，样本序号）。
-// 以 100ms 帧的短时 RMS 能量超过阈值判断，阈值与实时转写保持一致（0.03）。
-// 相邻语音段之间的静音间隙不超过 300ms 时合并为同一段（说话中的短暂停顿），
-// 避免单帧噪声或极短停顿造成过多碎片段。全静音时返回空切片。
-func detectSpeechSegments(samples []float32, sampleRate int) [][2]int {
-	if len(samples) == 0 || sampleRate <= 0 {
-		return nil
-	}
-	frame := sampleRate / 10 // 100ms 一帧
-	if frame <= 0 {
-		frame = 1
-	}
-	minGap := frame * 3 // 300ms
-
-	var segs [][2]int
-	for start := 0; start < len(samples); start += frame {
-		end := start + frame
-		if end > len(samples) {
-			end = len(samples)
-		}
-		var sum float64
-		for _, v := range samples[start:end] {
-			sum += float64(v) * float64(v)
-		}
-		if end <= start || math.Sqrt(sum/float64(end-start)) <= 0.03 {
-			continue // 静音帧
-		}
-		if len(segs) > 0 && start-segs[len(segs)-1][1] <= minGap {
-			// 与前一段的静音间隙 ≤ 300ms，视为同一语音段，扩展其末尾。
-			segs[len(segs)-1][1] = end
-		} else {
-			segs = append(segs, [2]int{start, end})
-		}
-	}
-	return segs
-}
-
-// detectSpeechStart 返回音频中第一个有语音的采样位置（毫秒对齐到 100ms 帧）。
-// 复用 detectSpeechSegments 的结果，找不到语音（全静音）时返回 0。
-func detectSpeechStart(samples []float32, sampleRate int) int {
-	segs := detectSpeechSegments(samples, sampleRate)
-	if len(segs) == 0 {
-		return 0
-	}
-	return segs[0][0]
 }
 
 // offsetWordTimestamps 将词级时间戳整体偏移 offsetMs（用于对齐到整段音频的全局时间）。
@@ -709,60 +561,18 @@ type textSpan struct {
 	end   int // 原文 rune 结束下标（不含）
 }
 
-// simpleSplitSentences 按中英文标点和长度简单断句，返回的每个片段保留其原始标点，
-// 且携带在原文中的 rune 区间，便于从逐字时间戳精确切片。
-func simpleSplitSentences(text string) []textSpan {
-	src := []rune(text)
-	if len(src) == 0 {
-		return nil
-	}
-	var out []textSpan
-	curStart := 0
-	var cur []rune
-	for i, r := range src {
-		cur = append(cur, r)
-		switch r {
-		case '。', '！', '？', '.', '!', '?', '；', ';', '，', ',':
-			// 在标点处切句，但至少保留 4 个字符
-			if len(cur) >= 4 {
-				out = append(out, textSpan{text: string(cur), start: curStart, end: i + 1})
-				cur = nil
-				curStart = i + 1
-			}
-		default:
-			// 超过 20 字也强制切句：离线模型（如 transducer）输出常无标点，
-			// 若只在空格/结尾处切，一整块音频会变成一条超长记录，无法精确定位。
-			if len(cur) >= 20 {
-				out = append(out, textSpan{text: string(cur), start: curStart, end: i + 1})
-				cur = nil
-				curStart = i + 1
-			}
-		}
-	}
-	if len(cur) > 0 {
-		out = append(out, textSpan{text: string(cur), start: curStart, end: len(src)})
-	}
-	if len(out) == 0 {
-		out = []textSpan{{text: text, start: 0, end: len(src)}}
-	}
-	return out
-}
-
-// identifyInChunk 在 chunk 样本中的指定区间，提取声纹并做说话人识别。
-func (s *Service) identifyInChunk(
-	chunkSamples []float32, sampleRate int,
-	chunkStart, chunkEnd int,
+// identifyUtterance 对一句话对应的音频采样提取声纹并做说话人识别。
+func (s *Service) identifyUtterance(
+	segSamples []float32, sampleRate int,
 	speakerIDs []uint, nameByID map[uint]string,
 ) (string, *uint, bool) {
 	if s.deps.Voiceprint == nil || !s.deps.Voiceprint.Ready() || len(speakerIDs) == 0 {
 		return "", nil, false
 	}
-	if chunkEnd <= chunkStart {
+	if len(segSamples) == 0 || sampleRate <= 0 {
 		return "", nil, false
 	}
-	segSamples := chunkSamples[chunkStart:chunkEnd]
-	durSec := float64(len(segSamples)) / float64(sampleRate)
-	if durSec < 1.0 {
+	if float64(len(segSamples))/float64(sampleRate) < minSpeakerDurationSeconds {
 		return "", nil, false // 太短，不稳定
 	}
 	// float32 samples -> 16bit PCM bytes -> WAV
@@ -907,11 +717,11 @@ func (s *Service) buildRecognizerConfig() sherpa.OnlineRecognizerConfig {
 			FeatureDim: s.cfg.FeatureDim,
 		},
 		ModelConfig: sherpa.OnlineModelConfig{
-			Tokens:        s.cfg.modelPath(s.cfg.Tokens),
-			NumThreads:    s.cfg.NumThreads,
-			Provider:      s.cfg.Provider,
-			ModelingUnit:  s.cfg.ModelingUnit,
-			BpeVocab:      s.cfg.modelPath(s.cfg.BpeVocab),
+			Tokens:       s.cfg.modelPath(s.cfg.Tokens),
+			NumThreads:   s.cfg.NumThreads,
+			Provider:     s.cfg.Provider,
+			ModelingUnit: s.cfg.ModelingUnit,
+			BpeVocab:     s.cfg.modelPath(s.cfg.BpeVocab),
 		},
 		DecodingMethod: s.cfg.DecodingMethod,
 		MaxActivePaths: s.cfg.MaxActivePaths,

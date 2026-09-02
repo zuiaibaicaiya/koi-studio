@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/contracts/log"
+	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 	"github.com/stretchr/testify/require"
 )
 
@@ -107,28 +107,28 @@ func requireProjectRootForModel(t *testing.T) {
 // 同时实现 contracts/log.Log 与内嵌的 Writer 接口。
 type noopLog struct{}
 
-func (noopLog) WithContext(ctx context.Context) log.Log { return noopLog{} }
-func (noopLog) Channel(channel string) log.Log             { return noopLog{} }
-func (noopLog) Stack(channels []string) log.Log             { return noopLog{} }
-func (noopLog) Debug(args ...any)                          {}
-func (noopLog) Debugf(format string, args ...any)          {}
-func (noopLog) Info(args ...any)                           {}
-func (noopLog) Infof(format string, args ...any)           {}
-func (noopLog) Warning(args ...any)                        {}
-func (noopLog) Warningf(format string, args ...any)        {}
-func (noopLog) Error(args ...any)                          {}
-func (noopLog) Errorf(format string, args ...any)          {}
-func (noopLog) Fatal(args ...any)                          {}
-func (noopLog) Fatalf(format string, args ...any)          {}
-func (noopLog) Panic(args ...any)                          {}
-func (noopLog) Panicf(format string, args ...any)          {}
-func (noopLog) Code(code string) log.Writer                { return noopLog{} }
-func (noopLog) Hint(hint string) log.Writer                { return noopLog{} }
-func (noopLog) In(domain string) log.Writer                { return noopLog{} }
-func (noopLog) Owner(owner any) log.Writer                 { return noopLog{} }
-func (noopLog) Request(req http.ContextRequest) log.Writer { return noopLog{} }
+func (noopLog) WithContext(ctx context.Context) log.Log      { return noopLog{} }
+func (noopLog) Channel(channel string) log.Log               { return noopLog{} }
+func (noopLog) Stack(channels []string) log.Log              { return noopLog{} }
+func (noopLog) Debug(args ...any)                            {}
+func (noopLog) Debugf(format string, args ...any)            {}
+func (noopLog) Info(args ...any)                             {}
+func (noopLog) Infof(format string, args ...any)             {}
+func (noopLog) Warning(args ...any)                          {}
+func (noopLog) Warningf(format string, args ...any)          {}
+func (noopLog) Error(args ...any)                            {}
+func (noopLog) Errorf(format string, args ...any)            {}
+func (noopLog) Fatal(args ...any)                            {}
+func (noopLog) Fatalf(format string, args ...any)            {}
+func (noopLog) Panic(args ...any)                            {}
+func (noopLog) Panicf(format string, args ...any)            {}
+func (noopLog) Code(code string) log.Writer                  { return noopLog{} }
+func (noopLog) Hint(hint string) log.Writer                  { return noopLog{} }
+func (noopLog) In(domain string) log.Writer                  { return noopLog{} }
+func (noopLog) Owner(owner any) log.Writer                   { return noopLog{} }
+func (noopLog) Request(req http.ContextRequest) log.Writer   { return noopLog{} }
 func (noopLog) Response(res http.ContextResponse) log.Writer { return noopLog{} }
-func (noopLog) Tags(tags ...string) log.Writer             { return noopLog{} }
-func (noopLog) User(user any) log.Writer                   { return noopLog{} }
-func (noopLog) With(data map[string]any) log.Writer        { return noopLog{} }
-func (noopLog) WithTrace() log.Writer                      { return noopLog{} }
+func (noopLog) Tags(tags ...string) log.Writer               { return noopLog{} }
+func (noopLog) User(user any) log.Writer                     { return noopLog{} }
+func (noopLog) With(data map[string]any) log.Writer          { return noopLog{} }
+func (noopLog) WithTrace() log.Writer                        { return noopLog{} }

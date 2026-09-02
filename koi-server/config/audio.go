@@ -33,18 +33,18 @@ func init() {
 		// 用于上传音频文件后的批量转写。
 		"offline_model": map[string]any{
 			// 离线模型类型：zipformer_ctc | transducer | paraformer
-			"model_type":       config.Env("OFFLINE_MODEL_TYPE", "transducer"),
-			"dir":              config.Env("OFFLINE_MODEL_DIR", "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"),
-			"model":            config.Env("OFFLINE_MODEL_FILE", "model.onnx"),
+			"model_type": config.Env("OFFLINE_MODEL_TYPE", "transducer"),
+			"dir":        config.Env("OFFLINE_MODEL_DIR", "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"),
+			"model":      config.Env("OFFLINE_MODEL_FILE", "model.onnx"),
 			// transducer 类型模型专用（三文件）。
 			// 复用与流式同一个 bilingual zipformer 模型，离线批量转写与重新转写均走此模型。
-			"encoder":          config.Env("OFFLINE_MODEL_ENCODER", "encoder-epoch-99-avg-1.onnx"),
-			"decoder":          config.Env("OFFLINE_MODEL_DECODER", "decoder-epoch-99-avg-1.onnx"),
-			"joiner":           config.Env("OFFLINE_MODEL_JOINER", "joiner-epoch-99-avg-1.onnx"),
-			"tokens":           config.Env("OFFLINE_MODEL_TOKENS", "tokens.txt"),
+			"encoder": config.Env("OFFLINE_MODEL_ENCODER", "encoder-epoch-99-avg-1.onnx"),
+			"decoder": config.Env("OFFLINE_MODEL_DECODER", "decoder-epoch-99-avg-1.onnx"),
+			"joiner":  config.Env("OFFLINE_MODEL_JOINER", "joiner-epoch-99-avg-1.onnx"),
+			"tokens":  config.Env("OFFLINE_MODEL_TOKENS", "tokens.txt"),
 			// bilingual 模型使用 BPE 建模单元，需指定 bpe.vocab 才能正确解码。
-			"modeling_unit":    config.Env("OFFLINE_MODEL_MODELING_UNIT", "bpe"),
-			"bpe_vocab":        config.Env("OFFLINE_MODEL_BPE_VOCAB", "bpe.vocab"),
+			"modeling_unit": config.Env("OFFLINE_MODEL_MODELING_UNIT", "bpe"),
+			"bpe_vocab":     config.Env("OFFLINE_MODEL_BPE_VOCAB", "bpe.vocab"),
 			// bilingual 流式 zipformer 的 fbank 特征维度为 80（与实时流一致）。
 			"feature_dim":      config.Env("OFFLINE_MODEL_FEATURE_DIM", 80),
 			"num_threads":      config.Env("OFFLINE_MODEL_NUM_THREADS", 4),
@@ -53,6 +53,47 @@ func init() {
 			"max_active_paths": config.Env("OFFLINE_MAX_ACTIVE_PATHS", 4),
 			"hotwords_score":   config.Env("OFFLINE_HOTWORDS_SCORE", 2.0),
 			"load_timeout":     config.Env("OFFLINE_MODEL_LOAD_TIMEOUT", 60),
+		},
+
+		// Offline VAD（语音活动检测）
+		//
+		// 重新转写/离线转写时先做语音活动检测，只在静音处切分音频，
+		// 使每个识别窗口都落在句子边界上，避免句子被从中间切开。
+		// model 指向 silero_vad.onnx；文件不存在时自动退化为自适应能量检测。
+		"offline_vad": map[string]any{
+			"enabled":              config.Env("OFFLINE_VAD_ENABLED", true),
+			"model":                config.Env("OFFLINE_VAD_MODEL", "models/silero_vad.onnx"),
+			"threshold":            config.Env("OFFLINE_VAD_THRESHOLD", 0.4),
+			"min_silence_duration": config.Env("OFFLINE_VAD_MIN_SILENCE", 0.4),
+			"min_speech_duration":  config.Env("OFFLINE_VAD_MIN_SPEECH", 0.25),
+			"window_size":          config.Env("OFFLINE_VAD_WINDOW_SIZE", 512),
+			"max_speech_duration":  config.Env("OFFLINE_VAD_MAX_SPEECH", 30),
+			"num_threads":          config.Env("OFFLINE_VAD_NUM_THREADS", 1),
+			"provider":             config.Env("OFFLINE_VAD_PROVIDER", ""),
+			"buffer_seconds":       config.Env("OFFLINE_VAD_BUFFER_SECONDS", 60),
+			// 后处理：合并间隔、噪声过滤与首尾补齐
+			"min_silence_ms": config.Env("OFFLINE_VAD_MIN_SILENCE_MS", 300),
+			"min_speech_ms":  config.Env("OFFLINE_VAD_MIN_SPEECH_MS", 150),
+			"padding_ms":     config.Env("OFFLINE_VAD_PADDING_MS", 80),
+		},
+
+		// Offline Segmentation（音频切分与断句）
+		"offline_segment": map[string]any{
+			// 单个识别窗口的最大时长（秒）。
+			"max_chunk_seconds": config.Env("OFFLINE_MAX_CHUNK_SECONDS", 30),
+			// 允许在两个窗口之间切分的最小静音时长（秒）。
+			// 静音短于该值时宁可让窗口超长，也不在语音中间切开。
+			"min_silence_cut_seconds": config.Env("OFFLINE_MIN_SILENCE_CUT_SECONDS", 0.4),
+			// 断句：单句最少字符数（低于该值不切句，避免碎片化）。
+			"sentence_min_runes": config.Env("OFFLINE_SENTENCE_MIN_RUNES", 8),
+			// 断句：达到该长度后允许在句内标点/停顿处断句。
+			"sentence_target_runes": config.Env("OFFLINE_SENTENCE_TARGET_RUNES", 30),
+			// 断句：硬上限，超过后强制断句（仍优先挑最优断点）。
+			"sentence_hard_max_runes": config.Env("OFFLINE_SENTENCE_HARD_MAX_RUNES", 50),
+			// 断句：字间静音超过该毫秒视为可断句的停顿。
+			"sentence_pause_ms": config.Env("OFFLINE_SENTENCE_PAUSE_MS", 500),
+			// 断句：跨窗口合并碎片时允许的最大静音间隙（毫秒）。
+			"sentence_merge_gap_ms": config.Env("OFFLINE_SENTENCE_MERGE_GAP_MS", 250),
 		},
 
 		// Audio Stream
