@@ -106,7 +106,7 @@
             >
               <div
                 class="transcript-item"
-                :class="{ final: item.isFinal, active: item.id === activeSegmentId, 'no-audio': !audioSrc }"
+                :class="{ final: item.isFinal, 'no-audio': !audioSrc }"
                 :title="audioSrc ? '点击播放此句' : ''"
                 @click="seekTo(item)"
               >
@@ -923,14 +923,6 @@ watch(
 /* 无音频：点击只会得到提示，展示为普通文本光标，不再误导可点击播放 */
 .transcript-item.no-audio {
   cursor: text;
-}
-/* 播放中的句子：左侧主色标记 + 淡底色，与逐字高亮区分层级 */
-.transcript-item.active {
-  background: rgba(99, 102, 241, 0.08);
-  box-shadow: inset 3px 0 0 var(--color-primary, #6366f1);
-}
-.transcript-item.active:hover {
-  background: rgba(99, 102, 241, 0.12);
 }
 
 /* 转写加载失败态 */
