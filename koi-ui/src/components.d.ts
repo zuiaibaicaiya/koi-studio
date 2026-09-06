@@ -24,6 +24,7 @@ declare module 'vue' {
     AForm: typeof import('antdv-next')['Form']
     AFormItem: typeof import('antdv-next')['FormItem']
     AInput: typeof import('antdv-next')['Input']
+    AInputPassword: typeof import('antdv-next')['InputPassword']
     ALayout: typeof import('antdv-next')['Layout']
     ALayoutContent: typeof import('antdv-next')['LayoutContent']
     ALayoutHeader: typeof import('antdv-next')['LayoutHeader']

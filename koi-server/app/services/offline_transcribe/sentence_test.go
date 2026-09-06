@@ -174,6 +174,49 @@ func (s *SentenceSplitTestSuite) TestNoMergeWhenGapTooLarge() {
 	s.Len(merged, 2)
 }
 
+// mergeSentenceFragments：被窗口边界（换气停顿 ≥ min_silence_cut）截断的
+// 半句，只要间隙不超过合并阈值就应拼回完整句子。
+func (s *SentenceSplitTestSuite) TestMergeFragmentsAtWindowCutSilence() {
+	segs := []sentenceSegment{
+		{text: "我们下周启动这个项目", startMs: 1000, endMs: 3000},
+		{text: "具体细节明天再讨论", startMs: 3500, endMs: 5500}, // 500ms 换气停顿
+	}
+	merged := mergeSentenceFragments(segs, 500, 100)
+	s.Require().Len(merged, 1)
+	s.Equal("我们下周启动这个项目具体细节明天再讨论", merged[0].text)
+}
+
+// mergeSentenceFragments：前段是极短碎片（未说完）时，合并后即使超过
+// maxRunes 也应合并（不留半句孤儿），但不超过 2 倍上限。
+func (s *SentenceSplitTestSuite) TestMergeShortFragmentOverLimit() {
+	long := ""
+	for i := 0; i < 30; i++ {
+		long += "字"
+	}
+	segs := []sentenceSegment{
+		{text: "所以", startMs: 1000, endMs: 1500},
+		{text: long, startMs: 1600, endMs: 6000},
+	}
+	// 合并后 32 字 > maxRunes(30)，但前段是短碎片，允许超限合并
+	merged := mergeSentenceFragments(segs, 500, 30)
+	s.Require().Len(merged, 1)
+	s.Equal("所以"+long, merged[0].text)
+}
+
+// mergeSentenceFragments：前段较长时超过 maxRunes 不合并，防止无限拼接。
+func (s *SentenceSplitTestSuite) TestNoMergeWhenOverLimitAndPrevLong() {
+	long := ""
+	for i := 0; i < 30; i++ {
+		long += "字"
+	}
+	segs := []sentenceSegment{
+		{text: long, startMs: 1000, endMs: 3000},
+		{text: long, startMs: 3100, endMs: 6000},
+	}
+	merged := mergeSentenceFragments(segs, 500, 30)
+	s.Len(merged, 2)
+}
+
 // mergeSentenceFragments：重复片段（同一段音频被重复解码）被丢弃。
 func (s *SentenceSplitTestSuite) TestDropsDuplicateFragments() {
 	segs := []sentenceSegment{

@@ -352,7 +352,16 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 	}
 
 	// 8. 合并被切开的句子（含去重）后统一入库。
-	utterances = mergeSentenceFragments(utterances, int64(sentOpt.MergeGapMs), sentOpt.HardMaxRunes*2)
+	//
+	// 合并间隙必须覆盖窗口切分处的静音：识别窗口只会在静音 ≥
+	// MinSilenceCutSeconds 的位置切开，若合并间隙小于该值，被窗口边界
+	// 截断的句子碎片（说话人换气停顿恰好落在切分点上）将永远无法拼回，
+	// 表现为转写结果里出现大量半句话。
+	mergeGapMs := int64(sentOpt.MergeGapMs)
+	if cutMs := int64(s.cfg.MinSilenceCutSeconds*1000) + 100; cutMs > mergeGapMs {
+		mergeGapMs = cutMs
+	}
+	utterances = mergeSentenceFragments(utterances, mergeGapMs, sentOpt.HardMaxRunes*2)
 	for _, seg := range utterances {
 		// 说话人识别：从窗口 PCM 中切出该句对应的音频
 		speakerName, speakerID := "未知说话人", (*uint)(nil)

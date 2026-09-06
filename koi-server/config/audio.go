@@ -93,7 +93,9 @@ func init() {
 			// 断句：字间静音超过该毫秒视为可断句的停顿。
 			"sentence_pause_ms": config.Env("OFFLINE_SENTENCE_PAUSE_MS", 500),
 			// 断句：跨窗口合并碎片时允许的最大静音间隙（毫秒）。
-			"sentence_merge_gap_ms": config.Env("OFFLINE_SENTENCE_MERGE_GAP_MS", 250),
+			// 实际取值不低于 min_silence_cut_seconds，保证被窗口边界
+			// 截断的句子碎片能拼回完整句子。
+			"sentence_merge_gap_ms": config.Env("OFFLINE_SENTENCE_MERGE_GAP_MS", 500),
 		},
 
 		// Audio Stream

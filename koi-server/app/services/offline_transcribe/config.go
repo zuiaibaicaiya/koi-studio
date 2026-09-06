@@ -109,7 +109,7 @@ func NewConfig(cfg config.Config) Config {
 		SentenceTargetRunes:  cfg.GetInt("audio.offline_segment.sentence_target_runes", 30),
 		SentenceHardMaxRunes: cfg.GetInt("audio.offline_segment.sentence_hard_max_runes", 50),
 		SentencePauseMs:      cfg.GetInt("audio.offline_segment.sentence_pause_ms", 500),
-		SentenceMergeGapMs:   cfg.GetInt("audio.offline_segment.sentence_merge_gap_ms", 250),
+		SentenceMergeGapMs:   cfg.GetInt("audio.offline_segment.sentence_merge_gap_ms", 500),
 	}
 
 	return c.normalized()

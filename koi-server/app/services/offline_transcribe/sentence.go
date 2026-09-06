@@ -43,7 +43,7 @@ const (
 	defaultSentenceTargetRunes  = 30
 	defaultSentenceHardMaxRunes = 50
 	defaultSentencePauseMs      = 500
-	defaultSentenceMergeGapMs   = 250
+	defaultSentenceMergeGapMs   = 500
 )
 
 // normalized 兜底非法断句参数。
@@ -180,20 +180,23 @@ func splitSentenceSpans(text string, charTimes []float32, opt sentenceOptions) [
 
 // mergeTrivialTail 把没有说完的过短尾段合并回前一段，避免留下孤儿碎片。
 // 尾段自带句末标点时说明是一句完整的话（如「好的。」），不合并。
+// 连续多个短尾段会被逐一归并（循环），而不是只处理最后一层。
 func mergeTrivialTail(spans []textSpan, minRunes int) []textSpan {
-	if len(spans) < 2 {
-		return spans
+	for len(spans) >= 2 {
+		last := spans[len(spans)-1]
+		if last.end-last.start >= minRunes || endsWithSentenceEnd(last.text) {
+			return spans
+		}
+		prev := spans[len(spans)-2]
+		spans = append(spans[:len(spans)-2],
+			textSpan{text: prev.text + last.text, start: prev.start, end: last.end})
 	}
-	last := spans[len(spans)-1]
-	if last.end-last.start >= minRunes || endsWithSentenceEnd(last.text) {
-		return spans
-	}
-	prev := spans[len(spans)-2]
-	out := make([]textSpan, 0, len(spans)-1)
-	out = append(out, spans[:len(spans)-2]...)
-	out = append(out, textSpan{text: prev.text + last.text, start: prev.start, end: last.end})
-	return out
+	return spans
 }
+
+// shortFragmentRunes 判定「被截断的碎片」的字数上限：短于该值且未说完的
+// 前段在跨窗口合并时允许突破 maxRunes 上限（见 mergeSentenceFragments）。
+const shortFragmentRunes = defaultSentenceMinRunes
 
 // simpleSplitSentences 仅依据文本（无音频时间戳）断句。
 func simpleSplitSentences(text string) []textSpan {
@@ -409,9 +412,19 @@ func mergeSentenceFragments(segments []sentenceSegment, gapMs int64, maxRunes in
 		}
 
 		gap := seg.startMs - prev.endMs
-		canMerge := gap <= gapMs &&
-			!endsWithSentenceEnd(prev.text) &&
-			runeLen(prev.text)+runeLen(seg.text) <= maxRunes
+		canMerge := gap <= gapMs && !endsWithSentenceEnd(prev.text)
+		if canMerge {
+			combined := runeLen(prev.text) + runeLen(seg.text)
+			// 长度上限：合并结果超过 maxRunes 时，仅当前段是「被截断的
+			// 极短碎片」（如「所以」「那我们就」）才允许超限合并——
+			// 宁可整句长一点，也不把半句孤儿留在结果里；
+			// 但仍不得超过 2 倍上限，防止无限拼接。
+			if combined > maxRunes {
+				if runeLen(prev.text) >= shortFragmentRunes || combined > maxRunes*2 {
+					canMerge = false
+				}
+			}
+		}
 		if canMerge {
 			prev.text += seg.text
 			if seg.endMs > prev.endMs {
