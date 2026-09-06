@@ -77,8 +77,13 @@
         <span class="transcript-title"><SoundOutlined /> 会议转写内容</span>
       </template>
       <div class="transcript-body">
+        <!-- 加载失败：给出原因与重试入口，而不是误显示为空内容 -->
+        <div v-if="loadError" class="transcript-error">
+          <p>转写内容加载失败，请检查网络后重试。</p>
+          <a-button size="small" @click="loadTranscripts">重试</a-button>
+        </div>
         <a-empty
-          v-if="!loading && transcripts.length === 0"
+          v-else-if="!loading && transcripts.length === 0"
           description="暂无转写内容"
           class="transcript-empty"
         />
@@ -86,6 +91,7 @@
 
         <DynamicScroller
           v-else
+          ref="scrollerRef"
           class="transcript-scroller"
           :items="transcripts"
           :min-item-size="64"
@@ -98,7 +104,12 @@
               :active="true"
               :data-index="index"
             >
-              <div class="transcript-item" :class="{ final: item.isFinal }" @click="seekTo(item)">
+              <div
+                class="transcript-item"
+                :class="{ final: item.isFinal, active: item.id === activeSegmentId, 'no-audio': !audioSrc }"
+                :title="audioSrc ? '点击播放此句' : ''"
+                @click="seekTo(item)"
+              >
                 <a-avatar class="speaker-avatar" :style="{ backgroundColor: item.color }">
                   {{ item.speaker.charAt(0) }}
                 </a-avatar>
@@ -131,9 +142,6 @@
 
         <div v-if="loadingMore" class="transcript-footer">
           <a-spin size="small" description="加载更多…" />
-        </div>
-        <div v-else-if="finished && transcripts.length" class="transcript-footer muted">
-          已经到底啦，共 {{ total }} 条转写
         </div>
       </div>
     </a-card>
@@ -235,6 +243,8 @@ const meeting = ref<MeetingDTO | null>(null);
 const meetingLoading = ref(false);
 const transcripts = ref<TranscriptItem[]>([]);
 const loading = ref(false);
+/** 转写内容加载失败标记：失败时展示错误态与重试，而不是误显示为空内容 */
+const loadError = ref(false);
 const loadingMore = ref(false);
 const page = ref(1);
 const pageSize = ref(50);
@@ -403,6 +413,7 @@ async function loadMeeting() {
 
 async function loadTranscripts() {
   loading.value = true;
+  loadError.value = false;
   page.value = 1;
   try {
     const res = await meetingApi.getMeetingTranscripts(meetingId.value, { page: 1, pageSize: pageSize.value });
@@ -410,6 +421,7 @@ async function loadTranscripts() {
     total.value = res.total;
     page.value = res.page;
   } catch (e) {
+    loadError.value = true;
     message.error((e as { message?: string })?.message || '加载转写内容失败');
   } finally {
     loading.value = false;
@@ -569,6 +581,38 @@ function seekToSpan(item: TranscriptItem, span: WordSpan) {
 /** 当前播放位置（毫秒，相对音频开头），由 wavesurfer 的 timeupdate 驱动 */
 const currentMs = computed(() => currentTime.value * 1000);
 
+// ---- 播放中的段落定位：高亮当前句并自动滚动，方便长会议跟读 ----
+const scrollerRef = ref<InstanceType<typeof DynamicScroller> | null>(null);
+/** 最近一次自动滚动到的段落 id，避免同一句反复触发 scrollToItem */
+let autoScrolledId = 0;
+
+const activeSegmentId = computed(() => {
+  const ms = currentMs.value;
+  if (ms <= 0) return 0;
+  // 取播放头所在的段落（startMs <= ms < endMs）；落在句间静音时沿用上一句
+  let active = 0;
+  for (const item of transcripts.value) {
+    if (item.startMs <= ms) {
+      if (ms < item.endMs) return item.id;
+      active = item.id;
+    } else {
+      break;
+    }
+  }
+  return active;
+});
+
+watch(activeSegmentId, (id) => {
+  if (!id || !playing.value || id === autoScrolledId) return;
+  autoScrolledId = id;
+  const idx = transcripts.value.findIndex((t) => t.id === id);
+  if (idx >= 0) scrollerRef.value?.scrollToItem(idx);
+});
+// 暂停/结束后不再自动滚动，但保留当前句高亮；新的一轮播放重置去重标记
+watch(playing, (p) => {
+  if (p) autoScrolledId = 0;
+});
+
 /** 判断某个词/字的高亮状态：active=播放头当前所在字，played=已播放过（从本次播放起点开始），''=未播放 */
 function wordState(item: TranscriptItem, span: WordSpan): string {
   // 已播放：从该次播放起点(anchor)起、且已被播放头越过结尾的字
@@ -602,7 +646,12 @@ function onSpeedChange(v: number) {
 }
 
 function goBack() {
-  router.push('/system/meetings');
+  // 优先回退到来源页（如从搜索/其他入口进入），无历史时再回会议列表
+  if (window.history.state?.back) {
+    router.back();
+  } else {
+    router.push('/system/meetings');
+  }
 }
 
 const exporting = ref(false);
@@ -711,7 +760,11 @@ watch(
 .meeting-detail {
   max-width: 1080px;
   margin: 0 auto;
-  padding: 16px 20px 96px;
+  padding: 16px 20px 16px;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
 }
 
 .detail-topbar {
@@ -806,10 +859,21 @@ watch(
 }
 
 .transcript-card {
-  margin-bottom: 16px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 12px;
   border-radius: 12px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
+}
+/* 卡片内容区撑满剩余高度，让转写列表与底部播放器紧挨 */
+.transcript-card :deep(.ant-card-body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .transcript-title {
@@ -822,7 +886,10 @@ watch(
 
 .transcript-body {
   position: relative;
-  min-height: 320px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .transcript-empty,
 .transcript-loading {
@@ -831,7 +898,7 @@ watch(
   justify-content: center;
 }
 .transcript-scroller {
-  height: calc(100vh - 460px);
+  flex: 1;
   min-height: 320px;
   padding: 8px 16px;
 }
@@ -840,29 +907,46 @@ watch(
   padding: 12px 0 16px;
   color: var(--color-text-muted);
 }
-.transcript-footer.muted {
-  font-size: 12px;
-}
 
 .transcript-item {
   display: flex;
   gap: 12px;
-  padding: 10px 0;
+  padding: 10px 6px;
   border-bottom: 1px solid var(--color-border);
+  border-radius: 6px;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 .transcript-item:hover {
   background: var(--color-hover, rgba(99, 102, 241, 0.06));
 }
+/* 无音频：点击只会得到提示，展示为普通文本光标，不再误导可点击播放 */
+.transcript-item.no-audio {
+  cursor: text;
+}
+/* 播放中的句子：左侧主色标记 + 淡底色，与逐字高亮区分层级 */
+.transcript-item.active {
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: inset 3px 0 0 var(--color-primary, #6366f1);
+}
+.transcript-item.active:hover {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+/* 转写加载失败态 */
+.transcript-error {
+  padding: 64px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--color-text-muted);
+}
 
 .audio-bar {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 16px;
-  width: calc(100% - 40px);
-  max-width: calc(1080px - 40px);
+  /* 不再悬浮：随文档流紧跟在转写卡片下方 */
+  position: static;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -870,8 +954,7 @@ watch(
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: 12px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   z-index: 50;
 }
 .audio-bar.playing {
