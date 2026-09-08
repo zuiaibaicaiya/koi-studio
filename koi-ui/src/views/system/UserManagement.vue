@@ -6,6 +6,8 @@ import type { FormInstance, Rule, UploadProps } from 'antdv-next';
 import { useAuthStore } from '../../store/auth';
 import userApi, { type UserDTO, type UserListParams, type CreateUserPayload, type UpdateUserPayload, type Paginated } from '../../services/userApi';
 import { exportToCsv, rowsFromCsv, type CsvColumn } from '../../utils/csv';
+import FilterBar from '../../components/FilterBar.vue';
+import FilterField from '../../components/FilterField.vue';
 import {
   PlusOutlined,
   EditOutlined,
@@ -361,44 +363,26 @@ const beforeUpload: UploadProps['beforeUpload'] = async (file) => {
 
 <template>
   <div class="page">
-    <!-- 顶部工具栏 -->
-    <a-card class="toolbar" variant="borderless">
-      <a-form layout="inline" class="filter-form">
-        <a-form-item label="关键词">
-          <a-input
-            v-model:value="keyword"
-            placeholder="用户名 / 昵称 / 邮箱"
-            allow-clear
-            style="width: 220px"
-            @press-enter="onSearch"
-          >
-            <template #prefix><SearchOutlined /></template>
-          </a-input>
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select v-model:value="statusFilter" :options="statusOptions" placeholder="全部" allow-clear style="width: 120px" @change="onSearch" />
-        </a-form-item>
-        <a-form-item>
-          <a-button type="primary" @click="onSearch">
-            <SearchOutlined />查询
-          </a-button>
-        </a-form-item>
-        <a-form-item>
-          <a-button @click="handleRefresh">
-            <ReloadOutlined />重置
-          </a-button>
-        </a-form-item>
-      </a-form>
+    <!-- 筛选 + 操作 -->
+    <FilterBar @search="onSearch" @reset="handleRefresh">
+      <FilterField label="关键词">
+        <a-input v-model:value="keyword" placeholder="用户名 / 昵称 / 邮箱" allow-clear>
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+      </FilterField>
+      <FilterField label="状态">
+        <a-select v-model:value="statusFilter" :options="statusOptions" placeholder="全部" allow-clear />
+      </FilterField>
 
-      <div class="actions">
+      <template #actions>
         <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
         <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
           <a-button :loading="importLoading"><UploadOutlined />导入</a-button>
         </a-upload>
         <a-button @click="handleExport"><DownloadOutlined />导出</a-button>
-        <a-button @click="handleRefresh"><ReloadOutlined />刷新</a-button>
-      </div>
-    </a-card>
+        <a-button @click="fetchList"><ReloadOutlined />刷新</a-button>
+      </template>
+    </FilterBar>
 
     <!-- 表格 -->
     <a-card variant="borderless" class="table-card">
@@ -494,23 +478,6 @@ const beforeUpload: UploadProps['beforeUpload'] = async (file) => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-.toolbar {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
-}
-.toolbar :deep(.ant-form-item-label > label) {
-  color: var(--color-text-secondary);
-}
-.filter-form {
-  margin-bottom: 12px;
-}
-.actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 .table-card {
   background: var(--color-surface);

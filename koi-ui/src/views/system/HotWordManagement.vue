@@ -10,11 +10,14 @@ import {
   UploadOutlined,
   FileExcelOutlined,
   EyeOutlined,
+  ReloadOutlined,
 } from '@antdv-next/icons';
 import { useHotWordLibraryStore } from '../../store/hotWordLibrary';
 import type { HotWordLibrary, LibraryWord, LibraryStatus } from '../../store/hotWordLibrary';
 import { exportLibraryTemplate } from '../../utils/excel';
 import { hotWordApi } from '../../services/hotWordApi';
+import FilterBar from '../../components/FilterBar.vue';
+import FilterField from '../../components/FilterField.vue';
 
 const store = useHotWordLibraryStore();
 
@@ -25,13 +28,19 @@ const appliedKeyword = ref('');
 const loading = ref(false);
 
 function handleSearch() {
+  // 列表已在本地，按关键词即时过滤即可，无需重新请求
   appliedKeyword.value = searchText.value.trim();
-  loadLibraries();
 }
 
 function handleReset() {
   searchText.value = '';
   appliedKeyword.value = '';
+}
+
+/** 清空输入框时立即取消过滤，无需再点一次查询 */
+function onSearchTextChange(e: Event | string) {
+  const value = typeof e === 'string' ? e : (e.target as HTMLInputElement)?.value ?? '';
+  if (!value.trim()) appliedKeyword.value = '';
 }
 
 /** 按已应用的关键词过滤，点击搜索后生效 */
@@ -307,27 +316,22 @@ function confirmRemoveWord(record: LibraryWord) {
 
 <template>
   <div class="page">
-    <!-- 工具栏 -->
-    <a-card class="toolbar" variant="borderless">
-      <div class="form-row">
-        <a-input
-          v-model:value="searchText"
-          class="search-input"
-          placeholder="搜索热词库名称"
-          allow-clear
-        >
+    <!-- 筛选 + 操作 -->
+    <FilterBar @search="handleSearch" @reset="handleReset">
+      <FilterField label="名称">
+        <a-input v-model:value="searchText" placeholder="搜索热词库名称" allow-clear @change="onSearchTextChange">
           <template #prefix><SearchOutlined /></template>
         </a-input>
-        <a-button type="primary" @click="handleSearch"><SearchOutlined />搜索</a-button>
-        <a-button @click="handleReset">重置</a-button>
-        <div class="actions">
-          <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
-            <a-button :loading="importing"><UploadOutlined />导入</a-button>
-          </a-upload>
-          <a-button @click="downloadTemplate"><FileExcelOutlined />模板导出</a-button>
-        </div>
-      </div>
-    </a-card>
+      </FilterField>
+
+      <template #actions>
+        <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
+          <a-button :loading="importing"><UploadOutlined />导入</a-button>
+        </a-upload>
+        <a-button @click="downloadTemplate"><FileExcelOutlined />模板导出</a-button>
+        <a-button @click="loadLibraries"><ReloadOutlined />刷新</a-button>
+      </template>
+    </FilterBar>
 
     <!-- 热词库表格 -->
     <a-card class="table-card" variant="borderless">
@@ -489,29 +493,6 @@ function confirmRemoveWord(record: LibraryWord) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.toolbar {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  padding: 12px 16px;
-}
-.form-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-.search-input {
-  width: 220px;
-}
-.actions {
-  margin-left: auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .table-card {

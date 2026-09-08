@@ -10,11 +10,12 @@ import {
 } from '../../store/speaker';
 import { rowsFromCsv, type CsvColumn } from '../../utils/csv';
 import { toWavFile } from '../../utils/audio';
+import FilterBar from '../../components/FilterBar.vue';
+import FilterField from '../../components/FilterField.vue';
 import {
   PlusOutlined,
   EditOutlined,
   DeleteOutlined,
-  ReloadOutlined,
   SearchOutlined,
   UploadOutlined,
   AudioOutlined,
@@ -49,13 +50,22 @@ const pagination = computed(() => ({
   showTotal: (t: number) => `共 ${t} 条`,
 }));
 
+/** 输入防抖，避免每敲一个字就请求一次 */
+let keywordTimer: ReturnType<typeof setTimeout> | null = null;
+
 /** 关键词筛选后重新查询（重置到第一页） */
 function doSearch() {
+  if (keywordTimer) {
+    clearTimeout(keywordTimer);
+    keywordTimer = null;
+  }
   store.load({ page: 1, keyword: keyword.value });
 }
-/** 回车直接触发查询 */
-function onKeywordEnter() {
-  doSearch();
+
+/** 输入过程中防抖查询，点击查询 / 回车时立即执行 */
+function onKeywordInput() {
+  if (keywordTimer) clearTimeout(keywordTimer);
+  keywordTimer = setTimeout(doSearch, 300);
 }
 
 /** 分页切换时重新查询 */
@@ -455,6 +465,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (keywordTimer) clearTimeout(keywordTimer);
   if (recording.value) {
     discardRecording = true;
     stopRecord();
@@ -463,6 +474,10 @@ onBeforeUnmount(() => {
   releasePendingUrls();
 });
 async function handleReset() {
+  if (keywordTimer) {
+    clearTimeout(keywordTimer);
+    keywordTimer = null;
+  }
   keyword.value = '';
   await store.load({ page: 1 });
   message.success('已重置筛选');
@@ -504,37 +519,20 @@ function confirmDelete(record: Speaker) {
 
 <template>
   <div class="page">
-    <a-card class="toolbar" variant="borderless">
-      <div class="toolbar-inner">
-        <a-form layout="inline" class="filter-form" @submit.prevent>
-          <a-form-item label="关键词" class="grow-item">
-            <a-input
-              v-model:value="keyword"
-              placeholder="姓名 / 描述"
-              allow-clear
-              @press-enter="onKeywordEnter"
-              @change="doSearch"
-            >
-              <template #prefix><SearchOutlined /></template>
-            </a-input>
-          </a-form-item>
-          <a-form-item class="btn-item">
-            <a-space>
-              <a-button type="primary" @click="doSearch">
-                <SearchOutlined />查询
-              </a-button>
-              <a-button @click="handleReset">
-                <ReloadOutlined />重置
-              </a-button>
-              <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
-              <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
-                <a-button><UploadOutlined />导入</a-button>
-              </a-upload>
-            </a-space>
-          </a-form-item>
-        </a-form>
-      </div>
-    </a-card>
+    <FilterBar @search="doSearch" @reset="handleReset">
+      <FilterField label="关键词">
+        <a-input v-model:value="keyword" placeholder="姓名 / 描述" allow-clear @change="onKeywordInput">
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+      </FilterField>
+
+      <template #actions>
+        <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
+        <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
+          <a-button><UploadOutlined />导入</a-button>
+        </a-upload>
+      </template>
+    </FilterBar>
 
     <a-card variant="borderless" class="table-card">
       <a-table
@@ -653,36 +651,6 @@ function confirmDelete(record: Speaker) {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-.toolbar {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 12px 16px;
-}
-.toolbar :deep(.ant-form-item-label > label) {
-  color: var(--color-text-secondary);
-}
-.filter-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-}
-.filter-form .grow-item {
-  margin-right: 0;
-}
-.filter-form :deep(.grow-item .ant-form-item-control) {
-  width: 240px;
-  max-width: 100%;
-}
-.filter-form .btn-item {
-  margin-right: 0;
-}
-@media (max-width: 768px) {
-  .filter-form .grow-item {
-    flex-basis: 100%;
-  }
 }
 .table-card {
   background: var(--color-surface);

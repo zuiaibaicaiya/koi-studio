@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { reactive, ref, onMounted, watch } from 'vue';
+import { reactive, ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { App } from 'antdv-next';
+import FilterBar from '../../components/FilterBar.vue';
+import FilterField from '../../components/FilterField.vue';
 import {
   useMeetingStore,
   type Meeting,
@@ -11,7 +13,6 @@ import { exportMeetingById } from '../../utils/exportMeeting';
 import {
   DeleteOutlined,
   SearchOutlined,
-  ReloadOutlined,
   DownloadOutlined,
   EyeOutlined,
   PlusOutlined,
@@ -39,7 +40,6 @@ const meetingColumns = [
 ];
 
 /* ---- 搜索与分页 ---- */
-const searchModel = reactive({});
 const meetingKeyword = ref('');
 const meetingTimeRange = ref<[string, string] | null>(null);
 const meetingStatusFilter = ref<'' | UIMeetingStatus>('');
@@ -97,11 +97,6 @@ function onMeetingPageChange(page: number, pageSize: number) {
   loadMeetings();
 }
 
-watch(meetingKeyword, doSearchMeeting);
-watch(meetingTimeRange, doSearchMeeting);
-watch(typeFilter, doSearchMeeting);
-watch(meetingStatusFilter, doSearchMeeting);
-
 /* ---- 会议操作 ---- */
 
 async function handleMeetingDelete(record: Meeting) {
@@ -151,70 +146,34 @@ onMounted(loadMeetings);
 
 <template>
   <div class="page">
-    <!-- ==================== 工具栏（合并实时会议与音频转写） ==================== -->
-    <a-card class="toolbar" variant="borderless">
-      <a-form
-        class="filter-form"
-        layout="horizontal"
-        :model="searchModel"
-        :label-col="{ span: 6 }"
-        :wrapper-col="{ span: 18 }"
-        :colon="false"
-        @finish="doSearchMeeting"
-      >
-        <a-row :gutter="[8, 8]">
-          <a-col :xs="24" :sm="12" :md="8">
-            <a-form-item label="类型">
-              <a-select v-model:value="typeFilter" :options="typeOptions" style="width: 100%" />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :sm="12" :md="8">
-            <a-form-item label="关键词">
-              <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear style="width: 100%">
-                <template #prefix><SearchOutlined /></template>
-              </a-input>
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :sm="12" :md="8">
-            <a-form-item label="状态">
-              <a-select
-                v-model:value="meetingStatusFilter"
-                :options="statusOptions"
-                placeholder="全部"
-                allow-clear
-                style="width: 100%"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :sm="12" :md="8">
-            <a-form-item label="时间段" class="time-range-item">
-              <a-range-picker
-                v-model:value="meetingTimeRange"
-                format="YYYY-MM-DD"
-                value-format="YYYY-MM-DD"
-                :placeholder="['开始日期', '结束日期']"
-                style="width: 100%"
-              />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :sm="12" :md="8" class="toolbar-actions-col">
-            <a-form-item :label="null">
-              <a-space class="toolbar-actions">
-                <a-button @click="handleMeetingReset">
-                  <ReloadOutlined />重置
-                </a-button>
-                <a-button type="primary" html-type="submit">
-                  <SearchOutlined />搜索
-                </a-button>
-                <a-button type="dashed" @click="goCreateTranscription">
-                  <PlusOutlined />新建转写
-                </a-button>
-              </a-space>
-            </a-form-item>
-          </a-col>
-        </a-row>
-      </a-form>
-    </a-card>
+    <!-- ==================== 筛选 + 操作（合并实时会议与音频转写） ==================== -->
+    <FilterBar @search="doSearchMeeting" @reset="handleMeetingReset">
+      <FilterField label="类型">
+        <a-select v-model:value="typeFilter" :options="typeOptions" />
+      </FilterField>
+      <FilterField label="关键词">
+        <a-input v-model:value="meetingKeyword" placeholder="会议名称 / 参会人员" allow-clear>
+          <template #prefix><SearchOutlined /></template>
+        </a-input>
+      </FilterField>
+      <FilterField label="状态">
+        <a-select v-model:value="meetingStatusFilter" :options="statusOptions" placeholder="全部" allow-clear />
+      </FilterField>
+      <FilterField label="时间段" :width="300">
+        <a-range-picker
+          v-model:value="meetingTimeRange"
+          format="YYYY-MM-DD"
+          value-format="YYYY-MM-DD"
+          :placeholder="['开始日期', '结束日期']"
+        />
+      </FilterField>
+
+      <template #actions>
+        <a-button type="dashed" @click="goCreateTranscription">
+          <PlusOutlined />新建转写
+        </a-button>
+      </template>
+    </FilterBar>
 
     <!-- ==================== 数据表格 ==================== -->
     <a-card variant="borderless" class="table-card">
@@ -271,36 +230,6 @@ onMounted(loadMeetings);
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-/* ---- 工具栏 ---- */
-.toolbar {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
-}
-.toolbar :deep(.ant-form-item-label > label) {
-  color: var(--color-text-secondary);
-}
-.filter-form {
-  padding: 8px 0 4px;
-}
-.filter-form :deep(.ant-form-item) {
-  margin-bottom: 0;
-}
-/* 仅“时间段”项：控件跟随列宽，标签仍与控件同行 */
-.filter-form :deep(.time-range-item .ant-picker) {
-  width: 100%;
-  min-width: 0;
-}
-.filter-form :deep(.time-range-item .ant-picker-input) {
-  min-width: 0;
-}
-.toolbar-actions-col {
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-start;
 }
 
 /* ---- 表格 ---- */
