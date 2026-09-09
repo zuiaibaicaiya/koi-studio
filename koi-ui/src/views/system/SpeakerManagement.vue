@@ -526,15 +526,17 @@ function confirmDelete(record: Speaker) {
         </a-input>
       </FilterField>
 
-      <template #actions>
-        <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
-        <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
-          <a-button><UploadOutlined />导入</a-button>
-        </a-upload>
-      </template>
     </FilterBar>
 
     <a-card variant="borderless" class="table-card">
+      <template #extra>
+        <a-space wrap :size="8">
+          <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
+          <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
+            <a-button><UploadOutlined />导入</a-button>
+          </a-upload>
+        </a-space>
+      </template>
       <a-table
         :columns="columns"
         :data-source="store.list"

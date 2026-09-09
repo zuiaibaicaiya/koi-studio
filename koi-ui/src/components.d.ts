@@ -18,7 +18,6 @@ declare module 'vue' {
     ABreadcrumbItem: typeof import('antdv-next')['BreadcrumbItem']
     AButton: typeof import('antdv-next')['Button']
     ACard: typeof import('antdv-next')['Card']
-    ACheckbox: typeof import('antdv-next')['Checkbox']
     ACol: typeof import('antdv-next')['Col']
     AConfigProvider: typeof import('antdv-next')['ConfigProvider']
     ADrawer: typeof import('antdv-next')['Drawer']
@@ -40,12 +39,10 @@ declare module 'vue' {
     AModal: typeof import('antdv-next')['Modal']
     AProgress: typeof import('antdv-next')['Progress']
     ARadio: typeof import('antdv-next')['Radio']
-    ARadioButton: typeof import('antdv-next')['RadioButton']
     ARadioGroup: typeof import('antdv-next')['RadioGroup']
     ARangePicker: typeof import('antdv-next')['DateRangePicker']
     ARow: typeof import('antdv-next')['Row']
     ASelect: typeof import('antdv-next')['Select']
-    ASkeleton: typeof import('antdv-next')['Skeleton']
     ASpace: typeof import('antdv-next')['Space']
     ASpin: typeof import('antdv-next')['Spin']
     ATable: typeof import('antdv-next')['Table']
@@ -60,6 +57,7 @@ declare module 'vue' {
     FilterField: typeof import('./components/FilterField.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    TableToolbar: typeof import('./components/TableToolbar.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
   }
 }

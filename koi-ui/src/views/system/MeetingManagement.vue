@@ -168,15 +168,15 @@ onMounted(loadMeetings);
         />
       </FilterField>
 
-      <template #actions>
-        <a-button type="dashed" @click="goCreateTranscription">
-          <PlusOutlined />新建转写
-        </a-button>
-      </template>
     </FilterBar>
 
     <!-- ==================== 数据表格 ==================== -->
     <a-card variant="borderless" class="table-card">
+      <template #extra>
+        <a-button type="dashed" @click="goCreateTranscription">
+          <PlusOutlined />新建转写
+        </a-button>
+      </template>
       <a-spin :spinning="store.loading">
         <a-table
           :columns="meetingColumns"

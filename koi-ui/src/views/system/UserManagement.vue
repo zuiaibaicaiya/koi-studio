@@ -374,18 +374,20 @@ const beforeUpload: UploadProps['beforeUpload'] = async (file) => {
         <a-select v-model:value="statusFilter" :options="statusOptions" placeholder="全部" allow-clear />
       </FilterField>
 
-      <template #actions>
-        <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
-        <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
-          <a-button :loading="importLoading"><UploadOutlined />导入</a-button>
-        </a-upload>
-        <a-button @click="handleExport"><DownloadOutlined />导出</a-button>
-        <a-button @click="fetchList"><ReloadOutlined />刷新</a-button>
-      </template>
     </FilterBar>
 
     <!-- 表格 -->
     <a-card variant="borderless" class="table-card">
+      <template #extra>
+        <a-space wrap :size="8">
+          <a-button type="primary" @click="openCreate"><PlusOutlined />新增</a-button>
+          <a-upload :before-upload="beforeUpload" :show-upload-list="false" accept=".csv">
+            <a-button :loading="importLoading"><UploadOutlined />导入</a-button>
+          </a-upload>
+          <a-button @click="handleExport"><DownloadOutlined />导出</a-button>
+          <a-button @click="fetchList"><ReloadOutlined />刷新</a-button>
+        </a-space>
+      </template>
       <a-table
         :columns="columns"
         :data-source="dataSource"

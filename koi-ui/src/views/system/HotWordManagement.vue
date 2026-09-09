@@ -324,17 +324,19 @@ function confirmRemoveWord(record: LibraryWord) {
         </a-input>
       </FilterField>
 
-      <template #actions>
-        <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
-          <a-button :loading="importing"><UploadOutlined />导入</a-button>
-        </a-upload>
-        <a-button @click="downloadTemplate"><FileExcelOutlined />模板导出</a-button>
-        <a-button @click="loadLibraries"><ReloadOutlined />刷新</a-button>
-      </template>
     </FilterBar>
 
     <!-- 热词库表格 -->
     <a-card class="table-card" variant="borderless">
+      <template #extra>
+        <a-space wrap :size="8">
+          <a-upload :before-upload="libBeforeUpload" :show-upload-list="false" accept=".xlsx,.xls">
+            <a-button :loading="importing"><UploadOutlined />导入</a-button>
+          </a-upload>
+          <a-button @click="downloadTemplate"><FileExcelOutlined />模板导出</a-button>
+          <a-button @click="loadLibraries"><ReloadOutlined />刷新</a-button>
+        </a-space>
+      </template>
       <a-table
         row-key="id"
         :columns="libColumns"
