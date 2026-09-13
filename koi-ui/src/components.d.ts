@@ -39,6 +39,7 @@ declare module 'vue' {
     AModal: typeof import('antdv-next')['Modal']
     AProgress: typeof import('antdv-next')['Progress']
     ARadio: typeof import('antdv-next')['Radio']
+    ARadioButton: typeof import('antdv-next')['RadioButton']
     ARadioGroup: typeof import('antdv-next')['RadioGroup']
     ARangePicker: typeof import('antdv-next')['DateRangePicker']
     ARow: typeof import('antdv-next')['Row']
@@ -57,7 +58,7 @@ declare module 'vue' {
     FilterField: typeof import('./components/FilterField.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
-    TableToolbar: typeof import('./components/TableToolbar.vue')['default']
     ThemeToggle: typeof import('./components/ThemeToggle.vue')['default']
+    TitleBar: typeof import('./components/TitleBar.vue')['default']
   }
 }

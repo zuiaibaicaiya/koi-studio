@@ -761,7 +761,7 @@ watch(
   max-width: 1080px;
   margin: 0 auto;
   padding: 16px 20px 16px;
-  height: 100vh;
+  height: calc(100vh - var(--titlebar-height));
   display: flex;
   flex-direction: column;
   box-sizing: border-box;

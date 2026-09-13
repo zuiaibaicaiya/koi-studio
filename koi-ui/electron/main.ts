@@ -55,6 +55,37 @@ const CHANNEL = {
   getSelection: 'capture:get-selection',
 } as const;
 
+/* ---------- 自绘标题栏（VS Code 风格 window chrome） ---------- */
+
+/** 自绘标题栏高度（px），必须与渲染进程 --titlebar-height / windowControls.ts 保持一致 */
+const TITLE_BAR_HEIGHT = 36;
+
+/** macOS 红绿灯窗口按钮的尺寸（用于垂直居中计算） */
+const TRAFFIC_LIGHT_SIZE = 12;
+
+/** 窗口控制相关 IPC 通道 */
+const WINDOW_CHANNEL = {
+  platform: 'window:get-platform',
+  state: 'window:get-state',
+  stateChanged: 'window:state-changed',
+  setOverlay: 'window:set-title-bar-overlay',
+  minimize: 'window:minimize',
+  toggleMaximize: 'window:toggle-maximize',
+  close: 'window:close',
+} as const;
+
+interface WindowState {
+  maximized: boolean;
+  fullScreen: boolean;
+  focused: boolean;
+}
+
+interface TitleBarOverlay {
+  color?: string;
+  symbolColor?: string;
+  height?: number;
+}
+
 let mainWindow: BrowserWindow | null = null;
 /** 权限引导弹窗去重，避免同一权限反复弹出 */
 const permissionPromptPending = new Set<MediaType>();
@@ -338,12 +369,72 @@ const registerCaptureIpc = (): void => {
   ipcMain.handle(CHANNEL.getSelection, (): CaptureSelection => captureSelection);
 };
 
+/* ---------- 窗口状态与窗口控制 IPC ---------- */
+
+const getWindowState = (): WindowState => ({
+  maximized: mainWindow?.isMaximized() ?? false,
+  fullScreen: mainWindow?.isFullScreen() ?? false,
+  focused: mainWindow?.isFocused() ?? true,
+});
+
+/** 把窗口状态推送给渲染进程，供自绘标题栏同步最大化/全屏/聚焦态 */
+const emitWindowState = (): void => {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(WINDOW_CHANNEL.stateChanged, getWindowState());
+};
+
+const registerWindowIpc = (): void => {
+  ipcMain.handle(WINDOW_CHANNEL.platform, (): NodeJS.Platform => process.platform);
+
+  ipcMain.handle(WINDOW_CHANNEL.state, (): WindowState => getWindowState());
+
+  ipcMain.handle(WINDOW_CHANNEL.minimize, () => mainWindow?.minimize());
+
+  ipcMain.handle(WINDOW_CHANNEL.toggleMaximize, () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMaximized()) mainWindow.unmaximize();
+    else mainWindow.maximize();
+  });
+
+  ipcMain.handle(WINDOW_CHANNEL.close, () => mainWindow?.close());
+
+  // 主题切换时同步 Window Controls Overlay 配色；macOS 走原生红绿灯，无需覆盖层
+  ipcMain.handle(WINDOW_CHANNEL.setOverlay, (_event, overlay: TitleBarOverlay = {}) => {
+    if (IS_MAC || !mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setTitleBarOverlay({
+      color: overlay.color,
+      symbolColor: overlay.symbolColor,
+      // height 必须为整数，否则 Electron 会忽略该次设置
+      height: Math.round(overlay.height ?? TITLE_BAR_HEIGHT),
+    });
+  });
+};
+
 /* ============================================================
  * 二、窗口与应用生命周期
  * ========================================================== */
 
 const createWindow = async () => {
   const config: BrowserWindowConstructorOptions = {
+    // 移除系统默认标题栏，由渲染进程自绘（VS Code 风格）
+    titleBarStyle: 'hidden',
+    // macOS：保留原生红绿灯，并让其垂直居中于自绘标题栏
+    // Windows / Linux：通过 Window Controls Overlay 提供原生窗口控件（渲染进程可用
+    // navigator.windowControlsOverlay / env(titlebar-area-*) 拿到标题栏安全区）
+    ...(IS_MAC
+      ? {
+          trafficLightPosition: {
+            x: 12,
+            y: Math.round((TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_SIZE) / 2),
+          },
+        }
+      : {
+          titleBarOverlay: {
+            color: '#ffffff',
+            symbolColor: 'rgba(0, 0, 0, 0.88)',
+            height: TITLE_BAR_HEIGHT,
+          },
+        }),
     webPreferences: {
       nodeIntegration: true,
       webSecurity: false,
@@ -354,6 +445,20 @@ const createWindow = async () => {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+  // 最大化 / 全屏 / 聚焦态变化时通知渲染进程，标题栏据此调整布局与样式
+  (
+    [
+      'maximize',
+      'unmaximize',
+      'enter-full-screen',
+      'leave-full-screen',
+      'focus',
+      'blur',
+    ] as const
+  ).forEach((event) => {
+    mainWindow?.on(event, emitWindowState);
+  });
+  mainWindow.webContents.on('did-finish-load', emitWindowState);
   if (process.env['ELECTRON_RENDERER_URL']) {
     await mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']).then(() => {
       mainWindow?.webContents.openDevTools({ mode: 'bottom' });
@@ -401,6 +506,7 @@ if (!gotTheLock) {
 
     registerSessionHandlers();
     registerCaptureIpc();
+    registerWindowIpc();
 
     await createWindow();
   });

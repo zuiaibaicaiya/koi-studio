@@ -59,6 +59,12 @@
   --layout-gutter: 24px;          /* 页面横向留白基准 */
   --layout-gap: 16px;             /* 卡片间距 */
 
+  /* 自绘标题栏：高度需与 electron/main.ts、services/windowControls.ts 保持一致 */
+  --titlebar-height: 36px;
+  /* 原生窗口控件（Window Controls Overlay）安全区，运行时由 JS 写入实际像素值 */
+  --wco-left: 0px;
+  --wco-right: 0px;
+
   /* 首页背景：分层柔光晕，统一由页面引用 */
   --home-bg:
     radial-gradient(900px 520px at 88% -8%, var(--color-brand-soft), transparent 62%),

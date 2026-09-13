@@ -90,7 +90,8 @@ function goHome() {
 
 <style scoped>
 .basic-layout {
-  min-height: 100vh;
+  /* 视口高度减去自绘标题栏高度，避免出现多余的滚动条 */
+  min-height: calc(100vh - var(--titlebar-height));
   background: var(--color-bg);
 }
 .sider {

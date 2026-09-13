@@ -779,7 +779,7 @@ onBeforeUnmount(() => {
    ========================================== */
 .live-create {
   position: relative;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--titlebar-height));
   box-sizing: border-box;
   padding: 28px 24px 56px;
   color: var(--color-text);

@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import type { ThemeConfig } from 'antdv-next';
 import { theme, App as AntdApp } from 'antdv-next';
 import zhCN from 'antdv-next/locale/zh_CN';
+import TitleBar from './components/TitleBar.vue';
 import { useThemeStore } from './store/theme';
 
 const themeStore = useThemeStore();
@@ -94,7 +95,30 @@ const antdTheme = computed<ThemeConfig>(() => {
 <template>
   <a-config-provider :theme="antdTheme" :locale="zhCN">
     <AntdApp>
-      <router-view />
+      <div class="app-shell">
+        <!-- 自绘标题栏：占据窗口顶部，作为全局窗口拖拽区 -->
+        <TitleBar />
+        <div class="app-body">
+          <router-view />
+        </div>
+      </div>
     </AntdApp>
   </a-config-provider>
 </template>
+
+<style scoped>
+/* 整个应用固定为视口高度：标题栏 + 内容区，内容区自行滚动，
+   避免页面级 100vh 把窗口撑高到标题栏之外 */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+</style>

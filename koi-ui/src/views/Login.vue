@@ -93,7 +93,7 @@ function onLoginFailed() {
 <style scoped>
 .login-page {
   display: flex;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--titlebar-height));
   align-items: center;
   justify-content: center;
   background: radial-gradient(

@@ -947,7 +947,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--titlebar-height));
   box-sizing: border-box;
   padding: 20px 24px 32px;
   max-width: 1200px;
