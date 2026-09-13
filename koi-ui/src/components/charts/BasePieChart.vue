@@ -6,7 +6,8 @@ const props = defineProps<{
   height?: number;
 }>();
 
-const colors = ['#2f54eb', '#52c41a', '#faad14', '#ff4d4f', '#722ed1', '#13c2c2'];
+// 首位取主题品牌色（SVG 属性支持 CSS 变量），其余保持语义区分度
+const colors = ['var(--color-brand)', '#52c41a', '#faad14', '#ff4d4f', '#722ed1', '#13c2c2'];
 const R = 70;
 const C = 2 * Math.PI * R;
 const total = computed(() => props.data.reduce((s, d) => s + d.value, 0) || 1);

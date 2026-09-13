@@ -42,7 +42,8 @@ const isDark = computed(() => themeStore.isDark);
   transition: background 0.25s ease;
 }
 .theme-toggle-track.is-dark {
-  background: #2a2e3a;
+  /* 深色下轨道取中性次级边框色，避免写死与主题脱节的深蓝灰 */
+  background: var(--color-border-secondary);
   justify-content: flex-end;
 }
 .theme-toggle-thumb {

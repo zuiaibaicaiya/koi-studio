@@ -5,17 +5,27 @@ import { theme, App as AntdApp } from 'antdv-next';
 import zhCN from 'antdv-next/locale/zh_CN';
 import TitleBar from './components/TitleBar.vue';
 import { useThemeStore } from './store/theme';
+import { presetMeta } from './theme/presets';
 
 const themeStore = useThemeStore();
 themeStore.init();
 
-// 明/暗两套 antd 主题：通过官方算法（defaultAlgorithm / darkAlgorithm）派生所有组件样式，
-// 确保各控件在暗黑下正确渲染。主色采用 geekblue（沉稳企业蓝），叠加组件级 token 精修。
+/** 把 #rrggbb 转成带透明度的 rgba()，用于 antd 的聚焦光圈等需要淡色的令牌 */
+function withAlpha(hex: string, alpha: number) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+// antd 主题完全由「色系 × 明暗」推导：算法负责派生组件样式细节，主色/浅底/圆角来自色系，
+// 保证自定义布局与 antd 组件在 12 套外观下始终同源。
 const antdTheme = computed<ThemeConfig>(() => {
   const dark = themeStore.isDark;
+  const preset = presetMeta(themeStore.preset);
+  const r = preset.radius;
   const fontFamily =
     "'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif";
-  const brand = dark ? '#597ef7' : '#2f54eb';
+  const brand = dark ? preset.primaryDark : preset.primaryLight;
+  const brandSoft = dark ? preset.softDark : preset.softLight;
 
   return {
     algorithm: dark ? theme.darkAlgorithm : theme.defaultAlgorithm,
@@ -25,19 +35,19 @@ const antdTheme = computed<ThemeConfig>(() => {
       colorLink: brand,
       fontFamily,
       fontSize: 14,
-      borderRadius: 6,
+      borderRadius: r.md,
       wireframe: false,
     },
     components: {
       Button: {
         fontWeight: 500,
-        borderRadius: 6,
+        borderRadius: r.md,
         primaryShadow: 'none',
         defaultShadow: 'none',
         dangerShadow: 'none',
       },
       Card: {
-        borderRadiusLG: 8,
+        borderRadiusLG: r.lg,
         paddingLG: 24,
       },
       Table: {
@@ -49,43 +59,43 @@ const antdTheme = computed<ThemeConfig>(() => {
         cellPaddingBlock: 14,
       },
       Input: {
-        borderRadius: 6,
-        activeShadow: '0 0 0 2px rgba(47, 84, 235, 0.12)',
+        borderRadius: r.md,
+        activeShadow: `0 0 0 2px ${withAlpha(brand, 0.12)}`,
       },
       InputNumber: {
-        borderRadius: 6,
+        borderRadius: r.md,
       },
       Select: {
-        borderRadius: 6,
+        borderRadius: r.md,
       },
       DatePicker: {
-        borderRadius: 6,
+        borderRadius: r.md,
       },
       Menu: {
-        itemSelectedBg: dark ? '#111d2c' : '#f0f4ff',
-        itemSelectedColor: dark ? '#85a5ff' : '#2f54eb',
+        itemSelectedBg: brandSoft,
+        itemSelectedColor: brand,
         itemHoverBg: dark ? 'rgba(255,255,255,0.08)' : '#fafbfc',
-        itemBorderRadius: 6,
+        itemBorderRadius: r.md,
       },
       Modal: {
-        borderRadiusLG: 10,
+        borderRadiusLG: r.lg,
       },
       Drawer: {
-        borderRadiusLG: 10,
+        borderRadiusLG: r.lg,
       },
       Segmented: {
-        borderRadius: 6,
+        borderRadius: r.md,
         itemSelectedBg: dark ? '#1f1f1f' : '#ffffff',
       },
       Tag: {
-        borderRadiusSM: 4,
+        borderRadiusSM: r.sm,
       },
       Tabs: {
         itemActiveColor: brand,
         inkBarColor: brand,
       },
       Pagination: {
-        itemActiveBg: dark ? '#111d2c' : '#f0f4ff',
+        itemActiveBg: brandSoft,
       },
     },
   };

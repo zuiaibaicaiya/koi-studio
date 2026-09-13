@@ -836,13 +836,13 @@ onBeforeUnmount(() => {
   width: 52px;
   height: 52px;
   border-radius: var(--radius-md);
-  background: linear-gradient(135deg, #2f54eb 0%, #597ef7 100%);
+  background: linear-gradient(135deg, var(--color-brand) 0%, var(--color-accent) 100%);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 24px;
   color: #fff;
-  box-shadow: 0 4px 20px rgba(47, 84, 235, 0.3);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--color-brand) 32%, transparent);
   flex-shrink: 0;
 }
 .title-text h1 {
@@ -1095,9 +1095,9 @@ onBeforeUnmount(() => {
   font-size: 15px !important;
   font-weight: 600 !important;
   border-radius: var(--radius-md) !important;
-  background: linear-gradient(135deg, #2f54eb 0%, #597ef7 100%) !important;
+  background: linear-gradient(135deg, var(--color-brand) 0%, var(--color-accent) 100%) !important;
   border: none !important;
-  box-shadow: 0 4px 20px rgba(47, 84, 235, 0.3);
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--color-brand) 32%, transparent);
   transition: all var(--transition-base);
   letter-spacing: 0.02em;
 }
@@ -1199,7 +1199,7 @@ onBeforeUnmount(() => {
 .preview-progress-bar {
   height: 100%;
   border-radius: 2px;
-  background: linear-gradient(90deg, #2f54eb, #597ef7);
+  background: linear-gradient(90deg, var(--color-brand), var(--color-accent));
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 

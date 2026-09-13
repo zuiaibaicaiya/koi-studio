@@ -68,7 +68,7 @@ const gridLines = computed(() => {
       :y="b.y"
       :width="barW"
       :height="b.h"
-      :fill="color || '#2f54eb'"
+      :fill="color || 'var(--color-brand)'"
       rx="3"
     />
     <text

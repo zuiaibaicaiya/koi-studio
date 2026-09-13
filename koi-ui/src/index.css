@@ -10,25 +10,22 @@
 
 /* =========================================================================
    设计令牌系统 (Design Tokens)
-   商务办公主题：沉稳的 geekblue 主色 + 冷调中性灰辅助，分层柔影与慷慨留白。
-   自定义布局/页面与 antdv-next 组件在颜色、字号、圆角、边框、阴影上完全一致。
-   通过 [data-theme] 切换明/暗，暗色取值对齐 antdv-next 暗色算法。
+   外观由三层叠加而成：
+     1) 中性层 [data-theme]  —— 明暗决定表面/边框/文本/阴影；
+     2) 品牌层 [data-preset] —— 色系决定主色/浅底/强调色/深色侧栏底；
+     3) 形态层              —— 色系决定圆角尺度，由 store/theme.ts 写入 CSS 变量。
+   6 个色系 × 2 种明暗 = 12 套外观，各自都完整对齐 antdv-next 的组件样式。
    ========================================================================= */
 
-/* ---- 浅色（默认 · 商务办公） ---- */
+/* =========================================================================
+   ① 中性层 —— 浅色为基准（同时兜底首屏：JS 未执行时也不会缺令牌）
+   ========================================================================= */
 :root,
 [data-theme='light'] {
-  /* 品牌/语义色 —— geekblue 色系，沉稳企业感 */
-  --color-primary: #2f54eb;
-  --color-brand: #2f54eb;
-  --color-brand-hover: #597ef7;
-  --color-brand-active: #1d39c4;
-  --color-brand-soft: #f0f4ff;    /* 对齐 geekblue-1，浅蓝底 */
-  --color-accent: #597ef7;        /* 仅用于少量品牌修饰（如 logo 渐变） */
+  /* 语义色 —— 成功/警告/危险在各色系下保持一致，状态语义不随主题漂移 */
   --color-success: #52c41a;
   --color-warning: #faad14;
   --color-error: #ff4d4f;
-  --color-info: #2f54eb;
 
   /* 中性表面 —— 冷调中性灰，贴合办公场景 */
   --color-bg: #f5f7fa;            /* Layout 背景：冷调灰白 */
@@ -45,8 +42,7 @@
   --color-text-quaternary: rgba(0, 0, 0, 0.25);
   --color-text-inverse: #ffffff;
 
-  /* 侧边栏（经典商务 Admin 深色，略带蓝调） */
-  --color-sider-bg: #001529;
+  /* 侧边栏文字：浅色下侧栏是 surface，深色下侧栏是各色系的深底 */
   --color-sider-text: rgba(255, 255, 255, 0.65);
   --color-sider-text-muted: rgba(255, 255, 255, 0.45);
 
@@ -65,7 +61,7 @@
   --wco-left: 0px;
   --wco-right: 0px;
 
-  /* 首页背景：分层柔光晕，统一由页面引用 */
+  /* 首页背景：分层柔光晕。颜色全部引用品牌层，换色系时自动跟着变 */
   --home-bg:
     radial-gradient(900px 520px at 88% -8%, var(--color-brand-soft), transparent 62%),
     radial-gradient(760px 480px at 4% 108%, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 60%),
@@ -73,19 +69,10 @@
     var(--color-bg);
 }
 
-/* ---- 深色（对齐 antdv-next 暗色令牌） ---- */
+/* =========================================================================
+   ② 中性层 —— 深色（对齐 antdv-next 暗色令牌）
+   ========================================================================= */
 [data-theme='dark'] {
-  --color-primary: #597ef7;
-  --color-brand: #597ef7;
-  --color-brand-hover: #85a5ff;
-  --color-brand-active: #2f54eb;
-  --color-brand-soft: #111d2c;
-  --color-accent: #85a5ff;
-  --color-success: #52c41a;
-  --color-warning: #faad14;
-  --color-error: #ff4d4f;
-  --color-info: #597ef7;
-
   --color-bg: #000000;
   --color-surface: #141414;
   --color-surface-2: #1f1f1f;
@@ -99,16 +86,9 @@
   --color-text-quaternary: rgba(255, 255, 255, 0.3);
   --color-text-inverse: #ffffff;
 
-  --color-sider-bg: #000000;
-  --color-sider-text: rgba(255, 255, 255, 0.65);
-  --color-sider-text-muted: rgba(255, 255, 255, 0.45);
-
   --shadow-sm: 0 1px 2px -2px rgba(0, 0, 0, 0.48), 0 3px 6px 0 rgba(0, 0, 0, 0.32);
   --shadow-md: 0 6px 16px 0 rgba(0, 0, 0, 0.32);
   --shadow-lg: 0 12px 32px 0 rgba(0, 0, 0, 0.4);
-
-  --layout-gutter: 24px;
-  --layout-gap: 16px;
 
   /* 首页背景（深色）：更深、低饱和的柔光晕 */
   --home-bg:
@@ -116,6 +96,147 @@
     radial-gradient(760px 480px at 4% 108%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 60%),
     radial-gradient(120% 80% at 50% 0%, color-mix(in srgb, var(--color-brand-soft) 55%, transparent), transparent 70%),
     var(--color-bg);
+}
+
+/* =========================================================================
+   ③ 品牌层 —— 六个色系
+   每段只定义品牌相关令牌：主色及其 hover/active、浅底、强调色、选中底、深色侧栏底。
+   中性层沿用当前明暗取值，因此只需 6 段色系即可覆盖 12 套外观。
+   顺序与 key 必须与 src/theme/presets.ts 的 THEME_PRESETS 一致。
+   ========================================================================= */
+
+/* ---- 靛青（默认）· 蓝 · 沉稳理性 ---- */
+/* :root:not([data-preset]) 只在 JS 尚未写入色系时兜底，避免与其它色系段互相覆盖 */
+:root:not([data-preset]),
+[data-preset='indigo'] {
+  --color-primary: #2f54eb;
+  --color-brand: #2f54eb;
+  --color-brand-hover: #597ef7;
+  --color-brand-active: #1d39c4;
+  --color-brand-soft: #f0f4ff;
+  --color-accent: #597ef7;
+  --color-info: #2f54eb;
+  --color-sider-bg: #001529;
+}
+[data-preset='indigo'][data-theme='dark'] {
+  --color-primary: #597ef7;
+  --color-brand: #597ef7;
+  --color-brand-hover: #85a5ff;
+  --color-brand-active: #2f54eb;
+  --color-brand-soft: #111d2c;
+  --color-accent: #85a5ff;
+  --color-info: #597ef7;
+  --color-sider-bg: #000000;
+}
+
+/* ---- 鲛青 · 青 · 清透冷静 ---- */
+[data-preset='teal'] {
+  --color-primary: #0e7490;
+  --color-brand: #0e7490;
+  --color-brand-hover: #2b96b3;
+  --color-brand-active: #0a5a70;
+  --color-brand-soft: #e6f5f9;
+  --color-accent: #2b96b3;
+  --color-info: #0e7490;
+  --color-sider-bg: #04252e;
+}
+[data-preset='teal'][data-theme='dark'] {
+  --color-primary: #38a3bd;
+  --color-brand: #38a3bd;
+  --color-brand-hover: #63bed5;
+  --color-brand-active: #2b8ba3;
+  --color-brand-soft: #082a33;
+  --color-accent: #63bed5;
+  --color-info: #38a3bd;
+  --color-sider-bg: #041a20;
+}
+
+/* ---- 青瓷 · 绿 · 自然柔和 ---- */
+[data-preset='celadon'] {
+  --color-primary: #2e7d63;
+  --color-brand: #2e7d63;
+  --color-brand-hover: #46a183;
+  --color-brand-active: #236350;
+  --color-brand-soft: #e9f4ef;
+  --color-accent: #46a183;
+  --color-info: #2e7d63;
+  --color-sider-bg: #0b241c;
+}
+[data-preset='celadon'][data-theme='dark'] {
+  --color-primary: #46a183;
+  --color-brand: #46a183;
+  --color-brand-hover: #6cbda1;
+  --color-brand-active: #38866b;
+  --color-brand-soft: #0e2a21;
+  --color-accent: #6cbda1;
+  --color-info: #46a183;
+  --color-sider-bg: #071a14;
+}
+
+/* ---- 绛紫 · 紫 · 典雅个性 ---- */
+[data-preset='plum'] {
+  --color-primary: #722ed1;
+  --color-brand: #722ed1;
+  --color-brand-hover: #9254de;
+  --color-brand-active: #531dab;
+  --color-brand-soft: #f6f0ff;
+  --color-accent: #9254de;
+  --color-info: #722ed1;
+  --color-sider-bg: #1a0b2e;
+}
+[data-preset='plum'][data-theme='dark'] {
+  --color-primary: #9254de;
+  --color-brand: #9254de;
+  --color-brand-hover: #b37feb;
+  --color-brand-active: #722ed1;
+  --color-brand-soft: #1e1430;
+  --color-accent: #b37feb;
+  --color-info: #9254de;
+  --color-sider-bg: #120a1f;
+}
+
+/* ---- 琥珀 · 金 · 温暖活力 ---- */
+[data-preset='amber'] {
+  --color-primary: #b3760f;
+  --color-brand: #b3760f;
+  --color-brand-hover: #d99a25;
+  --color-brand-active: #8f5e0c;
+  --color-brand-soft: #fdf4e3;
+  --color-accent: #d99a25;
+  --color-info: #b3760f;
+  --color-sider-bg: #2a1d08;
+}
+[data-preset='amber'][data-theme='dark'] {
+  --color-primary: #c48f28;
+  --color-brand: #c48f28;
+  --color-brand-hover: #e0ab45;
+  --color-brand-active: #a9791d;
+  --color-brand-soft: #2c2110;
+  --color-accent: #e0ab45;
+  --color-info: #c48f28;
+  --color-sider-bg: #1c1408;
+}
+
+/* ---- 石墨 · 灰 · 极简专注 ---- */
+[data-preset='graphite'] {
+  --color-primary: #3c4351;
+  --color-brand: #3c4351;
+  --color-brand-hover: #545d6e;
+  --color-brand-active: #2b303a;
+  --color-brand-soft: #f1f2f4;
+  --color-accent: #6b7688;
+  --color-info: #3c4351;
+  --color-sider-bg: #14171c;
+}
+[data-preset='graphite'][data-theme='dark'] {
+  --color-primary: #64707f;
+  --color-brand: #64707f;
+  --color-brand-hover: #7d8794;
+  --color-brand-active: #525c69;
+  --color-brand-soft: #1c2026;
+  --color-accent: #8b96a5;
+  --color-info: #64707f;
+  --color-sider-bg: #0f1114;
 }
 
 /* ---- 暴露为 Tailwind 工具类 ---- */

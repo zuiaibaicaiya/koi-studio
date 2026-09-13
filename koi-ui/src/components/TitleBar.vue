@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import { useThemeStore } from '../store/theme';
 import { useAuthStore } from '../store/auth';
 import ThemeToggle from './ThemeToggle.vue';
+import ThemePalette from './ThemePalette.vue';
 import UserMenu from './UserMenu.vue';
 import {
   TITLE_BAR_HEIGHT,
@@ -104,6 +105,7 @@ watch(isDark, () => {
 
     <!-- 右侧：全局操作（原生窗口控件由主进程绘制，这里只需预留安全区） -->
     <div class="titlebar-side titlebar-side--end">
+      <ThemePalette class="titlebar-action" />
       <ThemeToggle class="titlebar-action" />
       <!-- 登录用户：仅一枚头像图标，点击弹出账号信息与退出登录 -->
       <UserMenu v-if="auth.isAuthenticated" />

@@ -46,12 +46,12 @@ onMounted(load);
 const overview = computed(() => stats.value?.overview);
 
 const cards = computed(() => [
-  { title: '用户总数', value: overview.value?.userTotal ?? 0, icon: TeamOutlined, color: '#2f54eb', to: 'users' },
+  { title: '用户总数', value: overview.value?.userTotal ?? 0, icon: TeamOutlined, color: 'var(--color-brand)', to: 'users' },
   { title: '启用用户', value: overview.value?.userActive ?? 0, icon: CheckCircleOutlined, color: '#13c2c2', to: 'users' },
   { title: '说话人总数', value: overview.value?.speakerTotal ?? 0, icon: SoundOutlined, color: '#52c41a', to: 'speakers' },
   { title: '热词总数', value: overview.value?.hotWordTotal ?? 0, icon: TagsOutlined, color: '#faad14', to: 'hotWords' },
   { title: '热词库', value: overview.value?.hotWordLibraryTotal ?? 0, icon: FileTextOutlined, color: '#722ed1', to: 'hotWords' },
-  { title: '会议总数', value: overview.value?.meetingTotal ?? 0, icon: VideoCameraOutlined, color: '#2f54eb', to: 'meetings' },
+  { title: '会议总数', value: overview.value?.meetingTotal ?? 0, icon: VideoCameraOutlined, color: 'var(--color-brand)', to: 'meetings' },
   { title: '进行中会议', value: overview.value?.meetingOngoing ?? 0, icon: PlayCircleOutlined, color: '#eb2f96', to: 'meetings' },
   { title: '转写总数', value: overview.value?.transcriptTotal ?? 0, icon: AudioOutlined, color: '#fa8c16', to: 'meetings' },
 ]);
@@ -155,7 +155,7 @@ function onReload() {
         <a-row :gutter="16" class="mt-16">
           <a-col :xs="24" :lg="12">
             <a-card title="近 7 日新增会议" class="chart-card">
-              <BaseLineChart :data="meetingTrend" color="#2f54eb" :height="240" />
+              <BaseLineChart :data="meetingTrend" color="var(--color-brand)" :height="240" />
             </a-card>
           </a-col>
           <a-col :xs="24" :lg="12">
