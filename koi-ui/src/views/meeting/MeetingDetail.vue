@@ -110,7 +110,10 @@
                 :title="audioSrc ? '点击播放此句' : ''"
                 @click="seekTo(item)"
               >
-                <a-avatar class="speaker-avatar" :style="{ backgroundColor: item.color }">
+                <a-avatar
+                  class="speaker-avatar"
+                  :style="{ backgroundColor: speakerPalette[item.colorIndex] }"
+                >
                   {{ item.speaker.charAt(0) }}
                 </a-avatar>
                 <div class="transcript-content">
@@ -154,8 +157,9 @@
           type="text"
           shape="circle"
           :disabled="!wave"
-          @click="skip(-5)"
           title="后退 5 秒"
+          aria-label="后退 5 秒"
+          @click="skip(-5)"
         >
           <template #icon><BackwardOutlined /></template>
         </a-button>
@@ -164,8 +168,9 @@
           type="text"
           shape="circle"
           :disabled="!wave"
-          @click="togglePlay"
+          :title="playing ? '暂停' : '播放'"
           :aria-label="playing ? '暂停' : '播放'"
+          @click="togglePlay"
         >
           <template #icon>
             <PauseCircleOutlined v-if="playing" />
@@ -177,32 +182,64 @@
           type="text"
           shape="circle"
           :disabled="!wave"
-          @click="skip(5)"
           title="前进 5 秒"
+          aria-label="前进 5 秒"
+          @click="skip(5)"
         >
           <template #icon><ForwardOutlined /></template>
         </a-button>
       </div>
       <div class="audio-main">
         <div class="audio-meta">
-          <span class="audio-time">{{ fmt(currentTime) }} / {{ fmt(duration) }}</span>
+          <span class="audio-time current">{{ fmt(currentTime) }}</span>
+          <span class="audio-hint">空格 播放/暂停 · ←/→ 5 秒</span>
+          <span class="audio-time total">{{ fmt(duration) }}</span>
         </div>
         <div
           ref="waveRef"
           class="waveform"
           :class="{ loading: !ready }"
-          @click="onWaveClick"
+          :title="ready ? '点击波形定位播放位置' : '音频加载中…'"
         ></div>
       </div>
-      <a-select
-        class="speed-select"
-        :value="speed"
-        :disabled="!wave"
-        size="small"
-        :popup-match-select-width="false"
-        :options="speeds.map((s) => ({ value: s, label: `${s}x` }))"
-        @change="onSpeedChange"
-      />
+      <div class="audio-side">
+        <!-- 倍速下拉：弹层给足宽度（避免选项文字被省略），右对齐使其向左展开，不压到音量键 -->
+        <a-select
+          class="speed-select"
+          :value="speed"
+          :disabled="!wave"
+          size="small"
+          variant="borderless"
+          placement="topRight"
+          :popup-match-select-width="108"
+          :options="speeds.map((s) => ({ value: s, label: `${s}x` }))"
+          @change="onSpeedChange"
+        />
+        <a-button
+          class="volume-btn"
+          type="text"
+          shape="circle"
+          :disabled="!wave"
+          :title="muted ? '取消静音' : '静音'"
+          :aria-label="muted ? '取消静音' : '静音'"
+          @click="toggleMute"
+        >
+          <template #icon>
+            <MutedOutlined v-if="muted || volume === 0" />
+            <SoundOutlined v-else />
+          </template>
+        </a-button>
+        <a-slider
+          class="volume-slider"
+          :value="muted ? 0 : volume"
+          :min="0"
+          :max="1"
+          :step="0.05"
+          :disabled="!wave"
+          :tooltip="{ open: false }"
+          @change="onVolumeChange"
+        />
+      </div>
     </footer>
   </div>
 </template>
@@ -225,17 +262,21 @@ import {
   ReloadOutlined,
   CheckCircleFilled,
   CloseCircleFilled,
+  MutedOutlined,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import WaveSurfer from 'wavesurfer.js';
 import { meetingApi, type MeetingDTO, type MeetingTranscriptDTO } from '../../services/meetingApi';
 import { exportMeetingById } from '../../utils/exportMeeting';
+import { useThemeStore } from '../../store/theme';
+import { presetMeta } from '../../theme/presets';
 
 const { message } = App.useApp();
 
 const route = useRoute();
 const router = useRouter();
+const themeStore = useThemeStore();
 
 const meetingId = computed(() => Number(route.params.id));
 
@@ -268,7 +309,8 @@ interface TranscriptItem {
   endMs: number;
   isFinal: boolean;
   clock: string;
-  color: string;
+  /** 说话人配色下标（见 speakerPalette）：颜色随主题实时变化，故只存下标 */
+  colorIndex: number;
   /** 词级时间轴；为空表示后端未提供 word_timestamps，此时整体使用段级时间 */
   words: WordSpan[];
 }
@@ -281,11 +323,75 @@ const STATUS: Record<MeetingDTO['status'], { text: string; color: string }> = {
 const statusText = (s: MeetingDTO['status']) => STATUS[s]?.text ?? '未知';
 const statusColor = (s: MeetingDTO['status']) => STATUS[s]?.color ?? 'default';
 
-const SPEAKER_COLORS = ['#2dd4bf', '#06b6d4', '#8b5cf6', '#f59e0b', '#ef4444', '#10b981', '#ec4899', '#3b82f6'];
-function speakerColor(name: string): string {
+// ---- 说话人配色：直接用主题色（当前色系的品牌色），而不是固定的一串颜色 ----
+/** 说话人头像分档数：同一主题色下用明度深浅区分不同说话人 */
+const SPEAKER_TONE_COUNT = 8;
+/** 头像可读区间：低于 0.3 近黑、高于 0.58 白字发灰，都不取 */
+const SPEAKER_L_MIN = 0.3;
+const SPEAKER_L_MAX = 0.58;
+/** 分档半幅：最深/最浅档相对主题色明度的偏移量 */
+const SPEAKER_TONE_HALF_SPREAD = 0.06;
+
+/** 兜底配色：仅在品牌色无法解析时使用 */
+const SPEAKER_FALLBACK = ['#2dd4bf', '#06b6d4', '#8b5cf6', '#f59e0b', '#ef4444', '#10b981', '#ec4899', '#3b82f6'];
+
+/** #rrggbb → HSL（h 为 0-360 度，s/l 为 0-1）；解析失败返回 null */
+function hexToHsl(hex: string): { h: number; s: number; l: number } | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const raw = m[1].length === 3 ? m[1].split('').map((c) => c + c).join('') : m[1];
+  const n = parseInt(raw, 16);
+  const r = ((n >> 16) & 255) / 255;
+  const g = ((n >> 8) & 255) / 255;
+  const b = (n & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return { h: 0, s: 0, l };
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h =
+    max === r ? ((g - b) / d + (g < b ? 6 : 0)) * 60 : max === g ? ((b - r) / d + 2) * 60 : ((r - g) / d + 4) * 60;
+  return { h, s, l };
+}
+
+/** HSL → #rrggbb */
+function hslToHex(h: number, s: number, l: number): string {
+  const hue = (((h % 360) + 360) % 360) / 30;
+  const a = s * Math.min(l, 1 - l);
+  const k = (n: number) => (n + hue) % 12;
+  const f = (n: number) => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+  const to = (v: number) => Math.round(Math.max(0, Math.min(1, v)) * 255).toString(16).padStart(2, '0');
+  return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
+}
+
+/**
+ * 说话人头像色板：色相与饱和度完全取自当前主题色（品牌色），只用明度深浅分档，
+ * 因此 6 套色系下头像就是该色系自己的颜色（靛青是蓝、青瓷是绿、石墨是灰），
+ * 同时不同说话人仍可通过深浅区分；色系或明暗切换时自动重算。
+ */
+const speakerPalette = computed<string[]>(() => {
+  const meta = presetMeta(themeStore.preset);
+  const base = hexToHsl(themeStore.isDark ? meta.primaryDark : meta.primaryLight);
+  if (!base) return SPEAKER_FALLBACK;
+  // 以主题色自身明度为中心，在可读区间内上下分档；半幅按剩余空间收敛，
+  // 避免深浅档被裁到边界后出现重复色（两个说话人撞色）。
+  const center = Math.min(
+    Math.max(base.l, SPEAKER_L_MIN + SPEAKER_TONE_HALF_SPREAD),
+    SPEAKER_L_MAX - SPEAKER_TONE_HALF_SPREAD,
+  );
+  const span = Math.min(SPEAKER_TONE_HALF_SPREAD, center - SPEAKER_L_MIN, SPEAKER_L_MAX - center);
+  const half = (SPEAKER_TONE_COUNT - 1) / 2;
+  return Array.from({ length: SPEAKER_TONE_COUNT }, (_, i) =>
+    hslToHex(base.h, base.s, center + ((i - half) / half) * span),
+  );
+});
+
+/** 由说话人姓名稳定映射到色板下标：同名同色，换页/重转写后依然一致 */
+function speakerColorIndex(name: string): number {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  return SPEAKER_COLORS[h % SPEAKER_COLORS.length];
+  return h % SPEAKER_TONE_COUNT;
 }
 
 /**
@@ -381,7 +487,7 @@ function toSegment(t: MeetingTranscriptDTO): TranscriptItem {
     endMs: t.end_ms,
     isFinal: t.is_final,
     clock: t.end_ms > t.start_ms ? `${formatOffset(t.start_ms)} - ${formatOffset(t.end_ms)}` : formatOffset(t.start_ms),
-    color: speakerColor(speaker),
+    colorIndex: speakerColorIndex(speaker),
     words,
   };
 }
@@ -481,6 +587,72 @@ const speeds = [0.75, 1, 1.25, 1.5, 2];
 const speedIndex = ref(1);
 const speed = computed(() => speeds[speedIndex.value]);
 
+// ---- 音量：本地持久化，重进详情页沿用上次设置 ----
+const VOLUME_STORAGE_KEY = 'koi:meeting-audio-volume';
+const volume = ref(readStoredVolume());
+const muted = ref(false);
+
+function readStoredVolume(): number {
+  try {
+    const raw = localStorage.getItem(VOLUME_STORAGE_KEY);
+    if (raw === null) return 1;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function applyVolume() {
+  const ws = wave.value;
+  if (!ws) return;
+  ws.setVolume(volume.value);
+  ws.setMuted(muted.value);
+}
+
+function toggleMute() {
+  if (!wave.value) return;
+  muted.value = !muted.value;
+  applyVolume();
+}
+
+function onVolumeChange(v: number) {
+  volume.value = v;
+  // 拖到 0 视为静音；从 0 往上拖自动解除静音
+  muted.value = v === 0;
+  try {
+    localStorage.setItem(VOLUME_STORAGE_KEY, String(v));
+  } catch {
+    // 隐私模式等场景写入失败可忽略，不影响本次播放
+  }
+  applyVolume();
+}
+
+/** 读取全局设计令牌的当前取值，供 canvas 波形取色（CSS 变量在 canvas 中不可用） */
+function cssVar(name: string, fallback: string): string {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v || fallback;
+}
+
+/** 把十六进制颜色转成带透明度的 rgba；非 hex（rgb()/命名色）原样返回，避免生成非法颜色 */
+function withAlpha(color: string, alpha: number): string {
+  const hex = color.trim().replace('#', '');
+  const full = hex.length === 3 ? hex.split('').map((c) => c + c).join('') : hex;
+  if (!/^[0-9a-f]{6}$/i.test(full)) return color;
+  const n = parseInt(full, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/** 波形配色跟随当前色系与明暗（不再硬编码靛蓝），切换主题时由 setOptions 实时刷新 */
+function wavePalette() {
+  const brand = cssVar('--color-brand', '#2f54eb');
+  return {
+    waveColor: withAlpha(brand, 0.3),
+    progressColor: brand,
+    cursorColor: cssVar('--color-brand-active', brand),
+  };
+}
+
 function fmt(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) sec = 0;
   const m = Math.floor(sec / 60);
@@ -516,20 +688,23 @@ function initWave() {
   if (!el || !audioSrc.value) return;
   const ws = WaveSurfer.create({
     container: el,
-    height: 56,
-    waveColor: 'rgba(99, 102, 241, 0.35)',
-    progressColor: '#6366f1',
-    cursorColor: '#f59e0b',
+    height: 44,
+    ...wavePalette(),
     cursorWidth: 2,
     barWidth: 2,
     barGap: 2,
     barRadius: 2,
     url: audioSrc.value,
   });
+  // 此处 wave.value 尚未赋值（在函数末尾才绑定），音量直接作用在实例上
+  ws.setVolume(volume.value);
+  ws.setMuted(muted.value);
   ws.on('ready', () => {
     ready.value = true;
     duration.value = ws.getDuration();
     ws.setPlaybackRate(speed.value, false);
+    // 音频元素就绪后再兜底一次（换源/重建后音量回到默认值的场景）
+    applyVolume();
   });
   ws.on('timeupdate', (t: number) => {
     currentTime.value = t;
@@ -626,10 +801,11 @@ function wordState(item: TranscriptItem, span: WordSpan): string {
 function isCJK(w: string): boolean {
   return /[一-鿿]/.test(w);
 }
-function onWaveClick() {
-  // 点击波形切换播放/暂停
-  togglePlay();
-}
+/**
+ * 点击波形只做定位（wavesurfer 内置 seek），不再切换播放/暂停：
+ * 原先的交互会让「想拖到某个位置继续听」的操作顺手把播放打断。
+ * 播放/暂停交给播放键与空格键，定位与播放状态互不干扰。
+ */
 function skip(seconds: number) {
   const ws = wave.value;
   if (!ws || !duration.value) return;
@@ -644,6 +820,34 @@ function onSpeedChange(v: number) {
     wave.value?.setPlaybackRate(speed.value, false);
   }
 }
+
+/**
+ * 键盘快捷键：空格 播放/暂停，←/→ 前后 5 秒。
+ * 输入框、下拉选择与按钮内的按键交还给组件自身处理（按钮用空格激活自身，不能被拦截两次）。
+ */
+function onKeydown(e: KeyboardEvent) {
+  if (!wave.value || e.metaKey || e.ctrlKey || e.altKey) return;
+  const target = e.target as HTMLElement | null;
+  if (target?.closest('input, textarea, [contenteditable], .ant-select, .ant-select-dropdown')) return;
+  if (e.key === ' ' || e.code === 'Space') {
+    if (target?.closest('button, a[href]')) return;
+    e.preventDefault();
+    togglePlay();
+  } else if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    skip(-5);
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    skip(5);
+  }
+}
+
+// 明暗/色系切换后重新取色，避免波形停留在旧主题的颜色上
+watch(
+  () => [themeStore.mode, themeStore.preset],
+  () => wave.value?.setOptions(wavePalette()),
+  { flush: 'post' },
+);
 
 function goBack() {
   // 优先回退到来源页（如从搜索/其他入口进入），无历史时再回会议列表
@@ -670,6 +874,7 @@ async function handleExport() {
 }
 
 onMounted(async () => {
+  window.addEventListener('keydown', onKeydown);
   await loadMeeting();
   await loadTranscripts();
 });
@@ -741,6 +946,7 @@ function pollRtProgress() {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', onKeydown);
   stopRtPoll();
   destroyWave();
 });
@@ -918,7 +1124,8 @@ watch(
   transition: background 0.15s ease;
 }
 .transcript-item:hover {
-  background: var(--color-hover, rgba(99, 102, 241, 0.06));
+  /* 用品牌色实时混色，替代原先恒为靛蓝的 --color-hover 兜底值 */
+  background: color-mix(in srgb, var(--color-brand) 6%, transparent);
 }
 /* 无音频：点击只会得到提示，展示为普通文本光标，不再误导可点击播放 */
 .transcript-item.no-audio {
@@ -941,16 +1148,18 @@ watch(
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 20px;
+  gap: 14px;
+  padding: 10px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  border-radius: var(--radius-xl, 12px);
+  /* 阴影走令牌：深色下不再是一层发灰的黑影 */
+  box-shadow: var(--shadow-md);
+  transition: border-color 0.2s ease;
   z-index: 50;
 }
 .audio-bar.playing {
-  border-color: var(--color-primary, #6366f1);
+  border-color: color-mix(in srgb, var(--color-brand) 45%, var(--color-border));
 }
 .audio-controls {
   display: flex;
@@ -959,65 +1168,106 @@ watch(
   flex: 0 0 auto;
 }
 .audio-bar .play-toggle,
-.audio-bar .ctrl-btn {
+.audio-bar .ctrl-btn,
+.audio-bar .volume-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-primary, #6366f1);
-  transition: transform 0.12s ease, color 0.12s ease;
+  color: var(--color-brand);
+  transition: transform 0.12s ease, color 0.12s ease, background 0.12s ease;
 }
 .audio-bar .ctrl-btn {
   font-size: 18px;
+  /* 前后 5 秒：横向加宽的胶囊形，圆形会被拉成椭圆 */
+  width: 46px;
+  height: 34px;
+  border-radius: 999px;
+}
+.audio-bar .play-toggle {
+  font-size: 36px;
+  width: 52px;
+  height: 52px;
+}
+.audio-bar .volume-btn {
+  font-size: 17px;
   width: 34px;
   height: 34px;
 }
-.audio-bar .play-toggle {
-  font-size: 34px;
-  width: 46px;
-  height: 46px;
+/* 播放中的状态：播放键带品牌色浅底，明暗两种外观下都成立 */
+.audio-bar.playing .play-toggle {
+  background: color-mix(in srgb, var(--color-brand) 16%, transparent);
 }
 .audio-bar :not(:disabled).ctrl-btn:hover,
-.audio-bar :not(:disabled).play-toggle:hover {
+.audio-bar :not(:disabled).play-toggle:hover,
+.audio-bar :not(:disabled).volume-btn:hover {
   transform: scale(1.12);
-  color: var(--color-primary-hover, #4f46e5);
+  color: var(--color-brand-hover);
 }
-.audio-bar .ctrl-btn :deep(svg) {
-  width: 1em;
-  height: 1em;
+.audio-bar :not(:disabled).ctrl-btn:active,
+.audio-bar :not(:disabled).play-toggle:active,
+.audio-bar :not(:disabled).volume-btn:active {
+  transform: scale(0.96);
 }
-.audio-bar .play-toggle :deep(svg) {
+/* 键盘可达：所有播放控制键有明确的焦点环 */
+.audio-bar .ctrl-btn:focus-visible,
+.audio-bar .play-toggle:focus-visible,
+.audio-bar .volume-btn:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+.audio-bar .ctrl-btn :deep(svg),
+.audio-bar .play-toggle :deep(svg),
+.audio-bar .volume-btn :deep(svg) {
   width: 1em;
   height: 1em;
 }
 .audio-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
+/* 时间轴：已播放时间靠左、总时长靠右，中间留给快捷键提示 */
 .audio-meta {
   display: flex;
-  align-items: baseline;
-  margin-bottom: 4px;
+  align-items: center;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
 }
 .audio-time {
   flex: 0 0 auto;
   font-size: 12px;
   color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
+}
+.audio-bar.playing .audio-time.current {
+  color: var(--color-brand);
+  font-weight: 600;
+}
+.audio-hint {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--color-text-quaternary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .waveform {
   width: 100%;
-  min-height: 56px;
+  min-height: 44px;
   cursor: pointer;
 }
 .waveform.loading {
   background: linear-gradient(
     90deg,
-    rgba(99, 102, 241, 0.08) 25%,
-    rgba(99, 102, 241, 0.16) 37%,
-    rgba(99, 102, 241, 0.08) 63%
+    color-mix(in srgb, var(--color-brand) 8%, transparent) 25%,
+    color-mix(in srgb, var(--color-brand) 18%, transparent) 37%,
+    color-mix(in srgb, var(--color-brand) 8%, transparent) 63%
   );
   background-size: 400% 100%;
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   animation: wave-skeleton 1.4s ease infinite;
 }
 @keyframes wave-skeleton {
@@ -1028,13 +1278,31 @@ watch(
     background-position: 0 50%;
   }
 }
+.audio-side {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
 .audio-bar .speed-select {
   flex: 0 0 auto;
-  width: 78px;
+  width: 92px;
 }
 .audio-bar .speed-select :deep(.ant-select-selector) {
-  border-radius: 6px;
+  border-radius: var(--radius-md, 6px);
   font-variant-numeric: tabular-nums;
+  padding-inline: 10px;
+}
+.volume-slider {
+  width: 84px;
+  margin: 0 2px;
+}
+/* 窄窗口优先保证波形与时间的完整：提示文案与音量滑杆先让位 */
+@media (max-width: 860px) {
+  .audio-hint,
+  .volume-slider {
+    display: none;
+  }
 }
 .speaker-avatar {
   flex: 0 0 auto;
@@ -1077,16 +1345,16 @@ watch(
   transition: background 0.12s ease, color 0.12s ease;
 }
 .word-span:hover {
-  background: var(--color-hover, rgba(99, 102, 241, 0.12));
+  background: color-mix(in srgb, var(--color-brand) 12%, transparent);
 }
 .word-span.played {
-  color: var(--color-primary, #6366f1);
-  background: rgba(99, 102, 241, 0.1);
+  color: var(--color-brand);
+  background: color-mix(in srgb, var(--color-brand) 10%, transparent);
 }
 .word-span.active {
-  color: #fff;
-  background: var(--color-primary, #6366f1);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+  color: var(--color-text-inverse);
+  background: var(--color-brand);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-brand) 28%, transparent);
   font-weight: 600;
 }
 /* 英文词之间的分隔空格，避免连续英文粘连 */
