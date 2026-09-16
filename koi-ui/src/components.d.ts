@@ -54,7 +54,6 @@ declare module 'vue' {
     ATag: typeof import('antdv-next')['Tag']
     ATextarea: typeof import('antdv-next')['TextArea']
     AUpload: typeof import('antdv-next')['Upload']
-    AUploadDragger: typeof import('antdv-next')['UploadDragger']
     BaseBarChart: typeof import('./components/charts/BaseBarChart.vue')['default']
     BaseLineChart: typeof import('./components/charts/BaseLineChart.vue')['default']
     BasePieChart: typeof import('./components/charts/BasePieChart.vue')['default']

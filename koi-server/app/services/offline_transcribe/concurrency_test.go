@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/contracts/log"
@@ -101,6 +103,107 @@ func requireProjectRootForModel(t *testing.T) {
 		dir = filepath.Dir(dir)
 	}
 	t.Skip("未在项目根目录找到模型，跳过")
+}
+
+// TestApplyHotwordsReusesRecognizer
+//
+// 性能回归测试：热词未变化时必须复用当前识别器。
+//
+// doTranscribe 每次转写都会调用 applyHotwords，而重建识别器要重新加载
+// encoder/decoder/joiner 三个 onnx（本项目模型约 4~5 秒）。若每次都重建，
+// 「离线转写 / 重新转写」会白付这笔固定开销，也是此前重新转写偏慢的主因之一。
+func TestApplyHotwordsReusesRecognizer(t *testing.T) {
+	requireProjectRootForModel(t)
+
+	svc := &Service{cfg: Config{}.normalized(), deps: Dependencies{Log: &noopLog{}}}
+	svc.preloadModel()
+
+	svc.mu.RLock()
+	base := svc.recognizer
+	svc.mu.RUnlock()
+	require.NotNil(t, base, "模型应加载成功")
+
+	// 热词变化：必须重建（否则热词不生效）。
+	require.NoError(t, svc.applyHotwords("会议\nMONDAY"))
+	svc.mu.RLock()
+	first := svc.recognizer
+	svc.mu.RUnlock()
+	require.NotSame(t, base, first, "热词变化时应重建识别器")
+
+	// 热词不变：复用识别器，且必须远快于一次模型加载。
+	start := time.Now()
+	require.NoError(t, svc.applyHotwords("会议\nMONDAY"))
+	elapsed := time.Since(start)
+	svc.mu.RLock()
+	second := svc.recognizer
+	svc.mu.RUnlock()
+	require.Same(t, first, second, "热词未变化时应复用同一识别器")
+	require.Less(t, elapsed, 100*time.Millisecond,
+		"复用识别器不应重新加载模型（耗时 %s）", elapsed)
+
+	// 热词再次变化：仍需重建。
+	require.NoError(t, svc.applyHotwords("会议"))
+	svc.mu.RLock()
+	third := svc.recognizer
+	svc.mu.RUnlock()
+	require.NotSame(t, second, third, "热词变化时应重建识别器")
+}
+
+// TestDecodeWindowsParallelMatchesSerial
+//
+// 正确性测试：并行批量解码（DecodeStreams）与逐窗口串行解码结果必须一致。
+// 并行只是把互不相关的识别窗口同时推进，不能改变每个窗口的解码结果。
+func TestDecodeWindowsParallelMatchesSerial(t *testing.T) {
+	requireProjectRootForModel(t)
+
+	svc := &Service{
+		cfg:  Config{MaxConcurrency: 4}.normalized(),
+		deps: Dependencies{Log: &noopLog{}, Progress: NewProgressManager()},
+	}
+	svc.preloadModel()
+	svc.mu.RLock()
+	loaded := svc.loaded && svc.recognizer != nil
+	svc.mu.RUnlock()
+	require.True(t, loaded, "模型应加载成功")
+
+	wavPath := filepath.Join(
+		"models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/test_wavs/0.wav")
+	require.FileExists(t, wavPath)
+	wave := sherpa.ReadWave(wavPath)
+	require.NotNil(t, wave)
+
+	// 把音频切成若干段，模拟 VAD 规划出来的识别窗口。
+	const n = 6
+	step := len(wave.Samples) / n
+	require.Greater(t, step, 0)
+	windows := make([]asrWindow, 0, n)
+	for i := 0; i < n; i++ {
+		end := (i + 1) * step
+		if i == n-1 {
+			end = len(wave.Samples)
+		}
+		windows = append(windows, asrWindow{Start: i * step, End: end})
+	}
+
+	// 基准：逐窗口串行解码（等价于改动前的实现）。
+	wantText := make([]string, len(windows))
+	for i, win := range windows {
+		text, _, err := svc.decodeChunk(wave.Samples[win.Start:win.End], wave.SampleRate)
+		require.NoError(t, err, "窗口 %d 串行解码失败", i)
+		wantText[i] = text
+	}
+	require.NotEmpty(t, strings.Join(wantText, ""), "测试音频应能转写出文本")
+
+	for _, concurrency := range []int{1, 2, 4, 8} {
+		svc.cfg.MaxConcurrency = concurrency
+		got := svc.decodeWindows(wave.Samples, wave.SampleRate, windows, 1)
+		require.Len(t, got, len(windows))
+		for i := range windows {
+			require.NoError(t, got[i].err, "并发度 %d：窗口 %d 解码失败", concurrency, i)
+			require.Equal(t, wantText[i], got[i].text,
+				"并发度 %d：窗口 %d 的并行解码结果应与串行一致", concurrency, i)
+		}
+	}
 }
 
 // noopLog 是离线转写 Dependencies.Log 的最小实现，避免引入框架日志依赖。

@@ -2,3 +2,4 @@
 .idea
 build-electron
 koi-ui/src/components.d.ts
+.codebuddy

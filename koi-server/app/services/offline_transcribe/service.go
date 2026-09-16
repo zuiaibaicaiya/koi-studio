@@ -84,6 +84,9 @@ type Service struct {
 	closed     bool
 	// 保存热词文件路径（临时文件，每次设置热词时重写）
 	hotwordsFile string
+	// hotwordsKey 记录当前识别器所用的热词内容，用于复用识别器：
+	// 重建识别器需要重新加载 encoder/decoder/joiner（数秒），热词未变化时不应重建。
+	hotwordsKey string
 	// vad 用于按静音切分音频，使识别窗口落在句子边界上。
 	vad *vad
 }
@@ -141,6 +144,7 @@ func (s *Service) Close() error {
 		s.vad.Close()
 	}
 	s.loaded = false
+	s.hotwordsKey = ""
 	// 清理热词临时文件
 	if s.hotwordsFile != "" {
 		_ = os.Remove(s.hotwordsFile)
@@ -301,38 +305,41 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 	s.deps.Log.Info(fmt.Sprintf("offline: meeting %d planned %d asr window(s) from %d speech span(s), vad=%s",
 		meetingID, len(windows), len(speechSpans), map[bool]string{true: "silero", false: "energy"}[s.vadMode()]))
 
-	// 7. 逐个窗口转写，先收集全部句子（全局时间轴），最后统一合并与入库。
+	// 7. 并发批量转写各识别窗口，先收集全部句子（全局时间轴），最后统一合并与入库。
 	//    合并必须在所有窗口转写完成后进行：被窗口边界切断的句子碎片，
 	//    只有拿到后一个窗口的开头才能拼回完整的一句话。
+	decoded := s.decodeWindows(wave.Samples, sampleRate, windows, meetingID)
+
 	var utterances []sentenceSegment
 	index := 0
 
-	for _, win := range windows {
-		if s.isClosed() {
-			break
-		}
+	for i, win := range windows {
+		index++
 		start, end := win.Start, win.End
 		if end > totalSamples {
 			end = totalSamples
 		}
+		if start < 0 {
+			start = 0
+		}
+		if end <= start {
+			continue
+		}
 		chunkSamplesData := wave.Samples[start:end]
 
-		// 进度
-		chunkProgress := 20 + int(float64(start)/float64(totalSamples)*70)
-		s.deps.Progress.Update(meetingID, chunkProgress,
-			fmt.Sprintf("正在转写第 %d/%d 段（%.0f%%）", index+1, len(windows), float64(start)/float64(totalSamples)*100))
+		result, timestamps := decoded[i].text, decoded[i].timestamps
+		if perr := decoded[i].err; perr != nil {
+			// 服务关闭导致的中断是正常收尾，不必逐个窗口记警告。
+			if !errors.Is(perr, ErrServiceClosed) {
+				s.deps.Log.Warning(fmt.Sprintf("offline: decode window %d failed: %v", i, perr))
+			}
+			continue
+		}
 
 		// 本窗口在全局时间轴上的偏移（毫秒）。直接用窗口起点采样位置换算，
 		// 取代旧的逐块累加（globalOffsetMs）方式——旧方式把重叠时长当作
 		// 偏移增量，使每个后续分块的时间戳整体偏晚、在块边界不连续。
 		offsetMs := chunkOffsetMs(start, sampleRate)
-
-		result, timestamps, perr := s.decodeChunk(chunkSamplesData, sampleRate)
-		if perr != nil {
-			s.deps.Log.Warning(fmt.Sprintf("offline: decode window %d failed: %v", index, perr))
-			index++
-			continue
-		}
 
 		if result != "" {
 			// 窗口内的语音段（换算为窗口内相对下标），用于模型无 token 时间戳时的近似对齐。
@@ -347,8 +354,6 @@ func (s *Service) doTranscribe(meetingID uint, audioPath string) {
 				utterances = append(utterances, seg)
 			}
 		}
-
-		index++
 	}
 
 	// 8. 合并被切开的句子（含去重）后统一入库。
@@ -486,6 +491,152 @@ func chunkWindows(totalSamples, chunkSamples, overlapSamples int) []int {
 	return starts
 }
 
+// asrWindowResult 单个识别窗口的解码结果。
+type asrWindowResult struct {
+	text       string
+	timestamps []sherpa.OnlineRecognizerResult
+	err        error
+}
+
+// decodeWindows 批量并发解码各识别窗口，返回与 windows 等长（下标一一对应）的结果。
+//
+// 为什么并发：流式模型的解码链路中特征提取、decoder 与 joiner 都是单线程的，
+// 逐窗口串行解码时 CPU 远未压满。实测（8 逻辑核，134.9 秒会议音频）：
+// 并发度 1（等价于改动前的逐窗口串行）端到端 27~30 秒，默认并发度下 12 秒。
+// 复现脚本见 tests/asr/perf_bench_test.go（BenchmarkOfflinePerf）。
+//
+// 并行方式走 sherpa-onnx 官方 C API 的 DecodeMultipleOnlineStreams（Go 绑定为
+// Recognizer.DecodeStreams）：同一识别器上的多条 OnlineStream 状态彼此独立，
+// 由该接口内部并行推进。
+//
+// 以「批」为单位推进，每批窗口数 = cfg.MaxConcurrency：
+//   - 内存占用与并发度成正比，与音频总时长无关（流用完即释放）；
+//   - 批内每个窗口的解码语义与串行版本完全一致（AcceptWaveform → InputFinished
+//     → 循环推进直到 IsReady 为 false → GetResult），因此结果与串行完全等价
+//     （由 TestDecodeWindowsParallelMatchesSerial 逐窗口比对文本）。
+func (s *Service) decodeWindows(samples []float32, sampleRate int, windows []asrWindow, meetingID uint) []asrWindowResult {
+	out := make([]asrWindowResult, len(windows))
+	if len(windows) == 0 {
+		return out
+	}
+	batch := s.cfg.MaxConcurrency
+	if batch <= 0 {
+		batch = 1
+	}
+	total := len(samples)
+
+	for begin := 0; begin < len(windows); begin += batch {
+		if s.isClosed() {
+			for i := begin; i < len(windows); i++ {
+				out[i].err = ErrServiceClosed
+			}
+			return out
+		}
+		end := begin + batch
+		if end > len(windows) {
+			end = len(windows)
+		}
+
+		// 批次开始前先更新步骤说明（progress 传 0：Update 只在数值更大时覆盖，
+		// 因此这条消息不会让进度条回退），批次结束后再按实际完成位置推进进度。
+		s.deps.Progress.Update(meetingID, 0,
+			fmt.Sprintf("正在转写第 %d-%d/%d 段", begin+1, end, len(windows)))
+		s.decodeWindowBatch(samples, sampleRate, windows[begin:end], out[begin:end])
+
+		// 进度：按已完成解码的音频位置推进（解码阶段占用 20%~90%）。
+		done, percent := windows[end-1].End, 0.0
+		if done > total {
+			done = total
+		}
+		if total > 0 {
+			percent = float64(done) / float64(total) * 100
+		}
+		s.deps.Progress.Update(meetingID, 20+int(percent*0.7),
+			fmt.Sprintf("已转写 %d/%d 段（%.0f%%）", end, len(windows), percent))
+	}
+	return out
+}
+
+// decodeWindowBatch 解码一批识别窗口：每个窗口一条独立的 OnlineStream，
+// 用 DecodeStreams 并行推进，全部完成后逐个取结果。
+//
+// 解码全程持有读锁：applyHotwords / preloadModel 替换（删除并重建）识别器时必须
+// 等待本批结束，否则会对已释放的 C 识别器指针解码（use-after-free → SIGSEGV）。
+// 注意：本函数内不得再获取 s.mu 的读锁——写者在等待时会阻塞后续读者，造成自死锁，
+// 因此关闭状态直接读 s.closed 字段。
+func (s *Service) decodeWindowBatch(samples []float32, sampleRate int, wins []asrWindow, out []asrWindowResult) {
+	streams := make([]*sherpa.OnlineStream, 0, len(wins))
+	idx := make([]int, 0, len(wins))
+
+	s.mu.RLock()
+	rec := s.recognizer
+	if rec == nil {
+		s.mu.RUnlock()
+		for i := range out {
+			out[i].err = ErrModelNotLoaded
+		}
+		return
+	}
+	defer s.mu.RUnlock()
+	defer func() {
+		for _, stream := range streams {
+			sherpa.DeleteOnlineStream(stream)
+		}
+	}()
+
+	for i, win := range wins {
+		start, end := win.Start, win.End
+		if start < 0 {
+			start = 0
+		}
+		if end > len(samples) {
+			end = len(samples)
+		}
+		if end <= start {
+			out[i].err = ErrInvalidAudioFile
+			continue
+		}
+		stream := sherpa.NewOnlineStream(rec)
+		if stream == nil {
+			out[i].err = errors.New("offline: failed to create online stream")
+			continue
+		}
+		stream.AcceptWaveform(sampleRate, samples[start:end])
+		stream.InputFinished()
+		streams = append(streams, stream)
+		idx = append(idx, i)
+	}
+	if len(streams) == 0 {
+		return
+	}
+
+	// 反复推进所有「还有待解码片段」的流，直到全部解完。
+	// DecodeStreams 要求传入的流都已 ready，因此每轮先筛出 ready 的流。
+	ready := make([]*sherpa.OnlineStream, 0, len(streams))
+	for {
+		ready = ready[:0]
+		for _, stream := range streams {
+			if rec.IsReady(stream) {
+				ready = append(ready, stream)
+			}
+		}
+		if len(ready) == 0 {
+			break
+		}
+		rec.DecodeStreams(ready)
+	}
+
+	for k, stream := range streams {
+		result := rec.GetResult(stream)
+		if result == nil {
+			out[idx[k]].err = ErrNoTranscript
+			continue
+		}
+		out[idx[k]].text = result.Text
+		out[idx[k]].timestamps = []sherpa.OnlineRecognizerResult{*result}
+	}
+}
+
 // decodeChunk 对一段音频采样执行离线解码，返回文本与词级时间戳。
 //
 // 底层使用 OnlineRecognizer：把整段音频一次性喂入（AcceptWaveform + InputFinished），
@@ -496,35 +647,9 @@ func chunkWindows(totalSamples, chunkSamples, overlapSamples int) []int {
 // 识别器时必须等待当前解码结束，避免对已删除的 C 识别器指针产生 use-after-free 导致
 // 后端崩溃（SIGSEGV）。
 func (s *Service) decodeChunk(samples []float32, sampleRate int) (string, []sherpa.OnlineRecognizerResult, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	recognizer := s.recognizer
-	if recognizer == nil {
-		return "", nil, ErrModelNotLoaded
-	}
-
-	stream := sherpa.NewOnlineStream(recognizer)
-	if stream == nil {
-		return "", nil, errors.New("offline: failed to create online stream")
-	}
-	defer sherpa.DeleteOnlineStream(stream)
-
-	stream.AcceptWaveform(sampleRate, samples)
-	stream.InputFinished()
-	for recognizer.IsReady(stream) {
-		recognizer.Decode(stream)
-	}
-	result := recognizer.GetResult(stream)
-	if result == nil {
-		return "", nil, ErrNoTranscript
-	}
-
-	// 收集多条结果（流式模型每次 Decode 出一个片段，循环已消费完，这里取最终结果）。
-	var all []sherpa.OnlineRecognizerResult
-	all = append(all, *result)
-
-	return result.Text, all, nil
+	out := make([]asrWindowResult, 1)
+	s.decodeWindowBatch(samples, sampleRate, []asrWindow{{Start: 0, End: len(samples)}}, out)
+	return out[0].text, out[0].timestamps, out[0].err
 }
 
 // sentenceSegment 分句后的片段，带时间戳
@@ -655,6 +780,11 @@ func (s *Service) buildHotwordsForMeeting(meeting *models.Meeting) (string, erro
 }
 
 // applyHotwords 把热词字符串写入临时文件，并替换当前识别器。
+//
+// 热词与当前识别器一致时直接复用，不重建：重建识别器需要重新加载
+// encoder/decoder/joiner 三个 onnx（本项目模型约 4~5 秒），而 doTranscribe
+// 每次转写都会调用本方法，若不缓存则每次「离线转写/重新转写」都要白付这笔
+// 固定开销（热词通常按会议固定，连续转写时几乎总是命中缓存）。
 func (s *Service) applyHotwords(hotwords string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -664,6 +794,9 @@ func (s *Service) applyHotwords(hotwords string) error {
 	}
 	if !s.loaded || s.recognizer == nil {
 		return ErrModelNotLoaded
+	}
+	if s.hotwordsKey == hotwords {
+		return nil
 	}
 
 	// 写入临时文件（空字符串时创建空文件，等效于清除热词）
@@ -710,6 +843,7 @@ func (s *Service) applyHotwords(hotwords string) error {
 		_ = os.Remove(s.hotwordsFile)
 	}
 	s.hotwordsFile = tmpPath
+	s.hotwordsKey = hotwords
 
 	s.deps.Log.Info(fmt.Sprintf("offline: hotwords applied, %d lines", strings.Count(hotwords, "\n")+1))
 	return nil
@@ -789,8 +923,11 @@ func (s *Service) preloadModel() {
 		return
 	}
 	s.recognizer = rec
+	// 预加载的识别器不带热词，与 hotwordsKey 的零值一致（见 applyHotwords 的复用判断）。
+	s.hotwordsKey = ""
 	s.loaded = true
-	s.deps.Log.Info(fmt.Sprintf("offline: model loaded in %.2fs (type=%s)", time.Since(start).Seconds(), s.cfg.ModelType))
+	s.deps.Log.Info(fmt.Sprintf("offline: model loaded in %.2fs (type=%s, num_threads=%d, max_concurrency=%d)",
+		time.Since(start).Seconds(), s.cfg.ModelType, s.cfg.NumThreads, s.cfg.MaxConcurrency))
 }
 
 // waitModel 等待模型就绪

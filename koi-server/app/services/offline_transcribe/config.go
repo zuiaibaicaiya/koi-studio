@@ -3,6 +3,7 @@ package offlinetranscribe
 
 import (
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/goravel/framework/contracts/config"
@@ -33,9 +34,14 @@ type Config struct {
 	HotwordsScore  float32
 	LoadTimeout    time.Duration
 
+	// MaxConcurrency 单次会议内并发解码的识别窗口数（每窗口一条 OnlineStream）。
+	// 流式模型的解码链路里特征提取、decoder/joiner 都是单线程，逐窗口串行解码
+	// 无法压满 CPU；并行多条流可显著提升吞吐。0 表示按 CPU 核数自动推算。
+	MaxConcurrency int
+
 	// 音频
 	SampleRate int
-	FeatureDim int // 特征维度，bilingual 流式 zipformer 为 39
+	FeatureDim int // 特征维度，bilingual 流式 zipformer 为 80
 
 	// 语音活动检测（VAD）：用于按静音切分音频，使句子不被从中间切开
 	VadEnabled            bool
@@ -77,12 +83,14 @@ func NewConfig(cfg config.Config) Config {
 		ModelingUnit: cfg.GetString("audio.offline_model.modeling_unit", ""),
 		BpeVocab:     cfg.GetString("audio.offline_model.bpe_vocab", ""),
 
-		NumThreads:     cfg.GetInt("audio.offline_model.num_threads", 4),
+		NumThreads:     cfg.GetInt("audio.offline_model.num_threads", 2),
 		Provider:       cfg.GetString("audio.offline_model.provider", ""),
 		DecodingMethod: cfg.GetString("audio.offline_model.decoding_method", "greedy_search"),
 		MaxActivePaths: cfg.GetInt("audio.offline_model.max_active_paths", 4),
 		HotwordsScore:  cast.ToFloat32(cfg.Get("audio.offline_model.hotwords_score", 2.0)),
 		LoadTimeout:    time.Duration(cfg.GetInt("audio.offline_model.load_timeout", 15)) * time.Second,
+
+		MaxConcurrency: cfg.GetInt("audio.offline_model.max_concurrency", 0),
 
 		SampleRate: cfg.GetInt("audio.stream.sample_rate", 16000),
 		// bilingual 流式 zipformer 的 fbank 特征维度为 80（与实时流一致），不可为 39。
@@ -154,6 +162,27 @@ func DefaultFeatureDim() int {
 	return Config{}.normalized().FeatureDim
 }
 
+// maxAutoConcurrency 自动推算并发度时的上限。
+// 每条并发流都持有一份独立的编码器状态与特征缓冲，过高的并发只会徒增内存占用。
+const maxAutoConcurrency = 8
+
+// defaultMaxConcurrency 按 CPU 核数推算默认并发度。
+//
+// 并发度取「核数」而非「核数/单流线程数」：解码链路里的特征提取与
+// decoder/joiner 是单线程的，多出来的流可以把这些空隙填满。
+// 实测（8 逻辑核，134.9 秒会议音频）并发度 1→8 时端到端由 27~30 秒降到 12 秒，
+// 再提高并发度收益已经很小，反而线性增加编码器状态的内存占用。
+func defaultMaxConcurrency() int {
+	n := runtime.NumCPU()
+	if n < 2 {
+		n = 2
+	}
+	if n > maxAutoConcurrency {
+		n = maxAutoConcurrency
+	}
+	return n
+}
+
 func (c Config) normalized() Config {
 	if c.ModelDir == "" {
 		c.ModelDir = "models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
@@ -186,7 +215,9 @@ func (c Config) normalized() Config {
 		c.FeatureDim = 80
 	}
 	if c.NumThreads <= 0 {
-		c.NumThreads = 4
+		// 与 config/audio.go 的默认值保持一致：离线转写靠多流并发提速，
+		// 单流线程数保持较小值，避免与并发流互相超订。
+		c.NumThreads = 2
 	}
 	if c.MaxActivePaths <= 0 {
 		c.MaxActivePaths = 4
@@ -241,6 +272,12 @@ func (c Config) normalized() Config {
 	}
 	if c.MinSilenceCutSeconds < 0 {
 		c.MinSilenceCutSeconds = 0
+	}
+	if c.MaxConcurrency <= 0 {
+		c.MaxConcurrency = defaultMaxConcurrency()
+	}
+	if c.MaxConcurrency > maxAutoConcurrency {
+		c.MaxConcurrency = maxAutoConcurrency
 	}
 	return c
 }

@@ -46,13 +46,20 @@ func init() {
 			"modeling_unit": config.Env("OFFLINE_MODEL_MODELING_UNIT", "bpe"),
 			"bpe_vocab":     config.Env("OFFLINE_MODEL_BPE_VOCAB", "bpe.vocab"),
 			// bilingual 流式 zipformer 的 fbank 特征维度为 80（与实时流一致）。
-			"feature_dim":      config.Env("OFFLINE_MODEL_FEATURE_DIM", 80),
-			"num_threads":      config.Env("OFFLINE_MODEL_NUM_THREADS", 4),
+			"feature_dim": config.Env("OFFLINE_MODEL_FEATURE_DIM", 80),
+			// 单条识别流的 intra-op 线程数。离线转写的主要并行手段是「多窗口多流并发」
+			// （见 max_concurrency），每条流再开 4 线程会与并发流互相超订、反而更慢：
+			// 实测 8 逻辑核下同一段 134.9s 音频，num_threads=4 需 18s，=2 需 12~15s。
+			"num_threads":      config.Env("OFFLINE_MODEL_NUM_THREADS", 2),
 			"provider":         config.Env("OFFLINE_MODEL_PROVIDER", ""),
 			"decoding_method":  config.Env("OFFLINE_DECODING_METHOD", "greedy_search"),
 			"max_active_paths": config.Env("OFFLINE_MAX_ACTIVE_PATHS", 4),
 			"hotwords_score":   config.Env("OFFLINE_HOTWORDS_SCORE", 2.0),
 			"load_timeout":     config.Env("OFFLINE_MODEL_LOAD_TIMEOUT", 60),
+			// 单次会议内并发解码的识别窗口数（同一识别器上的多条 OnlineStream，
+			// 由 sherpa-onnx 的 DecodeStreams 并行解码）。留空/0 按 CPU 核数自动推算
+			// （上限 8）；调小可降内存与 CPU 占用，调大在核数多时可进一步提升吞吐。
+			"max_concurrency": config.Env("OFFLINE_MAX_CONCURRENCY", 0),
 		},
 
 		// Offline VAD（语音活动检测）
