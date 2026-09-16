@@ -116,7 +116,8 @@ function onReload() {
         <h3 class="dashboard-title">仪表盘</h3>
         <span v-if="updatedAt" class="dashboard-sub">数据更新于 {{ updatedAt }}</span>
       </div>
-      <a-button type="primary" :icon="ReloadOutlined" :loading="loading" @click="onReload">
+      <a-button type="primary" :loading="loading" @click="onReload">
+        <template #icon><ReloadOutlined /></template>
         刷新
       </a-button>
     </div>

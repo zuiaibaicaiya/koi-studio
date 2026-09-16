@@ -339,7 +339,7 @@ function handleBack() {
                   v-model:value="formState.meetingTime"
                   show-time
                   format="YYYY-MM-DD HH:mm"
-                  placeholder="['开始时间', '结束时间']"
+                  :placeholder="['开始时间', '结束时间']"
                   style="width: 100%"
                 >
                   <template #suffixIcon><ClockCircleOutlined /></template>
