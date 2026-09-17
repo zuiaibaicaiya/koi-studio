@@ -3,7 +3,7 @@ import { io, type Socket } from 'socket.io-client';
 /**
  * 实时转写服务地址：优先 PUBLIC_SOCKET_URL，其次复用后端基地址 PUBLIC_API_BASE。
  */
-const SOCKET_URL =
+export const SOCKET_URL =
   (import.meta.env.PUBLIC_SOCKET_URL as string | undefined) ??
   (import.meta.env.PUBLIC_API_BASE as string | undefined) ??
   'http://127.0.0.1:8000';

@@ -65,6 +65,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/meeting/LiveMeetingTranscribe.vue'),
     meta: { requiresAuth: true, title: '实时转写' },
   },
+  // 第二屏投屏：在独立 Electron 窗口中展示实时转写内容，隐藏全局标题栏（bare）
+  {
+    path: '/live/present',
+    name: 'livePresent',
+    component: () => import('../views/meeting/LiveMeetingPresent.vue'),
+    meta: { requiresAuth: true, title: '实时转写投屏', bare: true },
+  },
   // 离线转写：用户主动上传音频文件，无需实时录音
   {
     path: '/offline/create',

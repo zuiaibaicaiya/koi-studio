@@ -24,6 +24,14 @@ const (
 	binaryResponseMessage = "Audio data processed successfully"
 )
 
+// join-meeting 的客户端角色。
+const (
+	// roleSpeaker 采集端（缺省）：上行音频并驱动转写，结果只回自己的私有频道。
+	roleSpeaker = "speaker"
+	// roleViewer 只读观众（如第二屏投屏）：只订阅会议转写结果，不上行音频。
+	roleViewer = "viewer"
+)
+
 // socketHandler 单个 Socket.IO 事件的处理函数。
 // 返回 error 即代表处理失败，由统一的包装层负责记录日志并通知客户端。
 type socketHandler func(socket *socketiolib.Socket, args ...any) error
@@ -241,6 +249,25 @@ func (r *SocketioController) handleJoinMeeting(socket *socketiolib.Socket, args 
 		return fmt.Errorf("meeting %d not found: %w", meetingID, err)
 	}
 
+	// 只读观众（第二屏投屏等）：仅加入会议观众频道，接收该会议的转写结果。
+	// 不绑定转写会话、不设置热词、不预热声纹，避免影响采集端的转写流程。
+	if parseJoinRole(args) == roleViewer {
+		channel := broadcasting.MeetingViewerChannel(uint(meetingID))
+		if err := r.socketio.JoinRoom(socket, channel); err != nil {
+			return fmt.Errorf("join viewer channel %s: %w", channel, err)
+		}
+
+		r.log.Info(fmt.Sprintf("socketio: viewer %s joined meeting %d (%s) channel %s",
+			clientID, meetingID, meeting.Name, channel))
+
+		r.emit(socket, broadcasting.EventJoinMeetingResponse, map[string]any{
+			"meetingId":   meeting.ID,
+			"meetingName": meeting.Name,
+			"role":        roleViewer,
+		})
+		return nil
+	}
+
 	// 解析说话人ID列表
 	speakerIDs := parseCommaSeparatedIDs(meeting.SpeakerIds)
 
@@ -325,6 +352,26 @@ func (r *SocketioController) parseMeetingID(args []any) (int, error) {
 	default:
 		return 0, fmt.Errorf("unexpected type for meeting_id: %T", v)
 	}
+}
+
+// parseJoinRole 从 join-meeting 参数中解析客户端角色。
+// 参数既可以是纯 meeting_id，也可以是 {meeting_id, role} 对象；缺省视为采集端。
+func parseJoinRole(args []any) string {
+	if len(args) == 0 {
+		return roleSpeaker
+	}
+
+	options, ok := args[0].(map[string]any)
+	if !ok {
+		return roleSpeaker
+	}
+
+	role, _ := options["role"].(string)
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return roleSpeaker
+	}
+	return role
 }
 
 // buildHotwordsString 从指定的热词库ID列表中加载所有热词，格式化为 sherpa-onnx 格式。

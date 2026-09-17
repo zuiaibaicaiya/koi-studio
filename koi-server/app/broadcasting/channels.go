@@ -6,6 +6,7 @@ package broadcasting
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -66,6 +67,18 @@ const privateChannelPrefix = "private-client."
 // 转写结果只投递到该频道，天然实现「结果只发给发起者」的隔离。
 func PrivateChannel(clientID string) string {
 	return privateChannelPrefix + clientID
+}
+
+// viewerChannelPrefix 会议只读观众频道前缀。
+const viewerChannelPrefix = "meeting-viewers."
+
+// MeetingViewerChannel 返回某场会议的只读观众频道名。
+//
+// 第二屏投屏等只读客户端通过 join-meeting（role=viewer）加入该频道，
+// 从而在不参与音频上行、不占用转写会话的前提下收到该会议的转写结果。
+// 音频采集端不会加入该频道，因此不会重复收到自己的结果。
+func MeetingViewerChannel(meetingID uint) string {
+	return fmt.Sprintf("%s%d", viewerChannelPrefix, meetingID)
 }
 
 // ErrUnauthorized 频道授权未通过。

@@ -14,15 +14,17 @@ import {
   StopOutlined,
   ClockCircleOutlined,
   TeamOutlined,
-  TagsOutlined,
   SoundOutlined,
   ArrowLeftOutlined,
   CalendarOutlined,
+  DesktopOutlined,
 } from '@antdv-next/icons';
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import socketioService, { type TranscriptPayload } from '../../services/socketio';
 import { createMicrophoneStream, createSystemAudioStream } from '../../services/capture';
+import presenterApi from '../../services/presenter';
+import { resolveTranscriptSpeaker } from '../../utils/speakerResolve';
 import audioProcessorCode from '@/worklets/audio-processor.js?raw';
 
 const route = useRoute();
@@ -107,8 +109,6 @@ async function loadHotWords() {
   }
 }
 
-const hotWords = computed(() => selectedLibraries.value.flatMap((lib) => lib.words));
-
 const running = ref(true);
 const elapsed = ref(0); // 秒
 const segments = ref<Segment[]>([]);
@@ -133,9 +133,48 @@ const interimSpeakerName = ref('');
 let timer: number | undefined;
 let segId = 0;
 
-function nowTime(base?: Date) {
-  const d = base ?? new Date();
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+/* ------------------------- 第二屏投屏 ------------------------- */
+
+/** 第二屏投屏窗口是否已打开 */
+const presentOpen = ref(false);
+let disposePresentState: (() => void) | undefined;
+
+/**
+ * 打开 / 关闭第二屏投屏窗口。
+ *
+ * 这里只传会议参数，转写内容由第二屏自行建立 Socket.IO 连接、以 viewer 角色
+ * 加入会议观众频道订阅（见 views/meeting/LiveMeetingPresent.vue），
+ * 不经过主进程 IPC 转发。
+ */
+async function togglePresent() {
+  if (presentOpen.value) {
+    await presenterApi.close();
+    presentOpen.value = false;
+    return;
+  }
+
+  // router.resolve 生成的 href 在 hash 模式下形如 "#/live/present?...",
+  // 交由主进程拼到页面地址后，需要去掉前导 '#'
+  const href = router.resolve({
+    name: 'livePresent',
+    query: {
+      meetingId: meetingId.value,
+      name: meetingName.value,
+      participants: String(participants.value.length),
+      // 会议配置的说话人：投屏窗口据此做名称映射与「仅一位说话人」兜底
+      speakers: speakerIds.value.join(','),
+      recordMode: recordMode.value,
+      meetingTime: meetingTimeLabel.value,
+      elapsed: String(elapsed.value),
+    },
+  }).href;
+
+  try {
+    await presenterApi.open(href.startsWith('#') ? href.slice(1) : href);
+    presentOpen.value = true;
+  } catch (err) {
+    message.error((err as Error)?.message || '打开第二屏失败');
+  }
 }
 
 /** 毫秒时间戳 → 相对音频开头的偏移（支持天/小时） */
@@ -321,50 +360,12 @@ function closeAudioContext() {
 
 /* ------------------------- Socket.IO 下行转写结果 ------------------------- */
 
-/** 将后端下发的说话人信息映射到本地说话人库 */
+/**
+ * 将后端下发的说话人信息映射到本地说话人库。
+ * 规则与第二屏投屏页共用（utils/speakerResolve.ts），避免两处展示不一致。
+ */
 function resolveSpeaker(payload: TranscriptPayload): { id: number; name: string } {
-  // 规范化 speaker 字段：后端新版协议下 speaker 为嵌套对象 {name, id, ...}
-  const speakerObj = typeof payload.speaker === 'object' && payload.speaker !== null
-    ? payload.speaker
-    : null;
-  const speakerName: string | undefined =
-    payload.speakerName ||
-    (speakerObj ? speakerObj.name : undefined) ||
-    (typeof payload.speaker === 'string' ? payload.speaker : undefined);
-  const speakerObjId = speakerObj?.id != null ? Number(speakerObj.id) : undefined;
-
-  // 优先使用 speaker 对象中的 id，其次使用顶层 speakerId / speaker_id
-  const rawId = speakerObjId ?? payload.speakerId ?? payload.speaker_id;
-  if (rawId !== undefined && rawId !== null && rawId !== '') {
-    const id = Number(rawId);
-    if (!Number.isNaN(id)) {
-      const matched = speakers.value.find((s) => s.id === id) ?? speakerStore.getById(id);
-      if (matched) return { id: matched.id, name: matched.name };
-      return { id, name: speakerName || `说话人 ${id}` };
-    }
-  }
-
-  // 后端显式下发了 speaker 对象 → 后端已做声纹识别，必须尊重其结果
-  // 无 id 的 speaker 对象（如 {name: "未知说话人"}）意味着未匹配到已知说话人，
-  // 不应跳过此结果进入客户端的"配置仅一位→归给该人"兜底逻辑
-  if (speakerObj) {
-    if (speakerName && speakerName !== '未知说话人') {
-      const matched = speakers.value.find((s) => s.name === speakerName);
-      return matched ? { id: matched.id, name: matched.name } : { id: -1, name: speakerName };
-    }
-    return { id: -1, name: '未知说话人' };
-  }
-
-  if (speakerName && speakerName !== '未知说话人') {
-    const matched = speakers.value.find((s) => s.name === speakerName);
-    return matched ? { id: matched.id, name: matched.name } : { id: -1, name: speakerName };
-  }
-
-  // 后端未做说话人分离或识别失败：仅配置一位说话人时归属该人
-  if (speakers.value.length === 1) {
-    return { id: speakers.value[0].id, name: speakers.value[0].name };
-  }
-  return { id: -1, name: '未识别说话人' };
+  return resolveTranscriptSpeaker(payload, speakers.value, (id) => speakerStore.getById(id));
 }
 
 function clearInterim() {
@@ -627,20 +628,14 @@ function highlight(text: string) {
   return escapeHtml(text);
 }
 
-/* ------------------------- 顶部按钮 -> 侧边抽屉 ------------------------- */
+/* ------------------------- 会议信息抽屉 ------------------------- */
 type DrawerKey = 'participants' | 'speakers' | 'hotWords';
 
 const drawerOpen = ref(false);
 const drawerKey = ref<DrawerKey>('participants');
 
-const drawerTitleMap: Record<DrawerKey, string> = {
-  participants: '参会人员',
-  speakers: '说话人',
-  hotWords: '热词库',
-};
-const drawerTitle = computed(() => drawerTitleMap[drawerKey.value]);
-
-function openDrawer(key: DrawerKey) {
+/** 打开会议信息抽屉；不传 key 时停留在上次查看的分组 */
+function openDrawer(key: DrawerKey = drawerKey.value) {
   drawerKey.value = key;
   drawerOpen.value = true;
 }
@@ -723,6 +718,11 @@ watch(
     started.value = false;
     running.value = true;
     loadHotWords();
+    // 会议已切换：第二屏订阅的是上一场会议的观众频道，直接关闭避免展示错乱
+    if (presentOpen.value) {
+      await presenterApi.close();
+      presentOpen.value = false;
+    }
   },
 );
 
@@ -737,6 +737,19 @@ onMounted(async () => {
   // 页面重新获得焦点 / 切回标签页时，滚动到最新转写
   window.addEventListener('focus', onWindowFocus);
   document.addEventListener('visibilitychange', onVisibilityChange);
+
+  // 第二屏可能在其窗口内被单独关闭，订阅状态保证按钮文案同步
+  disposePresentState = presenterApi.onStateChange((state) => {
+    presentOpen.value = state.open;
+  });
+  presenterApi
+    .isOpen()
+    .then((state) => {
+      presentOpen.value = state.open;
+    })
+    .catch(() => {
+      // 非 Electron 环境（浏览器调试）下无投屏能力，静默降级
+    });
 });
 
 /** 标签页切回前台时也视为“重新获得焦点”，滚动到最新转写。 */
@@ -754,6 +767,9 @@ function markMeetingOngoing() {
 onBeforeUnmount(() => {
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onVisibilityChange);
+  disposePresentState?.();
+  // 离开转写页即关闭第二屏，避免残留无数据的投屏窗口
+  void presenterApi.close();
   void teardown();
 });
 </script>
@@ -768,21 +784,14 @@ onBeforeUnmount(() => {
         </a-button>
         <div class="info-main">
           <h2>{{ meetingName }}</h2>
+          <!-- 只保留实时指标：会议属性（时间、人数等）收进「会议信息」抽屉 -->
           <div class="info-meta">
-            <span class="meta-item">
+            <span class="elapsed-chip" title="已进行时长">
               <ClockCircleOutlined /> {{ elapsedText }}
             </span>
-            <span class="meta-item">
-              <TeamOutlined /> {{ participants.length }} 人参会
-            </span>
-            <span class="meta-item">
+            <span class="meta-item" :title="`输入音量 ${Math.round(currentVolume * 100)}%`">
               <component :is="recordMode === 'mic' ? AudioOutlined : SoundOutlined" />
-              {{ recordMode === 'mic' ? '麦克风录音' : '系统内录' }}
-            </span>
-            <span v-if="meetingTimeLabel" class="meta-item">
-              <CalendarOutlined /> {{ meetingTimeLabel }}
-            </span>
-            <span class="meta-item volume-meta" :title="`输入音量 ${Math.round(currentVolume * 100)}%`">
+              <span class="record-label">{{ recordMode === 'mic' ? '麦克风录音' : '系统内录' }}</span>
               <span class="volume-meter">
                 <span class="volume-meter-fill" :style="{ width: `${Math.round(currentVolume * 100)}%` }"></span>
               </span>
@@ -791,18 +800,21 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="top-actions">
-        <a-button @click="openDrawer('participants')">
+        <a-button @click="openDrawer()">
           <template #icon><TeamOutlined /></template>
-          参会人员
+          会议信息
         </a-button>
-        <a-button @click="openDrawer('speakers')">
-          <template #icon><SoundOutlined /></template>
-          说话人
-        </a-button>
-        <a-button @click="openDrawer('hotWords')">
-          <template #icon><TagsOutlined /></template>
-          热词库
-        </a-button>
+        <a-tooltip :title="presentOpen ? '关闭第二屏投屏' : '投屏到第二屏'">
+          <a-button
+            class="icon-btn"
+            :type="presentOpen ? 'primary' : 'default'"
+            :aria-label="presentOpen ? '关闭第二屏投屏' : '投屏到第二屏'"
+            @click="togglePresent"
+          >
+            <template #icon><DesktopOutlined /></template>
+          </a-button>
+        </a-tooltip>
+        <span class="actions-divider" aria-hidden="true"></span>
         <a-button v-if="!started || starting" type="primary" :loading="starting" @click="startTranscription">
           <template #icon><PlayCircleOutlined /></template>
           {{ starting ? '正在准备…' : '开始转写' }}
@@ -884,59 +896,74 @@ onBeforeUnmount(() => {
       </div>
     </a-card>
 
-    <a-drawer
-      v-model:open="drawerOpen"
-      :title="drawerTitle"
-      :size="460"
-      placement="right"
-    >
+    <a-drawer v-model:open="drawerOpen" title="会议信息" :size="480" placement="right">
       <div class="drawer-body">
+        <!-- 会议概要：从顶部栏移出的会议属性 -->
+        <div class="meeting-brief">
+          <div class="brief-row">
+            <CalendarOutlined />
+            <span class="brief-label">会议时间</span>
+            <span class="brief-value">{{ meetingTimeLabel || '未设置' }}</span>
+          </div>
+          <div class="brief-row">
+            <component :is="recordMode === 'mic' ? AudioOutlined : SoundOutlined" />
+            <span class="brief-label">录音方式</span>
+            <span class="brief-value">{{ recordMode === 'mic' ? '麦克风录音' : '系统内录' }}</span>
+          </div>
+          <div class="brief-row">
+            <TeamOutlined />
+            <span class="brief-label">参会人数</span>
+            <span class="brief-value">{{ participants.length }} 人</span>
+          </div>
+        </div>
+
+        <!-- 三类会议配置在这里平级切换，顶部栏无需再放三个入口按钮 -->
+        <a-radio-group v-model:value="drawerKey" button-style="solid" class="drawer-switch">
+          <a-radio-button value="participants">参会人员 {{ participants.length }}</a-radio-button>
+          <a-radio-button value="speakers">说话人 {{ speakers.length }}</a-radio-button>
+          <a-radio-button value="hotWords">热词库 {{ selectedLibraries.length }}</a-radio-button>
+        </a-radio-group>
+
         <!-- 参会人员 -->
-        <template v-if="drawerKey === 'participants'">
-          <div class="detail-list">
-            <div v-for="name in filteredParticipants" :key="name" class="detail-item">
-              <div class="detail-main">
-                <div class="detail-title">
-                  <span>{{ name }}</span>
-                </div>
+        <div v-if="drawerKey === 'participants'" class="detail-list">
+          <div v-for="name in filteredParticipants" :key="name" class="detail-item">
+            <div class="detail-main">
+              <div class="detail-title">
+                <span>{{ name }}</span>
               </div>
             </div>
-            <a-empty v-if="filteredParticipants.length === 0" description="暂无匹配的参会人员" />
           </div>
-        </template>
+          <a-empty v-if="filteredParticipants.length === 0" description="暂无匹配的参会人员" />
+        </div>
 
         <!-- 说话人 -->
-        <template v-else-if="drawerKey === 'speakers'">
-          <div class="detail-list">
-            <div v-for="s in filteredSpeakers" :key="s.id" class="detail-item">
-              <div class="detail-main">
-                <div class="detail-title">
-                  <span>{{ s.name }}</span>
-                </div>
+        <div v-else-if="drawerKey === 'speakers'" class="detail-list">
+          <div v-for="s in filteredSpeakers" :key="s.id" class="detail-item">
+            <div class="detail-main">
+              <div class="detail-title">
+                <span>{{ s.name }}</span>
               </div>
             </div>
-            <a-empty v-if="filteredSpeakers.length === 0" description="暂无匹配的说话人" />
           </div>
-        </template>
+          <a-empty v-if="filteredSpeakers.length === 0" description="暂无匹配的说话人" />
+        </div>
 
         <!-- 热词库 -->
-        <template v-else>
-          <div class="detail-list">
-            <div v-for="g in hotWordGroups" :key="g.name" class="word-group">
-              <div class="group-title">{{ g.name }}</div>
-              <div v-for="w in g.words" :key="w.word" class="detail-item">
-                <div class="detail-main">
-                  <div class="detail-title">
-                    <span>{{ w.word }}</span>
-                    <a-tag color="gold">权重 {{ w.weight }}</a-tag>
-                  </div>
+        <div v-else class="detail-list">
+          <div v-for="g in hotWordGroups" :key="g.name" class="word-group">
+            <div class="group-title">{{ g.name }}</div>
+            <div v-for="w in g.words" :key="w.word" class="detail-item">
+              <div class="detail-main">
+                <div class="detail-title">
+                  <span>{{ w.word }}</span>
+                  <a-tag color="gold">权重 {{ w.weight }}</a-tag>
                 </div>
               </div>
-              <a-empty v-if="g.words.length === 0" description="该热词库暂无热词" />
             </div>
-            <a-empty v-if="hotWordGroups.length === 0" description="暂无启用的热词库" />
+            <a-empty v-if="g.words.length === 0" description="该热词库暂无热词" />
           </div>
-        </template>
+          <a-empty v-if="hotWordGroups.length === 0" description="暂无启用的热词库" />
+        </div>
       </div>
     </a-drawer>
   </div>
@@ -971,60 +998,97 @@ onBeforeUnmount(() => {
   z-index: 10;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  padding: 14px 18px;
+  padding: 12px 16px;
   box-shadow: var(--shadow-card);
 }
 .meeting-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex: 1 1 auto;
   min-width: 0;
-  flex-shrink: 1;
 }
 .back-btn {
+  flex: none;
   color: var(--color-text-secondary);
 }
 .back-btn:hover {
   color: var(--color-brand-hover) !important;
 }
+.info-main {
+  min-width: 0;
+}
 .info-main h2 {
   margin: 0;
   color: var(--color-text);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .info-meta {
   display: flex;
-  gap: 16px;
-  margin-top: 4px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 3px;
   color: var(--color-text-muted);
   font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 .meta-item {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  flex: none;
+}
+/* 时长是会议进行中的实时锚点：等宽数字避免每秒跳动 */
+.elapsed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .top-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  flex: none;
 }
-.volume-meta {
-  min-width: 72px;
+/* 分隔「查看会议信息」与「控制转写」两组操作 */
+.actions-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--color-border);
+}
+.icon-btn {
+  padding-inline: 8px;
 }
 .volume-meter {
   display: inline-block;
-  width: 64px;
+  width: 56px;
   height: 6px;
   border-radius: 3px;
   background: var(--color-surface-2);
   overflow: hidden;
+}
+/* 窗口变窄时优先保住操作区：录音方式退化为纯图标 */
+@media (max-width: 1040px) {
+  .record-label {
+    display: none;
+  }
 }
 .volume-meter-fill {
   display: block;
@@ -1055,6 +1119,39 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+/* 会议概要：承载从顶部栏移出的会议属性 */
+.meeting-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-surface-2);
+}
+.brief-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.brief-label {
+  color: var(--color-text-muted);
+}
+.brief-value {
+  color: var(--color-text);
+  font-weight: 500;
+}
+/* 三类会议配置平级切换，按钮等宽铺满 */
+.drawer-switch {
+  display: flex;
+  width: 100%;
+}
+.drawer-switch :deep(.ant-radio-button-wrapper) {
+  flex: 1 1 0;
+  padding-inline: 6px;
+  text-align: center;
 }
 .detail-list {
   display: flex;

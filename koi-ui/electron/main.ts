@@ -63,6 +63,28 @@ const TITLE_BAR_HEIGHT = 36;
 /** macOS 红绿灯窗口按钮的尺寸（用于垂直居中计算） */
 const TRAFFIC_LIGHT_SIZE = 12;
 
+/**
+ * 无边框自绘标题栏的窗口外观配置（主窗口与第二屏窗口共用）。
+ * macOS 保留原生红绿灯，Windows / Linux 使用 Window Controls Overlay。
+ */
+const WINDOW_CHROME: BrowserWindowConstructorOptions = {
+  titleBarStyle: 'hidden',
+  ...(IS_MAC
+    ? {
+        trafficLightPosition: {
+          x: 12,
+          y: Math.round((TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_SIZE) / 2),
+        },
+      }
+    : {
+        titleBarOverlay: {
+          color: '#ffffff',
+          symbolColor: 'rgba(0, 0, 0, 0.88)',
+          height: TITLE_BAR_HEIGHT,
+        },
+      }),
+};
+
 /** 窗口控制相关 IPC 通道 */
 const WINDOW_CHANNEL = {
   platform: 'window:get-platform',
@@ -86,7 +108,23 @@ interface TitleBarOverlay {
   height?: number;
 }
 
+/** 第二屏相关 IPC 通道（实时转写投屏窗口，仅窗口管理，不承载转写数据） */
+const PRESENT_CHANNEL = {
+  /** 打开（或复用）第二屏，参数为 hash 路由 */
+  open: 'present:open',
+  /** 关闭第二屏 */
+  close: 'present:close',
+  /** 查询第二屏是否已打开 */
+  isOpen: 'present:is-open',
+  /** 切换第二屏全屏态 */
+  toggleFullScreen: 'present:toggle-fullscreen',
+  /** 主进程 -> 主窗口：第二屏开关状态变化 */
+  stateChanged: 'present:state-changed',
+} as const;
+
 let mainWindow: BrowserWindow | null = null;
+/** 第二屏展示窗口（实时转写投屏） */
+let presentWindow: BrowserWindow | null = null;
 /** 权限引导弹窗去重，避免同一权限反复弹出 */
 const permissionPromptPending = new Set<MediaType>();
 
@@ -411,30 +449,115 @@ const registerWindowIpc = (): void => {
 };
 
 /* ============================================================
- * 二、窗口与应用生命周期
+ * 二、第二屏展示窗口（实时转写投屏）
+ *
+ * 主进程只负责开窗与窗口状态同步：转写数据不经 IPC 转发，
+ * 第二屏窗口像实时转写页一样自行建立 Socket.IO 连接，
+ * 以 viewer 角色订阅会议转写结果（见 services/presenter.ts 与 LiveMeetingPresent.vue）。
+ * ========================================================== */
+
+/** 第二屏窗口默认尺寸 */
+const PRESENT_WINDOW_SIZE = { width: 1280, height: 800 };
+
+/** 第二屏默认路由 */
+const PRESENT_DEFAULT_HASH = '/live/present';
+
+/** 判断窗口是否仍然可用（未关闭 / 未销毁） */
+const isAlive = (win: BrowserWindow | null): win is BrowserWindow => !!win && !win.isDestroyed();
+
+/**
+ * 加载第二屏页面，取址方式与主窗口保持一致：
+ * - dev：Rsbuild devServer 地址 + hash 路由
+ * - 打包后：dist/index.html + hash 路由（loadFile 的 hash 选项会自动补 '#'）
+ */
+const loadPresentPage = async (win: BrowserWindow, hash: string): Promise<void> => {
+  const devServerUrl = process.env['ELECTRON_RENDERER_URL'];
+  if (devServerUrl) {
+    await win.loadURL(`${devServerUrl}#${hash}`);
+    return;
+  }
+  await win.loadFile(app.getAppPath() + '/dist/index.html', { hash });
+};
+
+/** 把第二屏开关状态同步给主窗口（按钮态展示用） */
+const emitPresentState = (): void => {
+  if (!isAlive(mainWindow)) return;
+  mainWindow.webContents.send(PRESENT_CHANNEL.stateChanged, { open: isAlive(presentWindow) });
+};
+
+/** 关闭第二屏（结束会议 / 主窗口关闭时调用） */
+const closePresentWindow = (): void => {
+  if (isAlive(presentWindow)) presentWindow.close();
+};
+
+/**
+ * 打开第二屏展示窗口；已存在时复用同一窗口并重载目标路由，
+ * 保证会议参数与主窗口一致（重载后第二屏会重新拉取历史转写并重新订阅会议频道）。
+ */
+const openPresentWindow = async (hash = PRESENT_DEFAULT_HASH): Promise<{ open: boolean }> => {
+  const existing = isAlive(presentWindow) ? presentWindow : null;
+  const win =
+    existing ??
+    new BrowserWindow({
+      ...WINDOW_CHROME,
+      ...PRESENT_WINDOW_SIZE,
+      minWidth: 640,
+      minHeight: 420,
+      title: 'koi-studio 实时转写',
+      webPreferences: {
+        nodeIntegration: true,
+        webSecurity: false,
+        contextIsolation: false,
+        // 投屏窗口长期处于非焦点状态，关闭后台节流以保证画面实时刷新
+        backgroundThrottling: false,
+      },
+    });
+
+  if (!existing) {
+    presentWindow = win;
+    win.on('closed', () => {
+      presentWindow = null;
+      emitPresentState();
+    });
+  }
+
+  await loadPresentPage(win, hash);
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  emitPresentState();
+  return { open: true };
+};
+
+const registerPresentIpc = (): void => {
+  ipcMain.handle(PRESENT_CHANNEL.open, (_event, hash?: string) =>
+    openPresentWindow(hash || PRESENT_DEFAULT_HASH),
+  );
+
+  ipcMain.handle(PRESENT_CHANNEL.close, () => {
+    closePresentWindow();
+    emitPresentState();
+  });
+
+  ipcMain.handle(PRESENT_CHANNEL.isOpen, (): { open: boolean } => ({ open: isAlive(presentWindow) }));
+
+  ipcMain.handle(PRESENT_CHANNEL.toggleFullScreen, (): { fullScreen: boolean } => {
+    if (!isAlive(presentWindow)) return { fullScreen: false };
+    const next = !presentWindow.isFullScreen();
+    presentWindow.setFullScreen(next);
+    return { fullScreen: next };
+  });
+};
+
+/* ============================================================
+ * 三、窗口与应用生命周期
  * ========================================================== */
 
 const createWindow = async () => {
+  // 无边框自绘标题栏（VS Code 风格）：macOS 保留原生红绿灯，
+  // Windows / Linux 通过 Window Controls Overlay 提供原生窗口控件。
   const config: BrowserWindowConstructorOptions = {
-    // 移除系统默认标题栏，由渲染进程自绘（VS Code 风格）
-    titleBarStyle: 'hidden',
-    // macOS：保留原生红绿灯，并让其垂直居中于自绘标题栏
-    // Windows / Linux：通过 Window Controls Overlay 提供原生窗口控件（渲染进程可用
-    // navigator.windowControlsOverlay / env(titlebar-area-*) 拿到标题栏安全区）
-    ...(IS_MAC
-      ? {
-          trafficLightPosition: {
-            x: 12,
-            y: Math.round((TITLE_BAR_HEIGHT - TRAFFIC_LIGHT_SIZE) / 2),
-          },
-        }
-      : {
-          titleBarOverlay: {
-            color: '#ffffff',
-            symbolColor: 'rgba(0, 0, 0, 0.88)',
-            height: TITLE_BAR_HEIGHT,
-          },
-        }),
+    ...WINDOW_CHROME,
     webPreferences: {
       nodeIntegration: true,
       webSecurity: false,
@@ -444,6 +567,8 @@ const createWindow = async () => {
   mainWindow = new BrowserWindow(config);
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // 主窗口退出时一并关闭第二屏，避免残留无数据的投屏窗口
+    closePresentWindow();
   });
   // 最大化 / 全屏 / 聚焦态变化时通知渲染进程，标题栏据此调整布局与样式
   (
@@ -507,6 +632,7 @@ if (!gotTheLock) {
     registerSessionHandlers();
     registerCaptureIpc();
     registerWindowIpc();
+    registerPresentIpc();
 
     await createWindow();
   });

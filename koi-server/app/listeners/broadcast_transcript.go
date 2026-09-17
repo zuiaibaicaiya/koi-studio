@@ -11,7 +11,8 @@ import (
 	"koi-server/packages/socketio"
 )
 
-// BroadcastTranscript 把转写结果广播到客户端的私有频道。
+// BroadcastTranscript 把转写结果广播到采集端的私有频道，
+// 以及所属会议的只读观众频道（第二屏投屏等订阅端）。
 type BroadcastTranscript struct{}
 
 // Signature 监听器唯一标识。
@@ -59,6 +60,11 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 		speakerDescription string
 		hasEnhanced        bool
 	)
+	// meetingID 与结果是否定稿无关：中间结果同样要投递到会议观众频道，
+	// 因此单独解析，不放在 hasEnhanced 分支内。
+	if len(args) >= 8 {
+		meetingID, _ = toUint(args[7])
+	}
 	if len(args) >= 9 && isFinal {
 		// 仅最终结果才解析增强参数：中间结果没有经过说话人识别管线，
 		// 其 SpeakerName / SpeakerID 均为零值，下发会错误地覆盖前端已展示的说话人。
@@ -67,7 +73,6 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 		endMs, _ = toInt64(args[4])
 		speakerName, _ = args[5].(string)
 		speakerID, _ = args[6].(*uint)
-		meetingID, _ = toUint(args[7])
 		wordTimestamps, _ = args[8].(string)
 	}
 	if len(args) >= 10 {
@@ -105,6 +110,17 @@ func (r *BroadcastTranscript) Handle(args ...any) error {
 		broadcasting.EventTranscript,
 		transcriptPayload,
 	)
+
+	// 会议观众频道（第二屏投屏等只读客户端）与私有频道并行投递。
+	// 采集端不在该频道内，因此不会重复收到自己的转写结果。
+	if meetingID > 0 {
+		facades.Socketio().EmitToRoom(
+			socketio.DefaultNamespace,
+			broadcasting.MeetingViewerChannel(meetingID),
+			broadcasting.EventTranscript,
+			transcriptPayload,
+		)
+	}
 
 	// ── 增强版转写结果（仅最终结果，含说话人对象 + 词级时间戳） ──
 	if hasEnhanced && text != "" {
