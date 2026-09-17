@@ -3,8 +3,8 @@ package audio
 import (
 	"testing"
 
-	"github.com/stretchr/testify/suite"
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+	"github.com/stretchr/testify/suite"
 )
 
 type SessionTimestampTestSuite struct {
@@ -90,9 +90,9 @@ func (s *SessionTimestampTestSuite) TestTrackTokensApproxCatchUp() {
 // markUtteranceStart 优先使用能量检测到的真实语音起点。
 func (s *SessionTimestampTestSuite) TestMarkUtteranceStartPrefersVoiceStart() {
 	sess := &session{
-		voiceStartSample: 5000,
+		voiceStartSample:  5000,
 		windowStartSample: 9000,
-		emittedTokens:    []tokenEmit{{token: "你", samplePos: 10000}},
+		emittedTokens:     []tokenEmit{{token: "你", samplePos: 10000}},
 	}
 	sess.markUtteranceStart()
 	s.Equal(int64(5000), sess.utteranceStart)
@@ -106,9 +106,9 @@ func (s *SessionTimestampTestSuite) TestMarkUtteranceStartPrefersVoiceStart() {
 // 无能量检测结果时，退化为第一个已发射 token 的模型时间戳。
 func (s *SessionTimestampTestSuite) TestMarkUtteranceStartFallsBackToFirstToken() {
 	sess := &session{
-		voiceStartSample: -1,
+		voiceStartSample:  -1,
 		windowStartSample: 9000,
-		emittedTokens:    []tokenEmit{{token: "你", samplePos: 10000}},
+		emittedTokens:     []tokenEmit{{token: "你", samplePos: 10000}},
 	}
 	sess.markUtteranceStart()
 	s.Equal(int64(10000), sess.utteranceStart)
@@ -167,8 +167,8 @@ func (s *SessionTimestampTestSuite) TestDetectVoiceStartSkipsAfterText() {
 // commitEndMs 基于最后 token 的结束位置，且不超前于已接收音频、不早于上一次提交。
 func (s *SessionTimestampTestSuite) TestCommitEndMs() {
 	sess := &session{
-		sampleRate:          16000,
-		totalSamples:        48000, // 3s
+		sampleRate:           16000,
+		totalSamples:         48000, // 3s
 		lastEmittedEndSample: 16000, // 1s
 		lastCommitEnd:        8000,  // 0.5s
 	}
@@ -179,8 +179,8 @@ func (s *SessionTimestampTestSuite) TestCommitEndMs() {
 // commitEndMs：token 末尾超出当前音频位置时，钳制到当前音频位置。
 func (s *SessionTimestampTestSuite) TestCommitEndMsClampedToCurrentOffset() {
 	sess := &session{
-		sampleRate:          16000,
-		totalSamples:        17600, // 1.1s
+		sampleRate:           16000,
+		totalSamples:         17600, // 1.1s
 		lastEmittedEndSample: 16000, // 1s
 		lastCommitEnd:        0,
 	}
@@ -190,9 +190,9 @@ func (s *SessionTimestampTestSuite) TestCommitEndMsClampedToCurrentOffset() {
 // currentTokenEndMs 与 utteranceStartMs 的毫秒换算。
 func (s *SessionTimestampTestSuite) TestMsConversion() {
 	sess := &session{
-		sampleRate:          16000,
-		totalSamples:        48000,
-		utteranceStart:      32000,
+		sampleRate:           16000,
+		totalSamples:         48000,
+		utteranceStart:       32000,
 		lastEmittedEndSample: 16000,
 	}
 	s.Equal(int64(2000), sess.utteranceStartMs())
@@ -200,22 +200,125 @@ func (s *SessionTimestampTestSuite) TestMsConversion() {
 	s.Equal(int64(3000), sess.currentOffsetMs())
 }
 
-// resetUtteranceTracking 重置后，流起点重新标记为下一帧起点。
-func (s *SessionTimestampTestSuite) TestResetUtteranceTrackingResetsStreamStart() {
+// resetStreamTracking 重置后，流起点重新标记为下一帧起点，累积文本与 token 一并清空。
+func (s *SessionTimestampTestSuite) TestResetStreamTrackingResetsStreamStart() {
 	sess := &session{
 		sampleRate:           16000,
 		totalSamples:         48000,
 		utteranceStreamStart: 16000,
 		voiceStartSample:     8000,
 		voiceStartFrames:     3,
+		emittedTokens:        []tokenEmit{{token: "你", samplePos: 10000}},
+		lastTokenCount:       1,
+		uttTokenStart:        1,
+		textCursor:           5,
+		pendingRunes:         8,
 	}
-	sess.resetUtteranceTracking()
+	sess.resetStreamTracking()
 	s.Equal(int64(-1), sess.utteranceStreamStart)
 	s.Equal(int64(-1), sess.voiceStartSample)
 	s.Equal(0, sess.voiceStartFrames)
 	s.Equal(int64(0), sess.lastEmittedEndSample)
 	s.Equal(0, sess.lastTokenCount)
 	s.Len(sess.emittedTokens, 0)
+	s.Equal(0, sess.uttTokenStart)
+	s.Equal(0, sess.textCursor)
+	s.Equal(0, sess.pendingRunes)
+}
+
+// resetUtterance 只重置语句级状态：token 追踪与累积文本游标必须保留，
+// 否则同一识别流内的时间轴会断裂（历史 bug：每句 Reset 导致时间戳整体偏晚）。
+func (s *SessionTimestampTestSuite) TestResetUtteranceKeepsStreamState() {
+	sess := &session{
+		sampleRate:           16000,
+		totalSamples:         48000,
+		emittedTokens:        []tokenEmit{{token: "你", samplePos: 10000}},
+		lastTokenCount:       1,
+		uttTokenStart:        1,
+		textCursor:           3,
+		pendingRunes:         3,
+		voiceStartSample:     8000,
+		voiceStartFrames:     3,
+		utteranceHasText:     true,
+		utteranceStreamStart: 8000,
+	}
+	sess.resetUtterance()
+	s.Equal(int64(-1), sess.voiceStartSample)
+	s.Equal(0, sess.voiceStartFrames)
+	s.False(sess.utteranceHasText)
+	s.Len(sess.emittedTokens, 1)
+	s.Equal(1, sess.uttTokenStart)
+	s.Equal(3, sess.textCursor)
+	s.Equal(int64(8000), sess.utteranceStreamStart)
+}
+
+// utteranceTokens 只返回未提交语句对应的 token。
+func (s *SessionTimestampTestSuite) TestUtteranceTokensSlicesFromCursor() {
+	sess := &session{
+		emittedTokens: []tokenEmit{
+			{token: "已", samplePos: 1000},
+			{token: "提", samplePos: 2000},
+			{token: "交", samplePos: 3000},
+			{token: "新", samplePos: 4000},
+		},
+		uttTokenStart: 3,
+	}
+	tokens := sess.utteranceTokens()
+	s.Len(tokens, 1)
+	s.Equal("新", tokens[0].token)
+
+	// 游标越界时不返回任何 token（空切片而非越界 panic）。
+	sess.uttTokenStart = 4
+	s.Nil(sess.utteranceTokens())
+}
+
+// textSuffix 取累积文本中尚未提交的后缀；游标失效时退化为整段文本。
+func (s *SessionTimestampTestSuite) TestTextSuffix() {
+	sess := &session{textCursor: 2, pendingRunes: 5}
+	s.Equal("三四五", sess.textSuffix("一二三四五"))
+
+	// 识别流重建后累积文本可能短于游标：不应 panic，且从头开始。
+	sess.textCursor = 9
+	s.Equal("一二", sess.textSuffix("一二"))
+	s.Equal(0, sess.textCursor)
+}
+
+// hasPendingText 依据累积文本长度与已提交游标判断。
+func (s *SessionTimestampTestSuite) TestHasPendingText() {
+	sess := &session{textCursor: 3, pendingRunes: 3}
+	s.False(sess.hasPendingText())
+	sess.pendingRunes = 4
+	s.True(sess.hasPendingText())
+}
+
+// markCommitted 推进文本游标、结束本句 token 区间并清空说话人 PCM 缓冲。
+func (s *SessionTimestampTestSuite) TestMarkCommitted() {
+	sess := &session{
+		sampleRate:    16000,
+		totalSamples:  48000,
+		emittedTokens: []tokenEmit{{token: "你", samplePos: 1000}, {token: "好", samplePos: 2000}},
+		utterancePCM:  []byte{1, 2, 3, 4},
+	}
+	sess.markCommitted(2)
+	s.Equal(2, sess.textCursor)
+	s.Equal(2, sess.pendingRunes)
+	s.Equal(2, sess.uttTokenStart)
+	s.Empty(sess.utterancePCM)
+	s.Equal(int64(48000), sess.lastCommitEnd)
+	s.Equal(int64(48000), sess.utteranceStart)
+}
+
+// trailingSilenceMs：距最后一个 token 的音频时长，无 token 时为 0。
+func (s *SessionTimestampTestSuite) TestTrailingSilenceMs() {
+	sess := &session{sampleRate: 16000, totalSamples: 48000} // 3s
+	s.Equal(int64(0), sess.trailingSilenceMs())              // 无 token
+
+	sess.lastEmittedEndSample = 16000 // 1s
+	s.Equal(int64(2000), sess.trailingSilenceMs())
+
+	// token 位置超前于已接收音频时不返回负值。
+	sess.lastEmittedEndSample = 64000
+	s.Equal(int64(0), sess.trailingSilenceMs())
 }
 
 // 流起点未标记（Reset 后尚未收到音频帧）时，模型时间戳不可用，退化为窗口起点近似。
@@ -246,11 +349,11 @@ func (s *SessionTimestampTestSuite) TestTrackTokensFallsBackApproxTimestampsShor
 // 模型无时间戳、窗口起点在已发射末尾之前时，近似排布不倒退。
 func (s *SessionTimestampTestSuite) TestTrackTokensApproxNeverGoesBackwards() {
 	sess := &session{
-		sampleRate:          16000,
-		windowStartSample:   16000, // 早于已发射末尾
+		sampleRate:           16000,
+		windowStartSample:    16000, // 早于已发射末尾
 		lastEmittedEndSample: 20000,
-		emittedTokens:       []tokenEmit{{token: "a", samplePos: 20000}},
-		lastTokenCount:      1,
+		emittedTokens:        []tokenEmit{{token: "a", samplePos: 20000}},
+		lastTokenCount:       1,
 	}
 	sess.trackTokens(&sherpa.OnlineRecognizerResult{Tokens: []string{"a", "b"}})
 	s.Len(sess.emittedTokens, 2)
@@ -284,8 +387,8 @@ func (s *SessionTimestampTestSuite) TestMarkUtteranceStartFallsBackToCurrentPos(
 // 保证时间戳不超前于音频实际时间。
 func (s *SessionTimestampTestSuite) TestCurrentTokenEndMsClampedToAudio() {
 	sess := &session{
-		sampleRate:          16000,
-		totalSamples:        17600, // 1.1s
+		sampleRate:           16000,
+		totalSamples:         17600, // 1.1s
 		lastEmittedEndSample: 16000, // 1.0s + 0.15s tail 已超出
 	}
 	s.Equal(int64(1100), sess.currentTokenEndMs())
@@ -294,8 +397,8 @@ func (s *SessionTimestampTestSuite) TestCurrentTokenEndMsClampedToAudio() {
 // commitEndMs 的结束时间绝不早于上一次提交的结束时间（跨句单调保护）。
 func (s *SessionTimestampTestSuite) TestCommitEndMsNeverGoesBackwards() {
 	sess := &session{
-		sampleRate:          16000,
-		totalSamples:        48000, // 3s
+		sampleRate:           16000,
+		totalSamples:         48000, // 3s
 		lastEmittedEndSample: 16000, // token 结束 = 1150ms
 		lastCommitEnd:        20000, // 上一次提交结束 = 1250ms
 	}

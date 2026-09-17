@@ -331,8 +331,13 @@ func (s *Service) Close() error {
 }
 
 // buildRecognizerConfig 依据配置组装识别器参数。
+//
+// 显式关闭 sherpa-onnx 内置端点检测：其端点必须靠 OnlineStream.Reset 重新武装，
+// 而 Reset 会保留上一句尾部尚未被 chunk 消费的音频，污染下一句的特征上下文
+// （首字识别质量下降 + 逐字时间戳整体偏晚）。断句改由本服务在连续识别流上
+// 按尾部静音自行判定，见 decode 与 Config.SegmentSilenceMs。
 func (s *Service) buildRecognizerConfig() sherpa.OnlineRecognizerConfig {
-	cfg := sherpa.OnlineRecognizerConfig{
+	return sherpa.OnlineRecognizerConfig{
 		FeatConfig: sherpa.FeatureConfig{
 			SampleRate: s.cfg.SampleRate,
 			FeatureDim: s.cfg.FeatureDim,
@@ -347,18 +352,12 @@ func (s *Service) buildRecognizerConfig() sherpa.OnlineRecognizerConfig {
 			NumThreads: s.cfg.NumThreads,
 			Provider:   s.cfg.Provider,
 		},
-		DecodingMethod:          s.cfg.DecodingMethod,
-		MaxActivePaths:          s.cfg.MaxActivePaths,
-		Rule1MinTrailingSilence: s.cfg.Rule1Silence,
-		Rule2MinTrailingSilence: s.cfg.Rule2Silence,
-		Rule3MinUtteranceLength: s.cfg.Rule3Utterance,
-		HotwordsScore:           s.cfg.HotwordsScore,
-		HotwordsFile:            s.cfg.modelPath(s.cfg.HotwordsFile),
+		DecodingMethod: s.cfg.DecodingMethod,
+		MaxActivePaths: s.cfg.MaxActivePaths,
+		HotwordsScore:  s.cfg.HotwordsScore,
+		HotwordsFile:   s.cfg.modelPath(s.cfg.HotwordsFile),
+		EnableEndpoint: 0,
 	}
-	if s.cfg.EnableEndpoint {
-		cfg.EnableEndpoint = 1
-	}
-	return cfg
 }
 
 // preloadModel 异步预加载模型，避免首个客户端接入时长时间等待。
@@ -494,6 +493,11 @@ func (s *Service) work(sess *session) {
 		case frame := <-sess.chunks:
 			s.applyPending(sess)
 			if frame.last {
+				// 结束帧通常不带音频（客户端发空 buffer 作为收尾标记），
+				// 但若带音频也一并消费，避免丢掉最后一段。
+				if len(frame.data) > 0 {
+					s.consume(sess, frame.data)
+				}
 				s.finalize(sess)
 				return
 			}
@@ -509,6 +513,10 @@ func (s *Service) applyPending(sess *session) {
 		return
 	}
 
+	// 热词切换需要重建识别流，累积文本会从头开始：先把当前未提交的文本
+	// 按旧识别器定稿提交，避免这一段文本随流重建而丢失。
+	s.commitUtterance(sess)
+
 	stream := sherpa.NewOnlineStream(recognizer)
 	if stream == nil {
 		s.deps.Log.Error(fmt.Sprintf("audio: failed to rebuild stream for client %s during hotwords update", sess.clientID))
@@ -520,7 +528,8 @@ func (s *Service) applyPending(sess *session) {
 	}
 	sess.stream = stream
 	sess.recognizer = recognizer
-	sess.resetUtterance()
+	// 新识别器上是一条全新的识别流：累积文本、token 时间轴都从头开始。
+	sess.resetStreamTracking()
 }
 
 // consume 落盘并解码一帧音频。
@@ -548,11 +557,19 @@ func (s *Service) consume(sess *session, data []byte) {
 	s.decode(sess)
 }
 
-// decode 把采样点送入识别流，按批解码并下发中间/最终结果。
+// decode 把采样点送入识别流，按批解码并下发中间结果，并在合适的时机断句。
+//
+// 断句（句子边界）由本服务自行判定，而不是使用 sherpa-onnx 的端点检测：
+// 整场会话只使用一条连续识别流，任何 Reset 都会保留上一句尾部音频、破坏
+// 下一句的时间戳原点与首字识别质量（详见 session.emittedTokens 的说明）。
+//
+// 断句条件（两者之一）：
+//  1. 尾部静音：距最后一个已发射 token 的音频时长达到 SegmentSilenceMs；
+//  2. 单句过长：当前语音段时长超过 MaxUtterance，强制断句避免结果迟迟不下发。
 func (s *Service) decode(sess *session) {
-	// 记录本次解码窗口（当前帧）的起点采样位置，并初始化当前语音段的流起点。
-	// 流式模型固定 token 需要前置上下文，token 时间戳以流起点为基准，
-	// 可避免解码延迟把时间戳整体往后推。
+	// 记录本次解码窗口（当前帧）的起点采样位置，并初始化识别流起点。
+	// 流式模型需要前置上下文，token 时间戳以流起点为基准，
+	// 据此可把 token 位置还原为会话时间轴上的绝对采样位置。
 	sess.windowStartSample = sess.totalSamples - int64(len(sess.samples))
 	if sess.utteranceStreamStart < 0 {
 		sess.utteranceStreamStart = sess.windowStartSample
@@ -560,78 +577,100 @@ func (s *Service) decode(sess *session) {
 	sess.stream.AcceptWaveform(s.cfg.SampleRate, sess.samples)
 	sess.batch++
 
-	// 攒批解码以降低 CPU 占用；检测到端点时立即解码保证响应速度。
-	if sess.batch%s.cfg.DecodeBatch == 0 || sess.recognizer.IsEndpoint(sess.stream) {
-		var partial string
-		var result *sherpa.OnlineRecognizerResult
-		for sess.recognizer.IsReady(sess.stream) {
-			sess.recognizer.Decode(sess.stream)
-			result = sess.recognizer.GetResult(sess.stream)
-			partial = result.Text
-		}
-		// 记录 token 对应的真实音频采样位置，供字级时间戳对齐音频。
-		// 优先使用模型产出的 token 级时间戳，消除「token 被解码发现晚于
-		// 其实际发音」带来的系统性时间漂移。
-		if result != nil && len(result.Tokens) > 0 {
-			sess.trackTokens(result)
-		}
-
-		// 文本出现时标记语音段起始。
-		if partial != "" {
-			sess.markUtteranceStart()
-		}
-
-		// 限流下发：文本无变化或距上次下发不足间隔时跳过。
-		if partial != "" && partial != sess.lastSentText && time.Since(sess.lastSentAt) > s.cfg.EmitInterval {
-			sess.lastSentText = partial
-			sess.lastSentAt = time.Now()
-			s.publishIntermediate(sess, partial)
-		}
+	// 攒批解码以降低 CPU 占用。
+	if sess.batch%s.cfg.DecodeBatch == 0 {
+		s.decodeBatch(sess)
 		sess.batch = 0
 	}
 
-	if sess.recognizer.IsEndpoint(sess.stream) {
-		s.commitUtterance(sess)
+	if !sess.hasPendingText() {
 		return
 	}
-
-	// 长时间未检测到端点时强制断句，防止结果迟迟不下发。
-	if time.Since(sess.utteranceAt) > s.cfg.MaxUtterance {
-		sess.stream.InputFinished()
-		for sess.recognizer.IsReady(sess.stream) {
-			sess.recognizer.Decode(sess.stream)
-			if result := sess.recognizer.GetResult(sess.stream); len(result.Tokens) > 0 {
-				sess.trackTokens(result)
-			}
-		}
+	if sess.trailingSilenceMs() >= int64(s.cfg.SegmentSilenceMs) ||
+		sess.currentOffsetMs()-sess.utteranceStartMs() > s.cfg.MaxUtterance.Milliseconds() {
 		s.commitUtterance(sess)
 	}
 }
 
+// decodeBatch 推进一次解码：增量记录 token 时间戳，并限流下发中间结果。
+func (s *Service) decodeBatch(sess *session) {
+	var result *sherpa.OnlineRecognizerResult
+	for sess.recognizer.IsReady(sess.stream) {
+		sess.recognizer.Decode(sess.stream)
+		result = sess.recognizer.GetResult(sess.stream)
+	}
+	if result == nil {
+		return
+	}
+
+	// 记录 token 对应的真实音频采样位置，供字级时间戳对齐音频。
+	// 优先使用模型产出的 token 级时间戳，消除「token 被解码发现晚于
+	// 其实际发音」带来的系统性时间漂移。
+	if len(result.Tokens) > 0 {
+		sess.trackTokens(result)
+	}
+	if result.Text == "" {
+		return
+	}
+	sess.pendingRunes = len([]rune(result.Text))
+	if !sess.hasPendingText() {
+		// 本批没有新文本（累积文本已全部提交），不标记语句起始。
+		return
+	}
+
+	// 文本出现时标记语音段起始。
+	sess.markUtteranceStart()
+
+	// 限流下发：文本无变化或距上次下发不足间隔时跳过。
+	partial := sess.textSuffix(result.Text)
+	if partial != "" && partial != sess.lastSentText && time.Since(sess.lastSentAt) > s.cfg.EmitInterval {
+		sess.lastSentText = partial
+		sess.lastSentAt = time.Now()
+		s.publishIntermediate(sess, partial)
+	}
+}
+
 // commitUtterance 输出一句已确定的文本，同时执行说话人识别、入库存储、发布增强结果。
+//
+// 文本与 token 都取自同一条连续识别流：文本 = 累积文本中尚未提交的后缀，
+// token = emittedTokens 中本句的部分。两者共享同一时间轴，因此逐字时间戳
+// 与音频严格对齐（与整段离线解码结果逐字一致），不会出现整体偏移或首字零宽。
 func (s *Service) commitUtterance(sess *session) {
-	text := sess.recognizer.GetResult(sess.stream).Text
+	result := sess.recognizer.GetResult(sess.stream)
+	if result == nil {
+		return
+	}
+	fullRunes := len([]rune(result.Text))
+	text := sess.textSuffix(result.Text)
+	tokens := sess.utteranceTokens()
+
 	if text == "" {
-		sess.recognizer.Reset(sess.stream)
+		// 没有新文本：只推进游标并清理语句级状态，识别流与时间轴保持不变。
+		sess.markCommitted(fullRunes)
 		sess.resetUtterance()
-		sess.resetUtteranceTracking()
 		return
 	}
 
 	sess.markUtteranceStart()
 
 	// 1. 计算时间戳
-	startMs := sess.utteranceStartMs()
 	endMs := sess.commitEndMs()
-
-	// 2. 计算词级时间戳（优先基于 token 发射时的真实采样位置对齐音频，
+	// 2. 计算词级时间戳（基于 token 发射时的真实采样位置对齐音频，
 	//    流模型不产出 token 时间戳时退化为按音频时长的近似对齐）。
 	var wordTimestamps []models.WordTimestamp
-	if len(sess.emittedTokens) > 0 {
-		wordTimestamps = buildRealtimeWordTimestamps(text, sess.emittedTokens, s.cfg.SampleRate, startMs, endMs)
+	if len(tokens) > 0 {
+		wordTimestamps = buildRealtimeWordTimestamps(text, tokens, s.cfg.SampleRate, endMs)
 	}
 	if len(wordTimestamps) == 0 {
+		startMs := sess.utteranceStartMs()
 		wordTimestamps = computeWordTimestamps(text, startMs, endMs)
+	}
+	// 句子起点不允许晚于第一个字的起点：能量检测出的语音起点可能因噪声或
+	// 检测滞后而偏晚，若直接用它裁剪会把首字压成零宽区间（前端表现为点不中、
+	// 高亮串字）。此处取两者的较早值，保证 startMs <= 首字起点。
+	startMs := sess.utteranceStartMs()
+	if len(wordTimestamps) > 0 && wordTimestamps[0].StartMs < startMs {
+		startMs = wordTimestamps[0].StartMs
 	}
 	wordTimestampsJSON, _ := json.Marshal(wordTimestamps)
 
@@ -647,11 +686,11 @@ func (s *Service) commitUtterance(sess *session) {
 	// 6. 单独推送说话人识别事件（客户端可据此更新说话人指示器）
 	s.publishSpeakerIdentified(sess, speakerName, speakerID, speaker)
 
-	// 7. 更新累积文本并重置状态
+	// 7. 推进游标、累积文本并重置语句级状态。
+	//    注意：这里**不做** recognizer.Reset —— 整场会话保持同一条连续识别流。
+	sess.markCommitted(fullRunes)
 	sess.appendTranscript(text + " ")
-	sess.recognizer.Reset(sess.stream)
 	sess.resetUtterance()
-	sess.resetUtteranceTracking()
 }
 
 // identifySpeaker 从当前语音段提取声纹并在会议选择的说话人中检索。
@@ -841,8 +880,8 @@ func (s *Service) publishIntermediate(sess *session, text string) {
 	sess.lastSentEndMs = endMs
 
 	var wordTimestamps []models.WordTimestamp
-	if len(sess.emittedTokens) > 0 {
-		wordTimestamps = buildRealtimeWordTimestamps(text, sess.emittedTokens, s.cfg.SampleRate, startMs, endMs)
+	if tokens := sess.utteranceTokens(); len(tokens) > 0 {
+		wordTimestamps = buildRealtimeWordTimestamps(text, tokens, s.cfg.SampleRate, endMs)
 	}
 	wordTimestampsJSON, _ := json.Marshal(wordTimestamps)
 
@@ -877,8 +916,15 @@ func (s *Service) finalize(sess *session) {
 	for sess.recognizer.IsReady(sess.stream) {
 		sess.recognizer.Decode(sess.stream)
 	}
-	if text := sess.recognizer.GetResult(sess.stream).Text; text != "" {
-		sess.appendTranscript(text)
+	// 冲刷出的尾部 token 同样要计入时间轴，否则最后一句的时间戳会缺失尾字。
+	if result := sess.recognizer.GetResult(sess.stream); result != nil {
+		if len(result.Tokens) > 0 {
+			sess.trackTokens(result)
+		}
+		sess.pendingRunes = len([]rune(result.Text))
+		// 会议结束前最后一段语音未必等到断句条件（尾部静音/单句上限），
+		// 这里补做一次提交：否则最后一句既不落库也不下发，会议详情里直接丢失。
+		s.commitUtterance(sess)
 	}
 
 	// 获取 meetingID 用于归档
@@ -1041,13 +1087,13 @@ func computeWordTimestamps(text string, startMs, endMs int64) []models.WordTimes
 // 实际时间。tokenTimes 提供逐字（去掉 ▁ 前缀后的字符）时间戳，再由
 // transcript.WordsFromCharTimes 切分为中文字/英文词；若字符无法对齐，返回 nil，
 // 由调用方退化为近似方案。
-func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate int, startMs, endMs int64) []models.WordTimestamp {
-	if len(emitted) == 0 || sampleRate <= 0 || endMs <= startMs {
+//
+// emitted 中记录的 samplePos 是 token 在整场会话音频中的**绝对**位置（连续识别流），
+// 因此 AlignCharTimes 得到的逐字时刻就是音频真实时刻，不需要再按句起点平移；
+// endMs 只用于兜底裁剪（词尾不得超出句子结束时间）。
+func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate int, endMs int64) []models.WordTimestamp {
+	if len(emitted) == 0 || sampleRate <= 0 {
 		return nil
-	}
-	type tokTime struct {
-		tok  string
-		tSec float32
 	}
 	tts := make([]transcript.TokenTimestamp, 0, len(emitted))
 	for _, e := range emitted {
@@ -1065,37 +1111,38 @@ func buildRealtimeWordTimestamps(text string, emitted []tokenEmit, sampleRate in
 	// 避免前端按“下一个字的开始时间”推算结束时刻时把静音整段归到前一个字上，
 	// 导致点击某字播放的内容与实际发音位置不符。
 	words := transcript.WordsFromCharTimesIntervals(text, charTimes)
-	return clampWords(words, startMs, endMs)
+	return clampWordEnds(words, endMs)
 }
 
-// clampWords 将词级时间戳裁剪到 [startMs, endMs] 并强制单调递增。
+// clampWordEnds 把词级时间戳裁剪到 endMs 以内，并保证 StartMs <= EndMs、
+// 相邻词单调不减且互不重叠（给前端逐字高亮与点击定位提供可靠区间）。
 //
-// 裁剪后始终保证 StartMs <= EndMs：当词的起点本身超出 endMs（理论/近似时间戳
-// 超前）时，起点与终点一并钳制到 endMs，避免出现时间倒挂。
-func clampWords(words []models.WordTimestamp, startMs, endMs int64) []models.WordTimestamp {
+// 注意：这里**不**以句子的 startMs 作为下界裁剪。能量检测得到的语音起点可能
+// 因噪声或检测滞后而偏晚，若用它裁剪，首字会被压成 [startMs, startMs] 的零宽区间：
+// 前端既无法把该字高亮为「正在播放」（零宽区间永远不含播放头），又会因自行补足
+// 时长而与后一个字的高亮区间重叠（历史的“高亮串字/点不中”问题）。
+// 句子起点由调用方按「语音起点与首字起点的较早值」决定（见 commitUtterance）。
+func clampWordEnds(words []models.WordTimestamp, endMs int64) []models.WordTimestamp {
 	if len(words) == 0 {
 		return nil
 	}
 	out := make([]models.WordTimestamp, 0, len(words))
-	last := startMs
+	last := int64(-1)
 	for _, w := range words {
-		s := w.StartMs
-		if s < startMs {
-			s = startMs
+		s, e := w.StartMs, w.EndMs
+		if s < 0 {
+			s = 0
 		}
-		if s < last {
+		if last >= 0 && s < last {
 			s = last
 		}
-		e := w.EndMs
 		if e < s {
 			e = s
 		}
-		if e > endMs {
+		// 仅当区间与 endMs 有交集时才裁剪；整段落在句子结束之后的词
+		// （理论上不会出现，属于时间戳异常）保留原区间，避免信息被裁掉。
+		if endMs > 0 && e > endMs && s < endMs {
 			e = endMs
-		}
-		if s > e {
-			// 起点超出 endMs：随终点一起钳制，保证不倒挂。
-			s = e
 		}
 		out = append(out, models.WordTimestamp{Word: w.Word, StartMs: s, EndMs: e})
 		last = e

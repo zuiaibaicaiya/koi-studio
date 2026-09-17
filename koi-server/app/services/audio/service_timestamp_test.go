@@ -20,6 +20,7 @@ func TestWordTimestampTestSuite(t *testing.T) {
 //
 // 模型 token 时间戳是该字发音的【结束】时刻，因此每个字的区间向前回溯：
 // 连续语音时区间首尾相接，首字按常规发音时长(300ms)向前回退。
+// emitted 中的 samplePos 为整场会话音频内的绝对位置，无需再按句起点平移。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsChinese() {
 	emitted := []tokenEmit{
 		{token: "你", samplePos: 12800}, // 0.8s
@@ -27,7 +28,7 @@ func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsChinese() {
 		{token: "世", samplePos: 24000}, // 1.5s
 		{token: "界", samplePos: 28800}, // 1.8s
 	}
-	words := buildRealtimeWordTimestamps("你好世界", emitted, 16000, 500, 1800)
+	words := buildRealtimeWordTimestamps("你好世界", emitted, 16000, 1800)
 	s.Len(words, 4)
 	s.Equal("你", words[0].Word)
 	s.Equal(int64(500), words[0].StartMs) // 800 - 300ms 常规发音时长
@@ -52,7 +53,7 @@ func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsMixed() {
 		{token: "好", samplePos: 19200},      // 1.2s
 		{token: "▁world", samplePos: 41600}, // 2.6s
 	}
-	words := buildRealtimeWordTimestamps("你好 world", emitted, 16000, 500, 2600)
+	words := buildRealtimeWordTimestamps("你好 world", emitted, 16000, 2600)
 	s.Len(words, 3)
 	s.Equal("你", words[0].Word)
 	s.Equal(int64(500), words[0].StartMs)
@@ -67,68 +68,90 @@ func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsMixed() {
 
 // buildRealtimeWordTimestamps：无已发射 token 时返回 nil。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsEmptyEmitted() {
-	words := buildRealtimeWordTimestamps("你好", nil, 16000, 500, 1500)
+	words := buildRealtimeWordTimestamps("你好", nil, 16000, 1500)
 	s.Nil(words)
 }
 
-// buildRealtimeWordTimestamps：endMs <= startMs 时返回 nil。
-func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsInvalidRange() {
+// buildRealtimeWordTimestamps：采样率非法时返回 nil。
+func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsInvalidSampleRate() {
 	emitted := []tokenEmit{{token: "你", samplePos: 8000}}
-	words := buildRealtimeWordTimestamps("你", emitted, 16000, 1000, 500)
-	s.Nil(words)
+	s.Nil(buildRealtimeWordTimestamps("你", emitted, 0, 1000))
 }
 
-// buildRealtimeWordTimestamps：词时间戳必须落在 [startMs, endMs] 内且单调不减。
+// buildRealtimeWordTimestamps：词尾超出 endMs 时被裁剪，且不产生零宽区间。
 func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsClamped() {
 	emitted := []tokenEmit{
 		{token: "你", samplePos: 16000}, // 1.0s
 		{token: "好", samplePos: 48000}, // 3.0s
 	}
-	words := buildRealtimeWordTimestamps("你好", emitted, 16000, 1000, 2000)
+	words := buildRealtimeWordTimestamps("你好", emitted, 16000, 2000)
 	s.Len(words, 2)
-	// 好 的 3.0s 超出 endMs=2000，被裁剪到 2000。
-	s.Equal(int64(2000), words[1].StartMs)
-	s.Equal(int64(2000), words[1].EndMs)
+	// 好 的区间 [2700, 3000] 整体落在 endMs=2000 之后：保留原区间而不是压成零宽。
+	s.Equal(int64(2700), words[1].StartMs)
+	s.Equal(int64(3000), words[1].EndMs)
 }
 
-// clampWords：起始时间早于 startMs 时裁剪，且结束后时间被钳制为不小于起点。
-func (s *WordTimestampTestSuite) TestClampWordsClampsStart() {
-	words := []models.WordTimestamp{
-		{Word: "a", StartMs: 100, EndMs: 300},
+// buildRealtimeWordTimestamps：句子起点晚于首字结束时，首字区间不得被压成零宽。
+//
+// 历史 bug：曾用能量检测得到的句子开始时间作为词区间的下界裁剪，
+// 当该起点偏晚（噪声/检测滞后）时首字被压成 [startMs, startMs]，
+// 前端既无法把该字高亮为「正在播放」，又会自行补时长导致与后一字重叠。
+func (s *WordTimestampTestSuite) TestBuildRealtimeWordTimestampsKeepsFirstWordSpan() {
+	emitted := []tokenEmit{
+		{token: "你", samplePos: 12800}, // 0.8s
+		{token: "好", samplePos: 19200}, // 1.2s
 	}
-	out := clampWords(words, 500, 2000)
-	s.Len(out, 1)
-	s.Equal("a", out[0].Word)
-	s.Equal(int64(500), out[0].StartMs)
-	s.Equal(int64(500), out[0].EndMs)
+	words := buildRealtimeWordTimestamps("你好", emitted, 16000, 1200)
+	s.Len(words, 2)
+	s.Less(words[0].StartMs, words[0].EndMs) // 区间长度 > 0
+	s.Equal(int64(800), words[0].EndMs)
 }
 
-// clampWords：结束时间晚于 endMs 时裁剪。
-func (s *WordTimestampTestSuite) TestClampWordsClampsEnd() {
+// clampWordEnds：结束时间晚于 endMs 时裁剪。
+func (s *WordTimestampTestSuite) TestClampWordEndsClampsEnd() {
 	words := []models.WordTimestamp{
 		{Word: "a", StartMs: 600, EndMs: 900},
 	}
-	out := clampWords(words, 500, 800)
+	out := clampWordEnds(words, 800)
 	s.Len(out, 1)
 	s.Equal(int64(600), out[0].StartMs)
 	s.Equal(int64(800), out[0].EndMs)
 }
 
-// clampWords：后续词时间回退时钳制为前一个词的结束时间，保证单调不减。
-func (s *WordTimestampTestSuite) TestClampWordsEnforcesMonotonic() {
+// clampWordEnds：完全不裁剪下界——首字起点早于句子起点时原样保留。
+func (s *WordTimestampTestSuite) TestClampWordEndsKeepsEarlyStart() {
+	words := []models.WordTimestamp{
+		{Word: "a", StartMs: 100, EndMs: 300},
+	}
+	out := clampWordEnds(words, 2000)
+	s.Len(out, 1)
+	s.Equal("a", out[0].Word)
+	s.Equal(int64(100), out[0].StartMs)
+	s.Equal(int64(300), out[0].EndMs)
+}
+
+// clampWordEnds：后续词时间回退时钳制为前一个词的结束时间，保证单调不减。
+func (s *WordTimestampTestSuite) TestClampWordEndsEnforcesMonotonic() {
 	words := []models.WordTimestamp{
 		{Word: "a", StartMs: 700, EndMs: 700},
 		{Word: "b", StartMs: 600, EndMs: 650}, // 整体回退
 	}
-	out := clampWords(words, 500, 2000)
+	out := clampWordEnds(words, 2000)
 	s.Len(out, 2)
 	s.Equal(int64(700), out[1].StartMs)
 	s.Equal(int64(700), out[1].EndMs)
 }
 
-// clampWords：空输入返回 nil。
-func (s *WordTimestampTestSuite) TestClampWordsEmpty() {
-	s.Nil(clampWords(nil, 500, 2000))
+// clampWordEnds：空输入返回 nil。
+func (s *WordTimestampTestSuite) TestClampWordEndsEmpty() {
+	s.Nil(clampWordEnds(nil, 2000))
+}
+
+// timestampsValid：全 0 的时间戳视为无效（sherpa 在某些情况下会返回等长全 0 数组）。
+func (s *WordTimestampTestSuite) TestTimestampsValid() {
+	s.False(timestampsValid(nil))
+	s.False(timestampsValid([]float32{0, 0, 0}))
+	s.True(timestampsValid([]float32{0, 0.4}))
 }
 
 // splitWords：中文为主时按字切分，英文单词作为整体。

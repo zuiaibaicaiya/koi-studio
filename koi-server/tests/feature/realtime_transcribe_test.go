@@ -201,6 +201,9 @@ func (s *RealtimeTranscribeTestSuite) TestRealtimeTranscribeMergedAudio() {
 
 	// ── 2. 读取 merged.wav PCM 数据 ──
 	mergedPath := "merged.wav"
+	if _, statErr := os.Stat(mergedPath); statErr != nil {
+		s.T().Skipf("缺少本地测试音频 %s（*.wav 不入库），跳过本用例", mergedPath)
+	}
 	pcmData, err := readWAVPCM(mergedPath)
 	s.Require().NoError(err, "读取 merged.wav 失败: %s", mergedPath)
 	s.Require().NotEmpty(pcmData, "PCM 数据为空")

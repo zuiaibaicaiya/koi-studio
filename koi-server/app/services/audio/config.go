@@ -32,13 +32,17 @@ type Config struct {
 	QueueSize    int
 	DecodeBatch  int
 	EmitInterval time.Duration
-	MaxUtterance time.Duration
 
-	// 端点检测
-	EnableEndpoint bool
-	Rule1Silence   float32
-	Rule2Silence   float32
-	Rule3Utterance float32
+	// 断句（实时）
+	//
+	// 实时转写不使用 sherpa-onnx 的内置端点检测（Reset 会污染下一句的
+	// 时间戳原点与首字识别质量），而是在一条连续识别流上按尾部静音自行断句。
+	// SegmentSilenceMs 为「距最后一个已发射 token 的音频时长」阈值：
+	// 该值包含模型发射 token 的固有延迟（约 0.2~0.4s），因此需要明显大于
+	// 期望的真实静音时长，避免正常说话中的换气停顿被误判为句尾。
+	SegmentSilenceMs int
+	// MaxUtterance 单句最长时长，超过后强制断句，避免长时间无停顿导致结果迟迟不下发。
+	MaxUtterance time.Duration
 
 	// 热词
 	HotwordsScore float32
@@ -47,9 +51,9 @@ type Config struct {
 	Disk string
 
 	// 说话人识别
-	SpeakerIdentifyEnabled      bool
-	SpeakerIdentifyMinDuration  float64
-	SpeakerIdentifyMaxBuffer    float64
+	SpeakerIdentifyEnabled     bool
+	SpeakerIdentifyMinDuration float64
+	SpeakerIdentifyMaxBuffer   float64
 }
 
 // NewConfig 从 config/audio.go 读取配置并归一化。
@@ -72,12 +76,9 @@ func NewConfig(cfg config.Config) Config {
 		QueueSize:    cfg.GetInt("audio.stream.queue_size", 64),
 		DecodeBatch:  cfg.GetInt("audio.stream.decode_batch", 3),
 		EmitInterval: time.Duration(cfg.GetInt("audio.stream.emit_interval", 200)) * time.Millisecond,
-		MaxUtterance: time.Duration(cfg.GetInt("audio.stream.max_utterance", 20)) * time.Second,
 
-		EnableEndpoint: cfg.GetBool("audio.endpoint.enable", true),
-		Rule1Silence:   cast.ToFloat32(cfg.Get("audio.endpoint.rule1_min_trailing_silence", 0.5)),
-		Rule2Silence:   cast.ToFloat32(cfg.Get("audio.endpoint.rule2_min_trailing_silence", 1.0)),
-		Rule3Utterance: cast.ToFloat32(cfg.Get("audio.endpoint.rule3_min_utterance_length", 15.0)),
+		SegmentSilenceMs: cfg.GetInt("audio.segment.silence_ms", 1500),
+		MaxUtterance:     time.Duration(cfg.GetInt("audio.segment.max_utterance_seconds", 30)) * time.Second,
 
 		HotwordsScore: cast.ToFloat32(cfg.Get("audio.hotwords.score", 2.0)),
 
@@ -117,6 +118,11 @@ func (c Config) normalized() Config {
 	if c.MaxActivePaths <= 0 {
 		c.MaxActivePaths = 4
 	}
+	if c.DecodingMethod == "" {
+		// 识别器始终带有热词文件，而 sherpa-onnx 要求提供热词文件时必须使用
+		// modified_beam_search，否则配置非法、识别器创建失败（返回 nil）。
+		c.DecodingMethod = "modified_beam_search"
+	}
 	if c.LoadTimeout <= 0 {
 		c.LoadTimeout = 5 * time.Second
 	}
@@ -135,8 +141,11 @@ func (c Config) normalized() Config {
 	if c.EmitInterval <= 0 {
 		c.EmitInterval = 200 * time.Millisecond
 	}
+	if c.SegmentSilenceMs <= 0 {
+		c.SegmentSilenceMs = 1500
+	}
 	if c.MaxUtterance <= 0 {
-		c.MaxUtterance = 20 * time.Second
+		c.MaxUtterance = 30 * time.Second
 	}
 	if c.HotwordsScore <= 0 {
 		c.HotwordsScore = 2.0

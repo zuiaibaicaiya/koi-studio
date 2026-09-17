@@ -117,22 +117,25 @@ func init() {
 			"decode_batch": config.Env("AUDIO_DECODE_BATCH", 3),
 			// 中间结果最小下发间隔（毫秒），用于限流，降低网络开销。
 			"emit_interval": config.Env("AUDIO_EMIT_INTERVAL", 200),
-			// 单句最长时长（秒），超过后强制断句，防止长时间无端点导致结果不下发。
-			"max_utterance": config.Env("AUDIO_MAX_UTTERANCE", 30),
 		},
 
-		// Endpoint Detection
+		// Realtime Segmentation（实时断句）
 		//
-		// 端点检测规则，决定何时认为一句话结束并输出最终结果。
-		"endpoint": map[string]any{
-			"enable": config.Env("AUDIO_ENDPOINT_ENABLE", true),
-			// 检测到尾部静音超过该秒数且已识别出内容时断句。
-			// 设得稍长以避免正常说话中的自然停顿被误判为断句。
-			"rule1_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE1", 1.5),
-			// 检测到尾部静音超过该秒数（无论是否识别出内容）时断句。
-			"rule2_min_trailing_silence": config.Env("AUDIO_ENDPOINT_RULE2", 2.5),
-			// 语音段超过该秒数时强制断句。
-			"rule3_min_utterance_length": config.Env("AUDIO_ENDPOINT_RULE3", 30.0),
+		// 实时转写**不使用** sherpa-onnx 的内置端点检测：其端点必须靠
+		// OnlineStream.Reset 重新武装，而 Reset 只重置解码器状态、已喂入但
+		// 尚未被 chunk 消费的尾部音频仍留在特征管线里，会让下一句开头的音频
+		// 与上一句尾部拼在同一个 chunk 中，导致：
+		//   1) 逐字时间戳原点偏移（整体偏晚 0.1~0.2s），首字常被压成零宽区间；
+		//   2) 首字音素被截断，识别准确率下降。
+		// 改为在一条连续识别流上按「尾部静音」自行断句，逐字时间戳与整段
+		// 离线解码完全一致（见 tests/asr 的实时流回归测试）。
+		"segment": map[string]any{
+			// 断句静音阈值（毫秒）：距最后一个已发射 token 的音频时长超过该值
+			// 即认为一句结束。该值包含模型发射 token 的固有延迟（约 0.2~0.4s），
+			// 因此应明显大于期望的真实静音时长，避免换气停顿被误判为句尾。
+			"silence_ms": config.Env("AUDIO_SEGMENT_SILENCE_MS", 1500),
+			// 单句最长时长（秒），超过后强制断句，防止长时间无停顿导致结果不下发。
+			"max_utterance_seconds": config.Env("AUDIO_SEGMENT_MAX_UTTERANCE", 30),
 		},
 
 		// Hotwords
