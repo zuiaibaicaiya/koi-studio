@@ -69,6 +69,13 @@ func (speakerService *SpeakerService) GetSpeakerById(id int) (speaker models.Spe
 	return speaker, err
 }
 
+// GetSpeakerByName 按名称查询说话人（名称全局唯一），不存在时返回错误
+func (speakerService *SpeakerService) GetSpeakerByName(name string) (speaker models.Speaker, err error) {
+	err = facades.Orm().Query().Where("name = ?", name).FirstOrFail(&speaker)
+
+	return speaker, err
+}
+
 // GetSpeakerDetail 查询说话人详情，并附带其名下的声纹音频列表
 func (speakerService *SpeakerService) GetSpeakerDetail(id int) (speaker models.Speaker, err error) {
 	speaker, err = speakerService.GetSpeakerById(id)

@@ -14,6 +14,7 @@ import (
 	"koi-server/app/broadcasting"
 	contractsaudio "koi-server/app/contracts/audio"
 	"koi-server/app/services"
+	"koi-server/packages/socketio"
 	"koi-server/packages/socketio/contracts"
 )
 
@@ -109,6 +110,7 @@ func (r *SocketioController) handleConnection(socket *socketiolib.Socket, _ ...a
 	r.on(socket, broadcasting.EventGetHotwords, r.handleGetHotwords)
 	r.on(socket, broadcasting.EventJoinMeeting, r.handleJoinMeeting)
 	r.on(socket, broadcasting.EventLeaveMeeting, r.handleLeaveMeeting)
+	r.on(socket, broadcasting.EventRegisterSpeaker, r.handleRegisterSpeaker)
 	r.onDisconnect(socket, clientID, channel)
 
 	r.log.Info(fmt.Sprintf("socketio: client %s joined channel %s", clientID, channel))
@@ -312,6 +314,82 @@ func (r *SocketioController) handleJoinMeeting(socket *socketiolib.Socket, args 
 		"hotwordsApplied":  hotwordsStr != "",
 	})
 	return nil
+}
+
+// handleRegisterSpeaker 处理「框选转写文字 → 动态注册说话人」请求。
+//
+// 客户端在实时转写页框选一段（或多段）转写文字后，把该片段的起止时间
+// （毫秒，与会话转写结果同一时间基准）与说话人名称发给服务端；服务端据此
+// 从会话录音中截取音频提取声纹、注册（或复用）说话人、写入会议说话人列表，
+// 并把该时间段内已定稿的历史转写重新归属到该说话人。
+//
+// 无论成功或失败都通过 speaker-registered 回执（而不是通用 error 事件），
+// 便于前端在弹窗内就地展示失败原因。成功后同时通知会议观众频道，
+// 使第二屏投屏同步新增说话人并刷新片段归属。
+func (r *SocketioController) handleRegisterSpeaker(socket *socketiolib.Socket, args ...any) error {
+	requestID, req, err := parseSpeakerRegistration(args)
+	if err != nil {
+		r.emitSpeakerRegistered(socket, map[string]any{
+			"success":   false,
+			"requestId": requestID,
+			"message":   err.Error(),
+		})
+
+		return nil
+	}
+
+	clientID := string(socket.Id())
+	result, err := r.audio.RegisterSpeakerFromSegment(clientID, req)
+	if err != nil {
+		r.log.Warning(fmt.Sprintf("socketio: client %s failed to register speaker from segment: %v", clientID, err))
+		r.emitSpeakerRegistered(socket, map[string]any{
+			"success":   false,
+			"requestId": requestID,
+			"message":   speakerRegistrationErrorMessage(err),
+		})
+
+		return nil
+	}
+
+	r.log.Info(fmt.Sprintf(
+		"socketio: client %s registered speaker %q (id=%d) from segment [%dms, %dms), relabeled=%d",
+		clientID, result.SpeakerName, result.SpeakerID, result.StartMs, result.EndMs, result.RelabeledCount,
+	))
+
+	r.emitSpeakerRegistered(socket, map[string]any{
+		"success":       true,
+		"requestId":     requestID,
+		"meetingId":     result.MeetingID,
+		"startMs":       result.StartMs,
+		"endMs":         result.EndMs,
+		"relabeled":     result.RelabeledCount,
+		"duration":      result.AudioDuration,
+		"validDuration": result.ValidDuration,
+		"speaker": map[string]any{
+			"id":          result.SpeakerID,
+			"name":        result.SpeakerName,
+			"description": result.SpeakerDescription,
+		},
+	})
+
+	return nil
+}
+
+// emitSpeakerRegistered 把注册结果投递给发起端，并在成功关联会议时同步到
+// 该会议的观众频道（第二屏投屏需要同步说话人列表与片段归属）。
+func (r *SocketioController) emitSpeakerRegistered(socket *socketiolib.Socket, payload map[string]any) {
+	r.emit(socket, broadcasting.EventSpeakerRegistered, payload)
+
+	meetingID, ok := payload["meetingId"].(uint)
+	if !ok || meetingID == 0 {
+		return
+	}
+	r.socketio.EmitToRoom(
+		socketio.DefaultNamespace,
+		broadcasting.MeetingViewerChannel(meetingID),
+		broadcasting.EventSpeakerRegistered,
+		payload,
+	)
 }
 
 // handleLeaveMeeting 客户端离开会议转写。

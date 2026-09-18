@@ -64,36 +64,58 @@ func (voiceprintService *SpeakerVoiceprintService) Status() contractsspeaker.Mod
 // 流程：校验文件 -> 提取声纹 -> 落盘归档 -> 写入数据库 -> 刷新内存声纹库。
 // 任一环节失败都不会留下半成品：落盘后写库失败时会回收已保存的文件。
 func (voiceprintService *SpeakerVoiceprintService) RegisterAudio(speaker *models.Speaker, file filesystem.File, remark string) (models.SpeakerAudio, error) {
-	var audio models.SpeakerAudio
-
 	data, err := voiceprintService.readUpload(file)
 	if err != nil {
-		return audio, err
+		return models.SpeakerAudio{}, err
 	}
+
+	extension := strings.ToLower(file.GetClientOriginalExtension())
+	// 注册说话人要求足够长的有效语音（去除静音后的实际说话时长），
+	// 不足时直接提示用户补录，避免注册出不稳定的声纹。
+	minValid := cast.ToFloat64(facades.Config().Get("speaker.min_valid_duration", 5.0))
+
+	return voiceprintService.register(speaker, data, extension, file.GetClientOriginalName(), remark, minValid)
+}
+
+// RegisterAudioBytes 从内存中的 WAV 音频字节流注册一条声纹。
+//
+// 用于实时转写中「框选文字 → 动态注册说话人」：音频直接截取自会话录音，
+// 单次选中片段通常短于 HTTP 上传注册要求的有效语音时长（默认 5s），
+// 因此改用 speaker.realtime.min_valid_duration（默认 1s）作为下限。
+func (voiceprintService *SpeakerVoiceprintService) RegisterAudioBytes(speaker *models.Speaker, data []byte, fileName, remark string) (models.SpeakerAudio, error) {
+	if len(data) == 0 {
+		return models.SpeakerAudio{}, errors.New("音频内容为空")
+	}
+
+	minValid := cast.ToFloat64(facades.Config().Get("speaker.realtime.min_valid_duration", 1.0))
+
+	return voiceprintService.register(speaker, data, "wav", fileName, remark, minValid)
+}
+
+// register 声纹注册的公共流程：提取特征 -> 校验有效语音 -> 落盘 -> 写库 -> 刷新内存库。
+func (voiceprintService *SpeakerVoiceprintService) register(speaker *models.Speaker, data []byte, extension, fileName, remark string, minValid float64) (models.SpeakerAudio, error) {
+	var audio models.SpeakerAudio
 
 	feature, err := facades.Speaker().Extract(data)
 	if err != nil {
 		return audio, err
 	}
 
-	// 注册说话人要求足够长的有效语音（去除静音后的实际说话时长），
-	// 不足时直接提示用户补录，避免注册出不稳定的声纹。
-	minValid := cast.ToFloat64(facades.Config().Get("speaker.min_valid_duration", 5.0))
 	if feature.ValidDuration < minValid {
 		return audio, fmt.Errorf(
-			"%w: 有效语音时长仅 %.2f 秒，至少需要 %.0f 秒，请录制更长、更连贯的语音",
+			"%w: 有效语音时长仅 %.2f 秒，至少需要 %.1f 秒，请提供更长、更连贯的语音",
 			ErrValidSpeechTooShort, feature.ValidDuration, minValid,
 		)
 	}
 
-	filePath, err := voiceprintService.store(speaker.ID, file, data)
+	filePath, err := voiceprintService.store(speaker.ID, extension, data)
 	if err != nil {
 		return audio, err
 	}
 
 	audio = models.SpeakerAudio{
 		SpeakerID:     speaker.ID,
-		FileName:      file.GetClientOriginalName(),
+		FileName:      fileName,
 		FilePath:      filePath,
 		FileSize:      int64(len(data)),
 		SampleRate:    feature.SampleRate,
@@ -277,10 +299,9 @@ func (voiceprintService *SpeakerVoiceprintService) readUpload(file filesystem.Fi
 }
 
 // store 把音频归档到配置的存储磁盘，返回磁盘内的相对路径。
-func (voiceprintService *SpeakerVoiceprintService) store(speakerID uint, file filesystem.File, data []byte) (string, error) {
+func (voiceprintService *SpeakerVoiceprintService) store(speakerID uint, extension string, data []byte) (string, error) {
 	config := facades.Config()
 
-	extension := strings.ToLower(file.GetClientOriginalExtension())
 	if extension == "" {
 		extension = "wav"
 	}

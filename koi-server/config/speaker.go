@@ -50,6 +50,15 @@ func init() {
 		// 低于该值说明语音不足，无法注册出稳定声纹，接口会直接给出提示。
 		"min_valid_duration": config.Env("SPEAKER_MIN_VALID_DURATION", 5.0),
 
+		// Realtime Registration
+		//
+		// 实时会议中「框选转写文字 → 动态注册说话人」的有效语音最短时长（秒）。
+		// 该场景的音频来自会话录音的单个（或少数几个）语句，通常远短于上传注册的
+		// 5 秒下限，因此单独配置；过短仍会被拒绝，以保证声纹可用。
+		"realtime": map[string]any{
+			"min_valid_duration": config.Env("SPEAKER_REALTIME_MIN_VALID_DURATION", 1.0),
+		},
+
 		// Voice Activity Detection (VAD)
 		//
 		// 语音活动检测模型，用于从音频中切出有效语音、剔除静音段，

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -39,6 +40,8 @@ const (
 	finalPushTimeout = time.Second
 	// shutdownTimeout 关闭服务时等待单个会话收尾的最长时间。
 	shutdownTimeout = 5 * time.Second
+	// maxSegmentDurationMs 单次声纹注册可截取的最长音频时长（毫秒）。
+	maxSegmentDurationMs = 60 * 1000
 )
 
 // 服务可能返回的错误。
@@ -47,6 +50,12 @@ var (
 	ErrServiceClosed = errors.New("audio: service is closed")
 	ErrModelTimeout  = errors.New("audio: model loading timeout")
 	ErrStreamCreate  = errors.New("audio: failed to create online stream")
+	// ErrSessionNotFound 客户端当前没有活跃的转写会话。
+	ErrSessionNotFound = errors.New("audio: session not found")
+	// ErrRecordingUnavailable 会话录音不可用（临时文件缺失或尚未写入）。
+	ErrRecordingUnavailable = errors.New("audio: recording buffer unavailable")
+	// ErrInvalidSegmentRange 请求读取的音频时间段非法。
+	ErrInvalidSegmentRange = errors.New("audio: invalid segment range")
 )
 
 // Dependencies 转写服务的外部依赖，全部以接口注入，便于替换与单元测试。
@@ -60,6 +69,10 @@ type Dependencies struct {
 	TranscriptService *services.MeetingTranscriptService
 	SpeakerService    *services.SpeakerService
 	Voiceprint        contractsspeaker.Voiceprint
+	// SpeakerVoiceprint 说话人声纹业务服务，用于动态注册说话人时写入声纹并刷新内存库。
+	SpeakerVoiceprint *services.SpeakerVoiceprintService
+	// MeetingService 会议服务，用于把动态注册的说话人写回会议的说话人列表。
+	MeetingService *services.MeetingService
 }
 
 // validate 校验依赖完整性。
@@ -475,6 +488,57 @@ func (s *Service) acquire(clientID string) (*session, error) {
 	return sess, nil
 }
 
+// SegmentPCM 读取客户端会话中 [startMs, endMs) 区间的原始 PCM（16bit 小端单声道）。
+//
+// 用于实时转写中「框选文字 → 动态注册说话人」：会话音频从第一帧起按序写入
+// 临时文件，写入顺序与转写结果的时间戳（相对会话音频起点）严格一致，因此
+// 可直接按时间偏移定位字节区间。读取使用 ReadAt，不移动写游标，与工作协程并发安全。
+func (s *Service) SegmentPCM(clientID string, startMs, endMs int64) ([]byte, error) {
+	if clientID == "" {
+		return nil, ErrEmptyClientID
+	}
+	if startMs < 0 {
+		startMs = 0
+	}
+	if endMs <= startMs {
+		return nil, ErrInvalidSegmentRange
+	}
+
+	s.mu.RLock()
+	sess, ok := s.sessions[clientID]
+	s.mu.RUnlock()
+
+	if !ok || sess == nil {
+		return nil, ErrSessionNotFound
+	}
+	if sess.tempFile == nil {
+		return nil, ErrRecordingUnavailable
+	}
+
+	// 单次截取长度设上限：声纹提取无需超长音频，同时避免大内存分配。
+	if endMs-startMs > maxSegmentDurationMs {
+		endMs = startMs + maxSegmentDurationMs
+	}
+
+	startByte := startMs * int64(s.cfg.SampleRate) / 1000 * bytesPerSample
+	endByte := endMs * int64(s.cfg.SampleRate) / 1000 * bytesPerSample
+	size := endByte - startByte
+	if size <= 0 {
+		return nil, ErrInvalidSegmentRange
+	}
+
+	buf := make([]byte, size)
+	n, err := sess.tempFile.ReadAt(buf, startByte)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("audio: failed to read segment for client %s: %w", clientID, err)
+	}
+	if n <= 0 {
+		return nil, ErrRecordingUnavailable
+	}
+
+	return buf[:n], nil
+}
+
 // work 是客户端专属的转写工作协程，把解码开销移出 Socket.IO 事件循环。
 func (s *Service) work(sess *session) {
 	defer func() {
@@ -710,7 +774,13 @@ func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker
 		return "未知说话人", nil, nil
 	}
 	ctx := s.deps.SessionMgr.Context(sess.clientID)
-	if ctx == nil || len(ctx.SpeakerIDs) == 0 {
+	if ctx == nil {
+		return "未知说话人", nil, nil
+	}
+	// 说话人列表可能在转写过程中被动态追加（框选文字注册新说话人），
+	// 因此通过加锁的取值方法读取，避免与追加写入产生数据竞争。
+	speakerIDs := ctx.SpeakerIDList()
+	if len(speakerIDs) == 0 {
 		return "未知说话人", nil, nil
 	}
 
@@ -753,7 +823,7 @@ func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker
 	}
 
 	// 检查命中者是否在会议选择的说话人列表中
-	speaker, found := s.findSpeakerByName(match.Name, ctx.SpeakerIDs)
+	speaker, found := s.findSpeakerByName(match.Name, speakerIDs)
 	if !found {
 		return "未知说话人", nil, nil
 	}
@@ -984,10 +1054,13 @@ func (s *Service) publish(clientID, text string, isFinal bool) {
 }
 
 // createTempFile 为客户端创建录音临时文件。
+//
+// 以 O_RDWR 打开：实时转写期间需要从同一文件回读指定时间段的音频
+// （框选文字动态注册说话人时截取声纹样本），只写打开会导致读取被拒绝。
 func (s *Service) createTempFile(clientID string) (*os.File, string, error) {
 	name := clientID + tempFileSuffix
 
-	file, err := os.OpenFile(s.tempFilePath(name), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	file, err := os.OpenFile(s.tempFilePath(name), os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, "", fmt.Errorf("audio: failed to create temp file: %w", err)
 	}
