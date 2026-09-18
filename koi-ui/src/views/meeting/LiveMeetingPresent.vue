@@ -781,15 +781,15 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   scroll-behavior: smooth;
+  /* 投屏画面不出现滚动条：滚轮 / 触控板滚动与贴底跟随仍然可用 */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .present-scroller::-webkit-scrollbar {
-  width: 8px;
-}
-
-.present-scroller::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
-  border-radius: 4px;
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .present-empty {
