@@ -11,7 +11,11 @@ import {
   FullscreenOutlined,
 } from '@antdv-next/icons';
 import presenterApi from '../../services/presenter';
-import socketioService, { SOCKET_URL, type TranscriptPayload } from '../../services/socketio';
+import socketioService, {
+  SOCKET_URL,
+  type SpeakerRegisteredPayload,
+  type TranscriptPayload,
+} from '../../services/socketio';
 import { meetingApi } from '../../services/meetingApi';
 import { useSpeakerStore, type Speaker } from '../../store/speaker';
 import { resolveTranscriptSpeaker } from '../../utils/speakerResolve';
@@ -34,6 +38,10 @@ interface Segment {
   speakerName: string;
   text: string;
   time: string;
+  /** 语音段起始毫秒（相对音频开头），用于按时间段回填说话人归属 */
+  startMs: number;
+  /** 语音段结束毫秒（相对音频开头） */
+  endMs: number;
   /** 去重键：段落相对时间 + 文本（历史回填与实时增量可能重叠） */
   key: string;
 }
@@ -215,10 +223,13 @@ function handleTranscript(payload: TranscriptPayload) {
 
   if (isFinal) {
     const startMs: number = payload.startMs ?? payload.start_ms ?? 0;
+    const endMs: number = payload.endMs ?? payload.end_ms ?? startMs;
     pushSegment({
       speakerName: speaker.name,
       text,
       time: formatTimestamp(startMs),
+      startMs,
+      endMs: Math.max(endMs, startMs),
       key: `${startMs}|${text}`,
     });
     interimText.value = '';
@@ -236,6 +247,37 @@ function handleTranscript(payload: TranscriptPayload) {
     }
     if (autoFollow.value) scrollToBottom();
   }
+}
+
+/**
+ * 主窗口在转写过程中框选文字动态注册了新说话人：投屏端同步
+ * ① 该时间段内已展示片段的归属；② 会议说话人范围，使后续结果按新名称解析。
+ */
+function handleSpeakerRegistered(payload: SpeakerRegisteredPayload) {
+  if (!payload?.success) return;
+
+  const name = payload.speaker?.name;
+  const id = Number(payload.speaker?.id ?? -1);
+  const startMs = Number(payload.startMs ?? 0);
+  const endMs = Number(payload.endMs ?? 0);
+  if (!name) return;
+
+  if (endMs > startMs) {
+    segments.value = segments.value.map((s) =>
+      s.endMs > startMs && s.startMs < endMs ? { ...s, speakerName: name } : s,
+    );
+  }
+
+  if (id > 0 && !configuredSpeakerIds.includes(id)) {
+    configuredSpeakerIds = [...configuredSpeakerIds, id];
+    syncConfiguredSpeakers();
+  }
+  void speakerStore
+    .load({ pageSize: 100 })
+    .then(() => syncConfiguredSpeakers())
+    .catch(() => {
+      // 说话人库刷新失败不影响展示：后端下发的 name 已足以正确标注
+    });
 }
 
 /** 加入会议观众频道：只订阅转写结果，不上行音频 */
@@ -282,6 +324,7 @@ function setupSocket() {
     if (name) meetingName.value = name;
   });
   socketioService.on('transcript', handleTranscript);
+  socketioService.on('speaker-registered', handleSpeakerRegistered);
 }
 
 /** 手动重连：丢弃旧连接（会一并清理监听）后重新建立并订阅 */
@@ -318,6 +361,8 @@ async function loadHistory() {
         speakerName: item.speaker_name || '未识别说话人',
         text,
         time: formatTimestamp(item.start_ms ?? 0),
+        startMs: item.start_ms ?? 0,
+        endMs: item.end_ms ?? item.start_ms ?? 0,
         key: `${item.start_ms}|${text}`,
       });
     }
