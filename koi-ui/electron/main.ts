@@ -64,8 +64,9 @@ const TITLE_BAR_HEIGHT = 36;
 const TRAFFIC_LIGHT_SIZE = 12;
 
 /**
- * 无边框自绘标题栏的窗口外观配置（主窗口与第二屏窗口共用）。
- * macOS 保留原生红绿灯，Windows / Linux 使用 Window Controls Overlay。
+ * 主窗口的无边框自绘标题栏配置。
+ * macOS 保留原生红绿灯，Windows / Linux 使用 Window Controls Overlay；
+ * 第二屏投屏窗口不使用任何原生窗口按钮，见 PRESENT_WINDOW_CHROME。
  */
 const WINDOW_CHROME: BrowserWindowConstructorOptions = {
   titleBarStyle: 'hidden',
@@ -118,6 +119,10 @@ const PRESENT_CHANNEL = {
   isOpen: 'present:is-open',
   /** 切换第二屏全屏态 */
   toggleFullScreen: 'present:toggle-fullscreen',
+  /** 查询第二屏全屏态 */
+  fullScreen: 'present:get-fullscreen',
+  /** 主进程 -> 第二屏：全屏态变化，用于同步自绘按钮 */
+  fullScreenChanged: 'present:fullscreen-changed',
   /** 主进程 -> 主窗口：第二屏开关状态变化 */
   stateChanged: 'present:state-changed',
 } as const;
@@ -459,6 +464,16 @@ const registerWindowIpc = (): void => {
 /** 第二屏窗口默认尺寸 */
 const PRESENT_WINDOW_SIZE = { width: 1280, height: 800 };
 
+/**
+ * 第二屏投屏窗口的外壳：完全自绘，不留任何原生窗口按钮。
+ * - macOS：隐藏标题栏并收起红绿灯，窗口拖拽由页面顶部栏的 app-region 承担；
+ * - Windows / Linux：不启用 titleBarOverlay，系统不绘制最小化 / 最大化 / 关闭按钮。
+ * 投屏场景只需要「全屏 / 关闭」，由投屏页顶部栏自绘，因此页面也无需再预留原生控件安全区。
+ */
+const PRESENT_WINDOW_CHROME: BrowserWindowConstructorOptions = {
+  ...(IS_MAC || IS_WIN ? { titleBarStyle: 'hidden' } : { frame: false }),
+};
+
 /** 第二屏默认路由 */
 const PRESENT_DEFAULT_HASH = '/live/present';
 
@@ -485,6 +500,15 @@ const emitPresentState = (): void => {
   mainWindow.webContents.send(PRESENT_CHANNEL.stateChanged, { open: isAlive(presentWindow) });
 };
 
+/** 读取第二屏全屏态 */
+const getPresentFullScreen = (): boolean => presentWindow?.isFullScreen() ?? false;
+
+/** 把第二屏全屏态推送给投屏页，同步自绘按钮（系统快捷键退出全屏时也能跟上） */
+const emitPresentFullScreen = (): void => {
+  if (!isAlive(presentWindow)) return;
+  presentWindow.webContents.send(PRESENT_CHANNEL.fullScreenChanged, getPresentFullScreen());
+};
+
 /** 关闭第二屏（结束会议 / 主窗口关闭时调用） */
 const closePresentWindow = (): void => {
   if (isAlive(presentWindow)) presentWindow.close();
@@ -499,7 +523,7 @@ const openPresentWindow = async (hash = PRESENT_DEFAULT_HASH): Promise<{ open: b
   const win =
     existing ??
     new BrowserWindow({
-      ...WINDOW_CHROME,
+      ...PRESENT_WINDOW_CHROME,
       ...PRESENT_WINDOW_SIZE,
       minWidth: 640,
       minHeight: 420,
@@ -519,6 +543,12 @@ const openPresentWindow = async (hash = PRESENT_DEFAULT_HASH): Promise<{ open: b
       presentWindow = null;
       emitPresentState();
     });
+
+    // 投屏页自绘按钮需要跟随真实全屏态变化
+    win.on('enter-full-screen', emitPresentFullScreen);
+    win.on('leave-full-screen', emitPresentFullScreen);
+    // macOS 隐藏标题栏后红绿灯仍然会绘制，显式收起，让窗口按钮完全由页面自绘
+    if (IS_MAC) win.setWindowButtonVisibility(false);
   }
 
   await loadPresentPage(win, hash);
@@ -541,9 +571,13 @@ const registerPresentIpc = (): void => {
 
   ipcMain.handle(PRESENT_CHANNEL.isOpen, (): { open: boolean } => ({ open: isAlive(presentWindow) }));
 
+  ipcMain.handle(PRESENT_CHANNEL.fullScreen, (): boolean => getPresentFullScreen());
+
   ipcMain.handle(PRESENT_CHANNEL.toggleFullScreen, (): { fullScreen: boolean } => {
     if (!isAlive(presentWindow)) return { fullScreen: false };
     const next = !presentWindow.isFullScreen();
+    // setFullScreen 在 macOS 上是异步生效的，这里先返回目标态，
+    // 真实状态随后由 enter/leave-full-screen 事件推送兜底
     presentWindow.setFullScreen(next);
     return { fullScreen: next };
   });

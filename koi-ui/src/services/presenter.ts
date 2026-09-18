@@ -23,12 +23,22 @@ export const presenterApi = {
   /** 切换第二屏全屏态，返回切换后的状态 */
   toggleFullScreen: (): Promise<{ fullScreen: boolean }> =>
     ipcRenderer.invoke('present:toggle-fullscreen'),
+  /** 读取第二屏全屏态（首次渲染时对齐按钮图标） */
+  getFullScreen: (): Promise<boolean> => ipcRenderer.invoke('present:get-fullscreen'),
   /** 订阅第二屏开关状态变化（含在第二屏内自行关闭的情况） */
   onStateChange: (listener: (state: PresentState) => void): (() => void) => {
     const handler = (_event: Electron.IpcRendererEvent, state: PresentState) => listener(state);
     ipcRenderer.on('present:state-changed', handler);
     return () => {
       ipcRenderer.off('present:state-changed', handler);
+    };
+  },
+  /** 订阅第二屏全屏态变化（含系统快捷键退出全屏） */
+  onFullScreenChange: (listener: (fullScreen: boolean) => void): (() => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, fullScreen: boolean) => listener(fullScreen);
+    ipcRenderer.on('present:fullscreen-changed', handler);
+    return () => {
+      ipcRenderer.off('present:fullscreen-changed', handler);
     };
   },
 };
