@@ -54,7 +54,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 <template>
   <a-dropdown placement="bottomRight" :trigger="['click']">
     <button class="user-trigger" type="button" :title="displayName" aria-label="账号信息">
-      <a-avatar :src="currentUser?.avatar" :size="26" class="user-avatar">
+      <a-avatar :src="currentUser?.avatar" :size="22" class="user-avatar">
         <template v-if="!currentUser?.avatar">{{ avatarText }}</template>
       </a-avatar>
     </button>
@@ -111,7 +111,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 .user-avatar {
   background: linear-gradient(135deg, var(--color-brand), var(--color-accent));
   color: #fff;
-  font-size: 12px;
+  /* 与标题栏其他图标（主题色片 18px / 明暗滑块 16px）保持同一视觉量级 */
+  font-size: 11px;
+  line-height: 1;
   flex: none;
 }
 .user-menu {
