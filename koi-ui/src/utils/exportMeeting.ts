@@ -38,7 +38,7 @@ function pad(n: number, len = 2): string {
 }
 
 /** 将毫秒格式化为 HH:MM:SS.mmm */
-function formatMs(ms: number): string {
+export function formatMs(ms: number): string {
   const totalSec = Math.floor(ms / 1000)
   const h = Math.floor(totalSec / 3600)
   const m = Math.floor((totalSec % 3600) / 60)
@@ -48,11 +48,11 @@ function formatMs(ms: number): string {
 }
 
 /** 去除文件名中的非法字符。 */
-function sanitizeFileName(name: string): string {
+export function sanitizeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').trim() || '未命名会议'
 }
 
-function parseSpeakerIds(ids?: string | string[]): string[] {
+export function parseSpeakerIds(ids?: string | string[]): string[] {
   if (!ids) return []
   if (Array.isArray(ids)) return ids.map((s) => String(s).trim()).filter(Boolean)
   return ids
@@ -93,7 +93,7 @@ async function fetchAllTranscripts(meetingId: number): Promise<ExportTranscriptI
 }
 
 /** 从转写内容中推导出说话人列表（去重，按出现顺序）。 */
-function collectSpeakers(transcripts: ExportTranscriptItem[]): string[] {
+export function collectSpeakers(transcripts: ExportTranscriptItem[]): string[] {
   const seen = new Set<string>()
   const list: string[] = []
   for (const t of transcripts) {
@@ -106,7 +106,7 @@ function collectSpeakers(transcripts: ExportTranscriptItem[]): string[] {
 }
 
 /** 组装会议详情文本。 */
-function buildMeetingText(meeting: ExportMeetingDTO, transcripts: ExportTranscriptItem[]): string {
+export function buildMeetingText(meeting: ExportMeetingDTO, transcripts: ExportTranscriptItem[]): string {
   const lines: string[] = []
   const push = (s = '') => lines.push(s)
 
@@ -149,7 +149,7 @@ function buildMeetingText(meeting: ExportMeetingDTO, transcripts: ExportTranscri
 }
 
 /** 从音频 URL 中解析文件名（含扩展名）。 */
-function audioFileNameFromUrl(url: string): string {
+export function audioFileNameFromUrl(url: string): string {
   try {
     const u = new URL(url)
     const base = u.pathname.split('/').pop() || ''
