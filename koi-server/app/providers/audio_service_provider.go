@@ -52,6 +52,9 @@ func (r *AudioServiceProvider) Register(app foundation.Application) {
 			TranscriptService: services.NewMeetingTranscriptService(),
 			SpeakerService:    services.NewSpeakerService(),
 			Voiceprint:        facades.Speaker(),
+			// 实时会议中动态注册说话人（框选转写文字）所需的依赖。
+			SpeakerVoiceprint: services.NewSpeakerVoiceprintService(),
+			MeetingService:    services.NewMeetingService(),
 		})
 	})
 

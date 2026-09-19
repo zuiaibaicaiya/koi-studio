@@ -30,6 +30,9 @@ const (
 	EventJoinMeeting = "join-meeting"
 	// EventLeaveMeeting 客户端离开会议转写。
 	EventLeaveMeeting = "leave-meeting"
+	// EventRegisterSpeaker 客户端框选一段转写文字，请求把对应音频注册为新说话人，
+	// 参数 {meeting_id, start_ms, end_ms, name, description?, text?, request_id?}。
+	EventRegisterSpeaker = "register-speaker"
 )
 
 // 出站事件（服务端 -> 客户端）。
@@ -52,6 +55,9 @@ const (
 	EventTranscriptEnhanced = "transcript-enhanced"
 	// EventSpeakerIdentified 说话人识别结果通知。
 	EventSpeakerIdentified = "speaker-identified"
+	// EventSpeakerRegistered 动态注册说话人的结果通知，负载
+	// {success, requestId, meetingId, startMs, endMs, relabeled, speaker?, message?}。
+	EventSpeakerRegistered = "speaker-registered"
 	// EventJoinMeetingResponse 加入会议响应。
 	EventJoinMeetingResponse = "join-meeting-response"
 	// EventError 通用错误通知。

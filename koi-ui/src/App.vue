@@ -142,4 +142,9 @@ const antdTheme = computed<ThemeConfig>(() => {
 .app-shell.is-bare {
   --titlebar-height: 0px;
 }
+
+/* 投屏窗口不出现窗口级滚动条：滚动交给页面内部的虚拟列表自行管理 */
+.app-shell.is-bare .app-body {
+  overflow: hidden;
+}
 </style>

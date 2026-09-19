@@ -45,6 +45,35 @@ func (s *MeetingTranscriptService) GetByMeetingIDAll(meetingID uint) ([]models.M
 	return transcripts, err
 }
 
+// RelabelByTimeRange 把与 [startMs, endMs) 相交的最终转写记录重新归属到目标说话人。
+//
+// 用于「用户框选转写文字动态注册说话人」时回填历史归属：此前这些片段可能
+// 被识别为其他说话人或未识别，注册完成后应按用户的框选结果统一纠正。
+func (s *MeetingTranscriptService) RelabelByTimeRange(meetingID uint, startMs, endMs int64, speakerID uint, speakerName string) (int64, error) {
+	if meetingID == 0 || speakerID == 0 || endMs <= startMs {
+		return 0, nil
+	}
+
+	result, err := facades.Orm().Query().
+		Model(&models.MeetingTranscript{}).
+		Where("meeting_id = ?", meetingID).
+		Where("is_final = ?", true).
+		Where("start_ms < ?", endMs).
+		Where("end_ms > ?", startMs).
+		Update(map[string]any{
+			"speaker_id":   speakerID,
+			"speaker_name": speakerName,
+		})
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 0, nil
+	}
+
+	return result.RowsAffected, nil
+}
+
 // DeleteByMeetingID 软删除指定会议的全部转写记录
 func (s *MeetingTranscriptService) DeleteByMeetingID(meetingID uint) error {
 	_, err := facades.Orm().Query().

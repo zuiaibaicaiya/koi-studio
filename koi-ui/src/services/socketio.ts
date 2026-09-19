@@ -39,12 +39,38 @@ export interface TranscriptPayload {
   end_ms?: number;
 }
 
+/** 后端推送的说话人注册结果（register-speaker 的回执） */
+export interface SpeakerRegisteredPayload {
+  /** 是否注册成功 */
+  success?: boolean;
+  /** 请求标识：与发起时上报的 request_id 一致，用于对齐并发请求 */
+  requestId?: string;
+  /** 关联的会议 ID */
+  meetingId?: number;
+  /** 参与注册的音频时间段（毫秒，与会话转写结果同一时间基准） */
+  startMs?: number;
+  endMs?: number;
+  /** 该时间段内被重新归属到新说话人的历史片段条数 */
+  relabeled?: number;
+  /** 参与注册的音频时长（秒） */
+  duration?: number;
+  /** 去除静音后的有效语音时长（秒） */
+  validDuration?: number;
+  /** 注册（或复用）的说话人 */
+  speaker?: SpeakerBrief;
+  /** 失败原因，success 为 false 时下发 */
+  message?: string;
+}
+
 /**
  * Socket.IO 单例封装：负责与转写后端建立长连接、上行 PCM 音频、下行转写文本。
  *
  * 约定的事件协议：
  * - 上行 `with-binary`：(pcmArrayBuffer, flag)，flag=1 表示音频分片，flag=0 表示本次会话结束
+ * - 上行 `register-speaker`：{ meeting_id, start_ms, end_ms, name, description?, text?, request_id? }
+ *   把框选到的转写片段对应的音频注册为新说话人
  * - 下行 `transcript`：{ text, isFinal, ... } 转写结果
+ * - 下行 `speaker-registered`：register-speaker 的回执（成功/失败均通过该事件返回）
  * - 下行 `with-binary-response`：音频分片处理回执
  */
 class SocketioService {
