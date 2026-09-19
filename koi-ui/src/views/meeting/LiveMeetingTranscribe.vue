@@ -22,22 +22,16 @@ import {
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller';
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import socketioService, { type TranscriptPayload } from '../../services/socketio';
-import { createMicrophoneStream, createSystemAudioStream } from '../../services/capture';
-import presenterApi from '../../services/presenter';
 import { resolveTranscriptSpeaker } from '../../utils/speakerResolve';
-import audioProcessorCode from '@/worklets/audio-processor.js?raw';
+import { formatTimestamp } from '../../utils/time';
+import { escapeHtml } from '../../utils/html';
+import type { LiveTranscriptItem } from '../../types/transcript';
+import { useAudioCapture } from '../../composables/useAudioCapture';
+import { usePresenterWindow } from '../../composables/usePresenterWindow';
 
 const route = useRoute();
 const router = useRouter();
 const speakerStore = useSpeakerStore();
-
-interface Segment {
-  id: number;
-  speakerId: number;
-  speakerName: string;
-  text: string;
-  time: string;
-}
 
 // 会议配置（来自创建页 query）
 const meetingName = ref((route.query.name as string) || '未命名会议');
@@ -111,20 +105,14 @@ async function loadHotWords() {
 
 const running = ref(true);
 const elapsed = ref(0); // 秒
-const segments = ref<Segment[]>([]);
+const segments = ref<LiveTranscriptItem[]>([]);
 
 /** 转写会话是否已由用户主动开始 */
 const started = ref(false);
 /** 正在初始化：建立连接、等待模型就绪 */
 const starting = ref(false);
-/** 正在采集音频 */
-const recording = ref(false);
 /** 转写服务连接状态 */
 const connected = ref(false);
-/** 采集 / 权限错误提示 */
-const captureError = ref('');
-/** 实时输入音量（0~1），用于状态指示 */
-const currentVolume = ref(0);
 /** 后端下发的中间结果（未定稿），定稿后并入 segments */
 const interimText = ref('');
 const interimSpeakerId = ref<number>(-1);
@@ -135,228 +123,46 @@ let segId = 0;
 
 /* ------------------------- 第二屏投屏 ------------------------- */
 
-/** 第二屏投屏窗口是否已打开 */
-const presentOpen = ref(false);
-let disposePresentState: (() => void) | undefined;
-
-/**
- * 打开 / 关闭第二屏投屏窗口。
- *
- * 这里只传会议参数，转写内容由第二屏自行建立 Socket.IO 连接、以 viewer 角色
- * 加入会议观众频道订阅（见 views/meeting/LiveMeetingPresent.vue），
- * 不经过主进程 IPC 转发。
- */
-async function togglePresent() {
-  if (presentOpen.value) {
-    await presenterApi.close();
-    presentOpen.value = false;
-    return;
-  }
-
+const { presentOpen, toggle: togglePresent, close: closePresent } = usePresenterWindow({
   // router.resolve 生成的 href 在 hash 模式下形如 "#/live/present?...",
   // 交由主进程拼到页面地址后，需要去掉前导 '#'
-  const href = router.resolve({
-    name: 'livePresent',
-    query: {
-      meetingId: meetingId.value,
-      name: meetingName.value,
-      participants: String(participants.value.length),
-      // 会议配置的说话人：投屏窗口据此做名称映射与「仅一位说话人」兜底
-      speakers: speakerIds.value.join(','),
-      recordMode: recordMode.value,
-      meetingTime: meetingTimeLabel.value,
-      elapsed: String(elapsed.value),
-    },
-  }).href;
-
-  try {
-    await presenterApi.open(href.startsWith('#') ? href.slice(1) : href);
-    presentOpen.value = true;
-  } catch (err) {
-    message.error((err as Error)?.message || '打开第二屏失败');
-  }
-}
-
-/** 毫秒时间戳 → 相对音频开头的偏移（支持天/小时） */
-function formatTimestamp(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const days = Math.floor(totalSeconds / 86400);
-  const remain = totalSeconds % 86400;
-  const hours = Math.floor(remain / 3600);
-  const minutes = Math.floor((remain % 3600) / 60);
-  const seconds = remain % 60;
-  const hms = [
-    String(hours).padStart(2, '0'),
-    String(minutes).padStart(2, '0'),
-    String(seconds).padStart(2, '0'),
-  ].join(':');
-  return days > 0 ? `${days}天 ${hms}` : hms;
-}
+  buildHref: () => {
+    const href = router.resolve({
+      name: 'livePresent',
+      query: {
+        meetingId: meetingId.value,
+        name: meetingName.value,
+        participants: String(participants.value.length),
+        // 会议配置的说话人：投屏窗口据此做名称映射与「仅一位说话人」兜底
+        speakers: speakerIds.value.join(','),
+        recordMode: recordMode.value,
+        meetingTime: meetingTimeLabel.value,
+        elapsed: String(elapsed.value),
+      },
+    }).href;
+    return href.startsWith('#') ? href.slice(1) : href;
+  },
+  onError: (msg) => message.error(msg),
+});
 
 /* ------------------------- 音频采集 -> Socket.IO 上行 ------------------------- */
 
-/** 转写服务要求的采样率 */
-const TARGET_SAMPLE_RATE = 16000;
-/** 每帧上行的 PCM 采样点数 */
-const PCM_CHUNK_SIZE = 512;
-
-let audioContext: AudioContext | null = null;
-let mediaStream: MediaStream | null = null;
-let sourceNode: MediaStreamAudioSourceNode | null = null;
-let workletNode: AudioWorkletNode | null = null;
-/** 零增益节点：保证 worklet 处于渲染图中被驱动，同时避免本机回放造成啸叫 */
-let muteNode: GainNode | null = null;
-/** 系统内录的释放函数（含内部占位视频轨） */
-let stopSystemCapture: (() => void) | null = null;
-let workletReady = false;
-/** 未满一帧的 PCM 余量 */
-let pcmBuffer = new Int16Array(0);
-let volumeTick = 0;
-
-/** 懒初始化 16kHz AudioContext 并注册 audio-processor 模块 */
-async function ensureAudioGraph() {
-  if (!audioContext || audioContext.state === 'closed') {
-    audioContext = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
-    workletReady = false;
-  }
-  if (audioContext.state === 'suspended') {
-    await audioContext.resume();
-  }
-  if (!workletReady) {
-    const blob = new Blob([audioProcessorCode], { type: 'application/javascript' });
-    const url = URL.createObjectURL(blob);
-    try {
-      await audioContext.audioWorklet.addModule(url);
-      workletReady = true;
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  }
-}
-
-/** worklet 回传 16bit PCM：累积成固定长度分片后经 Socket.IO 上行 */
-function handleWorkletMessage(event: MessageEvent) {
-  const chunk = new Int16Array(event.data as ArrayBuffer);
-
-  // 音量指示（降频更新，避免高频渲染）
-  if (++volumeTick % 4 === 0) {
-    let sum = 0;
-    for (let i = 0; i < chunk.length; i++) {
-      const v = chunk[i] / 32768;
-      sum += v * v;
-    }
-    currentVolume.value = chunk.length ? Math.min(1, Math.sqrt(sum / chunk.length) * 5.5) : 0;
-  }
-
+const {
+  recording,
+  currentVolume,
+  captureError,
+  start: startCapture,
+  stop: stopCapture,
+  prepareResume,
+  close: closeAudioContext,
+} = useAudioCapture({
+  getRecordMode: () => recordMode.value,
   // 暂停期间不上行音频，仅保留采集链路
-  if (!recording.value || !running.value) return;
-
-  const merged = new Int16Array(pcmBuffer.length + chunk.length);
-  merged.set(pcmBuffer);
-  merged.set(chunk, pcmBuffer.length);
-  pcmBuffer = merged;
-
-  while (pcmBuffer.length >= PCM_CHUNK_SIZE) {
-    const frame = pcmBuffer.slice(0, PCM_CHUNK_SIZE);
-    pcmBuffer = pcmBuffer.slice(PCM_CHUNK_SIZE);
-    try {
-      socketioService.emit('with-binary', frame.buffer, 1);
-    } catch (err) {
-      console.error('发送音频数据失败:', err);
-      captureError.value = '音频上行失败，请检查转写服务连接';
-      void stopCapture(false);
-      return;
-    }
-  }
-}
-
-/** 按会议配置的录音方式开始采集 */
-async function startCapture() {
-  if (recording.value) return;
-  captureError.value = '';
-  pcmBuffer = new Int16Array(0);
-
-  try {
-    await ensureAudioGraph();
-
-    if (recordMode.value === 'mic') {
-      mediaStream = await createMicrophoneStream();
-    } else {
-      const capture = await createSystemAudioStream({ silent: false });
-      mediaStream = capture.stream;
-      stopSystemCapture = capture.stop;
-    }
-
-    sourceNode = audioContext!.createMediaStreamSource(mediaStream);
-    workletNode = new AudioWorkletNode(audioContext!, 'audio-processor');
-    workletNode.port.onmessage = handleWorkletMessage;
-    muteNode = audioContext!.createGain();
-    muteNode.gain.value = 0;
-
-    sourceNode.connect(workletNode);
-    workletNode.connect(muteNode);
-    muteNode.connect(audioContext!.destination);
-
-    // 用户在系统层结束共享 / 拔出设备时同步收尾
-    const track = mediaStream.getAudioTracks()[0];
-    if (track) track.onended = () => void stopCapture();
-
-    recording.value = true;
-  } catch (err) {
-    captureError.value = (err as Error)?.message || '音频采集启动失败';
-    message.error(captureError.value);
-    await stopCapture(false);
-  }
-}
-
-/**
- * 结束采集并释放音频链路。
- * @param sendFinal 是否向后端发送结束帧（flag=0），用于触发最后一段文本定稿
- */
-async function stopCapture(sendFinal = true) {
-  const wasRecording = recording.value;
-  recording.value = false;
-
-  if (mediaStream) {
-    mediaStream.getTracks().forEach((t) => t.stop());
-    mediaStream = null;
-  }
-  if (stopSystemCapture) {
-    stopSystemCapture();
-    stopSystemCapture = null;
-  }
-  if (workletNode) {
-    workletNode.port.onmessage = null;
-    workletNode.disconnect();
-    workletNode = null;
-  }
-  if (sourceNode) {
-    sourceNode.disconnect();
-    sourceNode = null;
-  }
-  if (muteNode) {
-    muteNode.disconnect();
-    muteNode = null;
-  }
-
-  pcmBuffer = new Int16Array(0);
-  currentVolume.value = 0;
-
-  if (wasRecording && sendFinal && socketioService.isConnected()) {
-    socketioService.emit('with-binary', new ArrayBuffer(0), 0);
-    // 等待结束帧发出，便于后端定稿最后一段文本
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  }
-}
-
-/** 释放 AudioContext（仅在离开页面时调用） */
-function closeAudioContext() {
-  if (audioContext && audioContext.state !== 'closed') {
-    void audioContext.close();
-  }
-  audioContext = null;
-  workletReady = false;
-}
+  shouldSend: () => recording.value && running.value,
+  sendFrame: (data, flag) => socketioService.emit('with-binary', data, flag),
+  canSendFinal: () => socketioService.isConnected(),
+  onError: (msg) => message.error(msg),
+});
 
 /* ------------------------- Socket.IO 下行转写结果 ------------------------- */
 
@@ -520,8 +326,7 @@ function togglePause() {
   running.value = !running.value;
   if (running.value) {
     // 恢复上行前清掉暂停期间的残留音频
-    pcmBuffer = new Int16Array(0);
-    void audioContext?.resume();
+    prepareResume();
   } else {
     clearInterim();
   }
@@ -610,22 +415,6 @@ function stopMeeting() {
       await finalizeAndLeave(() => router.push({ name: 'home' }));
     },
   });
-}
-
-// 转写文本 HTML 转义（不再做热词高亮）
-function escapeHtml(text: string) {
-  const map: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  };
-  return text.replace(/[&<>'"]/g, (c) => map[c]);
-}
-
-function highlight(text: string) {
-  return escapeHtml(text);
 }
 
 /* ------------------------- 会议信息抽屉 ------------------------- */
@@ -719,10 +508,7 @@ watch(
     running.value = true;
     loadHotWords();
     // 会议已切换：第二屏订阅的是上一场会议的观众频道，直接关闭避免展示错乱
-    if (presentOpen.value) {
-      await presenterApi.close();
-      presentOpen.value = false;
-    }
+    await closePresent();
   },
 );
 
@@ -737,19 +523,6 @@ onMounted(async () => {
   // 页面重新获得焦点 / 切回标签页时，滚动到最新转写
   window.addEventListener('focus', onWindowFocus);
   document.addEventListener('visibilitychange', onVisibilityChange);
-
-  // 第二屏可能在其窗口内被单独关闭，订阅状态保证按钮文案同步
-  disposePresentState = presenterApi.onStateChange((state) => {
-    presentOpen.value = state.open;
-  });
-  presenterApi
-    .isOpen()
-    .then((state) => {
-      presentOpen.value = state.open;
-    })
-    .catch(() => {
-      // 非 Electron 环境（浏览器调试）下无投屏能力，静默降级
-    });
 });
 
 /** 标签页切回前台时也视为“重新获得焦点”，滚动到最新转写。 */
@@ -767,9 +540,6 @@ function markMeetingOngoing() {
 onBeforeUnmount(() => {
   window.removeEventListener('focus', onWindowFocus);
   document.removeEventListener('visibilitychange', onVisibilityChange);
-  disposePresentState?.();
-  // 离开转写页即关闭第二屏，避免残留无数据的投屏窗口
-  void presenterApi.close();
   void teardown();
 });
 </script>
@@ -876,7 +646,7 @@ onBeforeUnmount(() => {
                   <span class="seg-speaker">{{ item.speakerName }}</span>
                   <span class="seg-time">{{ item.time }}</span>
                 </div>
-                <div class="seg-text" v-html="highlight(item.text)"></div>
+                <div class="seg-text" v-html="escapeHtml(item.text)"></div>
               </div>
             </DynamicScrollerItem>
           </template>
@@ -891,7 +661,7 @@ onBeforeUnmount(() => {
             <span class="seg-speaker interim-speaker">{{ interimSpeakerName }}</span>
             <span class="seg-time">识别中…</span>
           </div>
-          <div class="seg-text interim-text" v-html="highlight(interimText)"></div>
+          <div class="seg-text interim-text" v-html="escapeHtml(interimText)"></div>
         </div>
       </div>
     </a-card>
