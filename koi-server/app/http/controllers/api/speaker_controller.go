@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+
 	"github.com/goravel/framework/contracts/http"
 
 	"koi-server/app/facades"
@@ -174,7 +176,8 @@ func (ctrl *SpeakerController) UpdateSpeaker(ctx http.Context) http.Response {
 	return ctrl.ApiSuccess(ctx, speaker)
 }
 
-// DeleteSpeaker 删除说话人（软删除），同时删除其名下所有声纹音频
+// DeleteSpeaker 删除说话人（软删除），同时删除其名下所有声纹音频，
+// 并清理该说话人与所有会议的关联（数据库 + 运行中的实时会议会话）。
 func (ctrl *SpeakerController) DeleteSpeaker(ctx http.Context) http.Response {
 	id := ctx.Request().RouteInt("id")
 	if id <= 0 {
@@ -200,7 +203,31 @@ func (ctrl *SpeakerController) DeleteSpeaker(ctx http.Context) http.Response {
 
 	ctrl.voiceprintService.UnregisterSpeaker(speaker.Name)
 
+	// 清理会议关联：会议说话人列表移除该 ID，运行中的实时会议立即停止识别该说话人。
+	if updated, derr := ctrl.speakerService.DetachSpeakerFromAllMeetings(speaker.ID); derr != nil {
+		facades.Log().WithContext(ctx).Warning("清理会议说话人关联失败: " + derr.Error())
+	} else if updated > 0 {
+		facades.Log().WithContext(ctx).Info(fmt.Sprintf("已从 %d 个会议的说话人列表移除: %s", updated, speaker.Name))
+	}
+	if sessionMgr := resolveSessionManager(); sessionMgr != nil {
+		if updated := sessionMgr.RemoveSpeakerEverywhere(speaker.ID); updated > 0 {
+			facades.Log().WithContext(ctx).Info(fmt.Sprintf("已从 %d 个活跃会议会话移除说话人: %s", updated, speaker.Name))
+		}
+	}
+
 	facades.Log().WithContext(ctx).Info("删除说话人成功: " + speaker.Name)
 
 	return ctrl.ApiSuccess(ctx, map[string]string{})
+}
+
+// resolveSessionManager 从 IoC 容器解析会议会话管理器。
+// 容器未注册（如部分测试环境）时返回 nil，由调用方跳过会话清理。
+func resolveSessionManager() *services.MeetingSessionManager {
+	raw, err := facades.App().Make("meeting.session_manager")
+	if err != nil {
+		return nil
+	}
+	mgr, _ := raw.(*services.MeetingSessionManager)
+
+	return mgr
 }

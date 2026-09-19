@@ -525,6 +525,64 @@ func (s *Service) Search(vector []float32, threshold float32) (contracts.Match, 
 	return match, nil
 }
 
+// SearchIn 在声纹库的指定候选说话人范围内检索最相似者。
+//
+// 实现基于本地向量副本在候选范围内逐一计算余弦相似度（候选集通常是单场会议
+// 的少量说话人，开销可忽略），保证库中未列入名单的说话人完全不参与比对。
+func (s *Service) SearchIn(vector []float32, threshold float32, allowed []string) (contracts.Match, error) {
+	if len(vector) == 0 {
+		return contracts.Match{}, ErrEmptyVector
+	}
+	if err := s.wait(); err != nil {
+		return contracts.Match{}, err
+	}
+	if dim := s.Dim(); len(vector) != dim {
+		return contracts.Match{}, fmt.Errorf("%w: got %d, want %d", ErrDimMismatch, len(vector), dim)
+	}
+
+	threshold = s.resolveThreshold(threshold)
+	if len(allowed) == 0 {
+		return contracts.Match{Threshold: threshold}, nil
+	}
+
+	candidates := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		if name != "" {
+			candidates[name] = struct{}{}
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed || s.manager == nil {
+		return contracts.Match{}, ErrServiceClosed
+	}
+
+	var bestName string
+	var best float32
+	for name, registered := range s.vectors {
+		if _, ok := candidates[name]; !ok {
+			continue
+		}
+		if score := bestScore(registered, vector); score > best {
+			best = score
+			bestName = name
+		}
+	}
+
+	match := contracts.Match{
+		Score:     best,
+		Threshold: threshold,
+	}
+	if bestName != "" && best >= threshold {
+		match.Name = bestName
+		match.Matched = true
+	}
+
+	return match, nil
+}
+
 // Verify 校验给定声纹是否属于指定说话人（1:1 比对）。
 func (s *Service) Verify(name string, vector []float32, threshold float32) (contracts.Match, error) {
 	if name == "" {

@@ -60,6 +60,35 @@ func (c *MeetingContext) AddSpeakerID(id uint) bool {
 	return true
 }
 
+// RemoveSpeakerID 从会议上下文移除一个说话人ID，不存在时不做变更。
+// 返回 true 表示本次确实移除了说话人。
+//
+// 用于说话人被删除时把其立即从运行中会议的识别候选集中剔除。
+func (c *MeetingContext) RemoveSpeakerID(id uint) bool {
+	if id == 0 {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	kept := make([]uint, 0, len(c.SpeakerIDs))
+	removed := false
+	for _, existing := range c.SpeakerIDs {
+		if existing == id {
+			removed = true
+
+			continue
+		}
+		kept = append(kept, existing)
+	}
+	if removed {
+		c.SpeakerIDs = kept
+	}
+
+	return removed
+}
+
 // MeetingSessionManager 管理 Socket.IO 客户端连接与会话之间的映射
 //
 // 当客户端通过 join-meeting 事件绑定到某个会议后进行记录，
@@ -125,6 +154,32 @@ func (m *MeetingSessionManager) AddSpeakerID(meetingID uint, speakerID uint) int
 	updated := 0
 	for _, ctx := range contexts {
 		if ctx.AddSpeakerID(speakerID) {
+			updated++
+		}
+	}
+
+	return updated
+}
+
+// RemoveSpeakerEverywhere 把说话人从所有活跃会议上下文中移除，返回被更新的上下文数量。
+//
+// 用于说话人被删除：其声纹已从内存库注销，候选集也必须同步剔除，
+// 避免运行中的会议仍把它当作可识别对象。
+func (m *MeetingSessionManager) RemoveSpeakerEverywhere(speakerID uint) int {
+	if speakerID == 0 {
+		return 0
+	}
+
+	m.mu.RLock()
+	contexts := make([]*MeetingContext, 0, len(m.sessions))
+	for _, ctx := range m.sessions {
+		contexts = append(contexts, ctx)
+	}
+	m.mu.RUnlock()
+
+	updated := 0
+	for _, ctx := range contexts {
+		if ctx.RemoveSpeakerID(speakerID) {
 			updated++
 		}
 	}

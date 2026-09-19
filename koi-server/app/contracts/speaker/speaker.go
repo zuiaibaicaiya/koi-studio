@@ -81,6 +81,14 @@ type Voiceprint interface {
 	// threshold 小于等于 0 时使用配置的默认阈值。
 	Search(vector []float32, threshold float32) (Match, error)
 
+	// SearchIn 在声纹库的指定候选说话人范围内检索最相似者。
+	//
+	// 与 Search 的区别：比对只在 allowed 名单内的说话人之间进行，库中其余
+	// 说话人不参与检索——用于会议场景下「仅识别已关联到当前会议的说话人」，
+	// 未关联者既不会被命中，也不会因相似度更高而挤掉正确候选。
+	// allowed 为空时直接返回未命中；未命中时 Score 为候选范围内的最高相似度。
+	SearchIn(vector []float32, threshold float32, allowed []string) (Match, error)
+
 	// Verify 校验给定声纹是否属于指定说话人（1:1 比对）。
 	Verify(name string, vector []float32, threshold float32) (Match, error)
 

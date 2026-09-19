@@ -99,3 +99,44 @@ func (s *MeetingSessionManagerTestSuite) TestSpeakerIDConcurrentAccess() {
 	// 8 个协程各追加 200 个互不相同的 ID，全部应被记录。
 	s.Len(ctx.SpeakerIDList(), 1+8*200)
 }
+
+// ── 说话人移除（说话人被删除时同步剔除识别资格）──
+
+func (s *MeetingSessionManagerTestSuite) TestRemoveSpeakerID() {
+	ctx := &MeetingContext{MeetingID: 1, SpeakerIDs: []uint{1, 2, 3}}
+
+	s.True(ctx.RemoveSpeakerID(2))
+	s.Equal([]uint{1, 3}, ctx.SpeakerIDList())
+
+	// 不存在的 ID 不做变更。
+	s.False(ctx.RemoveSpeakerID(2))
+	s.Equal([]uint{1, 3}, ctx.SpeakerIDList())
+
+	s.False(ctx.RemoveSpeakerID(0), "零值 ID 不是合法说话人")
+	s.Equal([]uint{1, 3}, ctx.SpeakerIDList())
+
+	s.True(ctx.RemoveSpeakerID(1))
+	s.True(ctx.RemoveSpeakerID(3))
+	s.Equal([]uint(nil), ctx.SpeakerIDList())
+
+	// 移除后仍可重新关联（例如重新注册同名说话人）。
+	s.True(ctx.AddSpeakerID(9))
+	s.Equal([]uint{9}, ctx.SpeakerIDList())
+}
+
+func (s *MeetingSessionManagerTestSuite) TestRemoveSpeakerEverywhere() {
+	mgr := NewMeetingSessionManager()
+	mgr.Bind("client-1", &MeetingContext{MeetingID: 7, SpeakerIDs: []uint{3, 11}})
+	mgr.Bind("client-2", &MeetingContext{MeetingID: 7, SpeakerIDs: []uint{11}})
+	mgr.Bind("client-3", &MeetingContext{MeetingID: 8, SpeakerIDs: []uint{12}})
+
+	updated := mgr.RemoveSpeakerEverywhere(11)
+
+	s.Equal(2, updated, "所有包含该说话人的活跃会话都应被剔除，不限于单个会议")
+	s.Equal([]uint{3}, mgr.Context("client-1").SpeakerIDList())
+	s.Equal([]uint(nil), mgr.Context("client-2").SpeakerIDList())
+	s.Equal([]uint{12}, mgr.Context("client-3").SpeakerIDList(), "未关联该说话人的会话不应被影响")
+
+	s.Equal(0, mgr.RemoveSpeakerEverywhere(0))
+	s.Equal(0, mgr.RemoveSpeakerEverywhere(11), "再次移除不产生变更")
+}

@@ -696,6 +696,10 @@ type textSpan struct {
 }
 
 // identifyUtterance 对一句话对应的音频采样提取声纹并做说话人识别。
+//
+// 检索范围严格限定在会议关联的说话人（speakerIDs 解析出的有效候选）内：
+// 未关联到当前会议的说话人不参与比对，既不会被识别出来，也不会因相似度
+// 更高而挤掉正确候选，从根本上避免跨会议误识别。
 func (s *Service) identifyUtterance(
 	segSamples []float32, sampleRate int,
 	speakerIDs []uint, nameByID map[uint]string,
@@ -709,6 +713,18 @@ func (s *Service) identifyUtterance(
 	if float64(len(segSamples))/float64(sampleRate) < minSpeakerDurationSeconds {
 		return "", nil, false // 太短，不稳定
 	}
+
+	// 候选名单：仅保留能在数据库中解析到的会议说话人（无效 ID 已被上层跳过）。
+	names := make([]string, 0, len(speakerIDs))
+	for _, sid := range speakerIDs {
+		if name, ok := nameByID[sid]; ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "", nil, false
+	}
+
 	// float32 samples -> 16bit PCM bytes -> WAV
 	pcm := make([]byte, 0, len(segSamples)*2)
 	for _, s := range segSamples {
@@ -728,11 +744,10 @@ func (s *Service) identifyUtterance(
 	if err != nil {
 		return "", nil, false
 	}
-	match, err := s.deps.Voiceprint.Search(feat.Vector, 0)
+	match, err := s.deps.Voiceprint.SearchIn(feat.Vector, 0, names)
 	if err != nil || !match.Matched {
 		return "", nil, false
 	}
-	// 检查命中者是否在本会议的 speakerIDs 列表中
 	for _, sid := range speakerIDs {
 		if name, ok := nameByID[sid]; ok && name == match.Name {
 			cp := sid

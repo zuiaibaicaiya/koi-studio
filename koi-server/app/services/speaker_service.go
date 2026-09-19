@@ -1,6 +1,10 @@
 package services
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/goravel/framework/contracts/database/db"
 	"github.com/goravel/framework/contracts/database/orm"
 
@@ -198,6 +202,59 @@ func (speakerService *SpeakerService) DeleteAudioById(speakerID uint, audioID in
 	})
 
 	return result, err
+}
+
+// DetachSpeakerFromAllMeetings 把说话人从所有会议的说话人列表中移除。
+// 返回受影响的会议数量。说话人被删除时调用，避免会议里残留失效的说话人ID，
+// 保证「说话人 ↔ 会议」关联关系始终准确。
+func (speakerService *SpeakerService) DetachSpeakerFromAllMeetings(speakerID uint) (int, error) {
+	if speakerID == 0 {
+		return 0, nil
+	}
+
+	var meetings []models.Meeting
+	if err := facades.Orm().Query().Find(&meetings); err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	for i := range meetings {
+		kept, removed := removeSpeakerID(meetings[i].SpeakerIds, speakerID)
+		if !removed {
+			continue
+		}
+		meetings[i].SpeakerIds = kept
+		if err := facades.Orm().Query().Save(&meetings[i]); err != nil {
+			facades.Log().Warning(fmt.Sprintf("移除会议 %d 的说话人 %d 失败: %v", meetings[i].ID, speakerID, err))
+			continue
+		}
+		updated++
+	}
+
+	return updated, nil
+}
+
+// removeSpeakerID 从逗号分隔的ID字符串中移除指定ID。
+// 返回移除后的字符串以及是否发生了移除。
+func removeSpeakerID(ids string, id uint) (string, bool) {
+	target := strconv.FormatUint(uint64(id), 10)
+
+	parts := strings.Split(ids, ",")
+	kept := make([]string, 0, len(parts))
+	removed := false
+	for _, part := range parts {
+		if strings.TrimSpace(part) == target {
+			removed = true
+
+			continue
+		}
+		kept = append(kept, part)
+	}
+	if !removed {
+		return ids, false
+	}
+
+	return strings.Trim(strings.Join(kept, ","), ","), true
 }
 
 // GetActiveVoiceprints 读取所有说话人的声纹向量，用于重建内存声纹库。

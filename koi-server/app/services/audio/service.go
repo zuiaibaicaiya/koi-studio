@@ -796,6 +796,13 @@ func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker
 		return "未知说话人", nil, nil
 	}
 
+	// 解析会议候选说话人：候选集即「已选择并关联到当前会议」的说话人，
+	// 已删除或无效的 ID 会被跳过，不会进入比对范围。
+	candidates := s.resolveMeetingSpeakers(speakerIDs)
+	if len(candidates) == 0 {
+		return "未知说话人", nil, nil
+	}
+
 	// 取出当前语音段的 PCM 数据
 	pcmData := sess.flushUtterancePCM()
 	if len(pcmData) < 1600 { // < 100ms at 16kHz 16bit
@@ -816,38 +823,46 @@ func (s *Service) identifySpeaker(sess *session) (string, *uint, *models.Speaker
 		return "未知说话人", nil, nil
 	}
 
-	// 1:N 检索
-	match, err := s.deps.Voiceprint.Search(feature.Vector, 0)
+	// 1:N 检索：仅在会议候选说话人范围内检索。库中未关联本会议的说话人
+	// 不参与比对——既不会被识别出来，也不会因相似度更高而挤掉正确候选，
+	// 从根本上避免跨会议误识别。
+	names := make([]string, len(candidates))
+	for i := range candidates {
+		names[i] = candidates[i].Name
+	}
+	match, err := s.deps.Voiceprint.SearchIn(feature.Vector, 0, names)
 	if err != nil || !match.Matched {
 		return "未知说话人", nil, nil
 	}
 
-	// 检查命中者是否在会议选择的说话人列表中
-	speaker, found := s.findSpeakerByName(match.Name, speakerIDs)
-	if !found {
-		return "未知说话人", nil, nil
+	for i := range candidates {
+		if candidates[i].Name == match.Name {
+			speaker := candidates[i]
+			return speaker.Name, &speaker.ID, &speaker
+		}
 	}
 
-	return speaker.Name, &speaker.ID, &speaker
+	return "未知说话人", nil, nil
 }
 
-// findSpeakerByName 在会议选择的说话人列表中按名称查找说话人，返回完整模型。
-func (s *Service) findSpeakerByName(name string, speakerIDs []uint) (models.Speaker, bool) {
+// resolveMeetingSpeakers 把会议说话人ID列表解析为候选说话人模型。
+// 已被删除或数据库中不存在的 ID 会被跳过并记录日志，保证候选集只包含有效说话人。
+func (s *Service) resolveMeetingSpeakers(speakerIDs []uint) []models.Speaker {
 	if s.deps.SpeakerService == nil {
-		return models.Speaker{}, false
+		return nil
 	}
 
+	speakers := make([]models.Speaker, 0, len(speakerIDs))
 	for _, id := range speakerIDs {
 		speaker, err := s.deps.SpeakerService.GetSpeakerById(int(id))
 		if err != nil {
+			s.deps.Log.Debug(fmt.Sprintf("audio: meeting speaker %d unavailable, excluded from candidates: %v", id, err))
 			continue
 		}
-		if speaker.Name == name {
-			return speaker, true
-		}
+		speakers = append(speakers, speaker)
 	}
 
-	return models.Speaker{}, false
+	return speakers
 }
 
 // storeTranscript 将一条转写记录写入数据库。
