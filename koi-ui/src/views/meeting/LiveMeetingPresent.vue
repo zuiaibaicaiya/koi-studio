@@ -591,7 +591,7 @@ onBeforeUnmount(() => {
   height: 10px;
   border-radius: 50%;
   background: var(--color-success);
-  box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.6);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent);
   animation: present-pulse 1.4s infinite;
 }
 
@@ -602,13 +602,13 @@ onBeforeUnmount(() => {
 
 @keyframes present-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.6);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent);
   }
   70% {
-    box-shadow: 0 0 0 10px rgba(82, 196, 26, 0);
+    box-shadow: 0 0 0 10px transparent;
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(82, 196, 26, 0);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 
