@@ -15,8 +15,6 @@ type Socketio interface {
 	EmitToRoom(namespace, room, event string, args ...any)
 	JoinRoom(socket *socketio.Socket, room string) error
 	LeaveRoom(socket *socketio.Socket, room string) error
-	GetClientsInRoom(namespace, room string) []*socketio.Socket
-	GetAllClients(namespace string) []*socketio.Socket
 	Close() error
 	Server() *socketio.Server
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
@@ -38,15 +36,13 @@ func (f MiddlewareFunc) Handle(socket *socketio.Socket, next func() error) error
 	return f(socket, next)
 }
 
+// ConnectionManager 连接登记表：只负责在线连接的登记与查询；
+// 房间/命名空间拓扑以 socket.io 服务器内部状态为权威。
 type ConnectionManager interface {
 	RegisterConnection(socket *socketio.Socket, namespace string)
 	RemoveConnection(socketID string)
 	GetConnection(socketID string) *socketio.Socket
 	GetAllConnections() []*socketio.Socket
 	GetConnectionCount() int
-	GetClientsInRoom(namespace, room string) []*socketio.Socket
-	GetClientsInNamespace(namespace string) []*socketio.Socket
-	BroadcastToAll(event string, args ...any)
-	BroadcastToNamespace(namespace string, event string, args ...any)
 	ClearConnections()
 }

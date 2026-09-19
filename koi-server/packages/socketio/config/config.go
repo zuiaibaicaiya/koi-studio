@@ -7,6 +7,7 @@ import (
 type Config struct {
 	Server     ServerConfig     `mapstructure:"server"`
 	Connection ConnectionConfig `mapstructure:"connection"`
+	Message    MessageConfig    `mapstructure:"message"`
 }
 
 type ServerConfig struct {
@@ -23,6 +24,11 @@ type ConnectionConfig struct {
 	MaxConnections int `mapstructure:"max_connections" default:"1000"`
 	PingInterval   int `mapstructure:"ping_interval" default:"25000"`
 	PingTimeout    int `mapstructure:"ping_timeout" default:"5000"`
+	ConnectTimeout int `mapstructure:"connect_timeout" default:"45000"`
+}
+
+type MessageConfig struct {
+	MaxMessageSize int `mapstructure:"max_message_size" default:"1048576"`
 }
 
 func DefaultConfig() Config {
@@ -38,6 +44,10 @@ func DefaultConfig() Config {
 			MaxConnections: 1000,
 			PingInterval:   25000,
 			PingTimeout:    5000,
+			ConnectTimeout: 45000,
+		},
+		Message: MessageConfig{
+			MaxMessageSize: 1048576,
 		},
 	}
 }
@@ -55,6 +65,8 @@ func FromConfig(cfg config.Config) Config {
 	socketioConfig.Connection.MaxConnections = cfg.GetInt("socketio.connection.max_connections", socketioConfig.Connection.MaxConnections)
 	socketioConfig.Connection.PingInterval = cfg.GetInt("socketio.connection.ping_interval", socketioConfig.Connection.PingInterval)
 	socketioConfig.Connection.PingTimeout = cfg.GetInt("socketio.connection.ping_timeout", socketioConfig.Connection.PingTimeout)
+	socketioConfig.Connection.ConnectTimeout = cfg.GetInt("socketio.connection.connect_timeout", socketioConfig.Connection.ConnectTimeout)
+	socketioConfig.Message.MaxMessageSize = cfg.GetInt("socketio.message.max_message_size", socketioConfig.Message.MaxMessageSize)
 
 	return socketioConfig
 }
@@ -68,6 +80,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Connection.PingTimeout <= 0 {
 		c.Connection.PingTimeout = 5000
+	}
+	if c.Connection.ConnectTimeout <= 0 {
+		c.Connection.ConnectTimeout = 45000
 	}
 	return nil
 }

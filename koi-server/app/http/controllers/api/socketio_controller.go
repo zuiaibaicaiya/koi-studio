@@ -385,15 +385,7 @@ func (r *SocketioController) buildHotwordsString(libraryIDs []uint) string {
 	var lines []string
 
 	for _, libID := range libraryIDs {
-		// 先获取热词库信息（验证是否存在）
-		library, err := r.hotWordLibService.GetLibraryById(int(libID))
-		if err != nil {
-			r.log.Warning(fmt.Sprintf("socketio: hotword library %d not found, skipping: %v", libID, err))
-			continue
-		}
-		_ = library
-
-		// 分页加载该库中的全部热词
+		// 分页加载该库中的全部热词（库不存在时列表查询会失败并告警，无需额外查库校验）。
 		page, pageSize := 1, 500
 		for {
 			words, total, err := r.hotWordService.GetHotWordList(libID, page, pageSize, "")
