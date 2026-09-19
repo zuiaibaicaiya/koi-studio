@@ -6,6 +6,10 @@
 # Dist
 node_modules
 dist/
+build-electron/
+
+# Windows 安装包打包中间产物与产物
+build-installer/
 
 # Profile
 .rspack-profile-*/

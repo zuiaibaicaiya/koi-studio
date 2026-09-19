@@ -11,6 +11,7 @@
     "dev": "rsbuild",
     "format": "prettier --write .",
     "lint": "eslint .",
+    "package:win": "set \"KOI_PACKAGE=1\" && rsbuild build",
     "preview": "rsbuild preview",
     "test": "rstest",
     "test:watch": "rstest --watch"
