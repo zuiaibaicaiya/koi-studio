@@ -26,12 +26,15 @@ import { resolveTranscriptSpeaker } from '../../utils/speakerResolve';
 import { formatTimestamp } from '../../utils/time';
 import { escapeHtml } from '../../utils/html';
 import type { LiveTranscriptItem } from '../../types/transcript';
+import { speakerColorIndex, useSpeakerPalette } from '../../composables/useSpeakerPalette';
 import { useAudioCapture } from '../../composables/useAudioCapture';
 import { usePresenterWindow } from '../../composables/usePresenterWindow';
 
 const route = useRoute();
 const router = useRouter();
 const speakerStore = useSpeakerStore();
+/** 说话人配色：色相取自当前主题色，色系/明暗切换时自动重算 */
+const speakerPalette = useSpeakerPalette();
 
 // 会议配置（来自创建页 query）
 const meetingName = ref((route.query.name as string) || '未命名会议');
@@ -640,10 +643,13 @@ onBeforeUnmount(() => {
             >
               <div class="transcript-item">
                 <div class="seg-head">
-                  <a-avatar :size="24" :style="{ backgroundColor: 'var(--color-success)' }">
+                  <a-avatar :size="24" :style="{ backgroundColor: speakerPalette[speakerColorIndex(item.speakerName)] }">
                     {{ item.speakerName.charAt(0) }}
                   </a-avatar>
-                  <span class="seg-speaker">{{ item.speakerName }}</span>
+                  <span
+                    class="seg-speaker"
+                    :style="{ color: speakerPalette[speakerColorIndex(item.speakerName)] }"
+                  >{{ item.speakerName }}</span>
                   <span class="seg-time">{{ item.time }}</span>
                 </div>
                 <div class="seg-text" v-html="escapeHtml(item.text)"></div>
@@ -658,7 +664,7 @@ onBeforeUnmount(() => {
             <a-avatar :size="24" :style="{ backgroundColor: 'var(--color-warning)' }">
               {{ interimSpeakerName.charAt(0) }}
             </a-avatar>
-            <span class="seg-speaker interim-speaker">{{ interimSpeakerName }}</span>
+            <span class="seg-speaker interim-speaker" :style="{ color: 'var(--color-warning)' }">{{ interimSpeakerName }}</span>
             <span class="seg-time">识别中…</span>
           </div>
           <div class="seg-text interim-text" v-html="escapeHtml(interimText)"></div>
@@ -1023,7 +1029,7 @@ onBeforeUnmount(() => {
   height: 8px;
   border-radius: 50%;
   background: var(--color-success);
-  box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.6);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent);
   animation: pulse 1.4s infinite;
 }
 .live-dot.paused {
@@ -1031,9 +1037,9 @@ onBeforeUnmount(() => {
   animation: none;
 }
 @keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0.6); }
-  70% { box-shadow: 0 0 0 8px rgba(82, 196, 26, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(82, 196, 26, 0); }
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 60%, transparent); }
+  70% { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
 }
 .transcript-list {
   min-height: 200px;
@@ -1081,7 +1087,6 @@ onBeforeUnmount(() => {
   margin-bottom: 4px;
 }
 .seg-speaker {
-  color: var(--color-success);
   font-weight: 600;
   font-size: 13px;
 }
@@ -1097,9 +1102,6 @@ onBeforeUnmount(() => {
 .interim-item {
   border-bottom: none;
   background: var(--color-surface-2);
-}
-.interim-speaker {
-  color: var(--color-warning);
 }
 .interim-text {
   color: var(--color-text-secondary);
