@@ -29,8 +29,6 @@ import socketioService, {
   type SpeakerRegisteredPayload,
   type TranscriptPayload,
 } from '../../services/socketio';
-import { createMicrophoneStream, createSystemAudioStream } from '../../services/capture';
-import presenterApi from '../../services/presenter';
 import { resolveTranscriptSpeaker } from '../../utils/speakerResolve';
 import { formatTimestamp } from '../../utils/time';
 import { escapeHtml } from '../../utils/html';
@@ -255,9 +253,10 @@ interface SelectedRange {
 /* ---- 框选门槛：两道条件同时满足才算「生效」 ---- */
 
 /** 条件一：按住鼠标左键的最短时长（毫秒）。持续按住可避免误框选。 */
-const MIN_HOLD_MS = 3000;
-/** 条件二：框选文字覆盖的最短音频时长（毫秒）。保证声纹样本足够长、可用。 */
-const MIN_SELECT_MS = 3000;
+const MIN_HOLD_MS = 2000;
+/** 条件二：框选文字覆盖的最短音频时长（毫秒）。保证声纹样本足够长、可用。
+ *  后端 realtime 注册的有效语音下限为 1s，2s 仍有余量。 */
+const MIN_SELECT_MS = 2000;
 /** 低于该时长的按压视为普通点击，不给「时长不足」提示，避免误触时被提示打扰。 */
 const CLICK_MS = 800;
 /** 门槛秒数（提示文案使用） */
@@ -378,7 +377,7 @@ function rangeFromSelection(sel: Selection | null): SelectedRange | null {
   };
 }
 
-/* ---- 手势：按住左键拖动 → 持续 3 秒 → 松开生效 ---- */
+/* ---- 手势：按住左键拖动 → 持续 2 秒 → 松开生效 ---- */
 
 /** 左键按下：开始一次框选手势（只在转写文字上起手，避免误触发） */
 function onSelectStart(e: PointerEvent) {
@@ -1022,19 +1021,6 @@ onMounted(async () => {
   window.addEventListener('pointerup', onWindowPointerUp);
   window.addEventListener('pointercancel', onWindowPointerCancel);
   window.addEventListener('blur', onWindowBlur);
-
-  // 第二屏可能在其窗口内被单独关闭，订阅状态保证按钮文案同步
-  disposePresentState = presenterApi.onStateChange((state) => {
-    presentOpen.value = state.open;
-  });
-  presenterApi
-    .isOpen()
-    .then((state) => {
-      presentOpen.value = state.open;
-    })
-    .catch(() => {
-      // 非 Electron 环境（浏览器调试）下无投屏能力，静默降级
-    });
 });
 
 /** 标签页切回前台时也视为“重新获得焦点”，滚动到最新转写。 */
@@ -1060,9 +1046,6 @@ onBeforeUnmount(() => {
     window.clearInterval(holdTimer);
     holdTimer = undefined;
   }
-  disposePresentState?.();
-  // 离开转写页即关闭第二屏，避免残留无数据的投屏窗口
-  void presenterApi.close();
   void teardown();
 });
 </script>
