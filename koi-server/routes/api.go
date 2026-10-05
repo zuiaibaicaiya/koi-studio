@@ -7,6 +7,7 @@ import (
 	"koi-server/app/http/controllers/api"
 	"koi-server/app/http/middleware"
 	"koi-server/app/services"
+	"koi-server/app/services/transcode"
 )
 
 // Api 注册 API 与实时通信路由。
@@ -26,6 +27,10 @@ func Api() {
 	hotWordService := services.NewHotWordService()
 	hotWordLibService := services.NewHotWordLibraryService()
 	speakerVoiceprintService := services.NewSpeakerVoiceprintService()
+
+	// 音频转码服务：恢复上次进程中断遗留的 running 状态
+	transcodeSvc := transcode.NewService()
+	transcodeSvc.RecoverStale()
 
 	socketioController := api.NewSocketioController(
 		facades.Socketio(),
@@ -49,7 +54,7 @@ func Api() {
 	hotWordController := api.NewHotWordController()
 	speakerController := api.NewSpeakerController()
 	speakerAudioController := api.NewSpeakerAudioController()
-	meetingController := api.NewMeetingController(meetingService, transcriptService, sessionMgr)
+	meetingController := api.NewMeetingController(meetingService, transcriptService, sessionMgr, transcodeSvc)
 	dashboardController := api.NewDashboardController()
 
 	// 登录和注册接口，无需认证。
@@ -116,6 +121,7 @@ func Api() {
 		router.Post("/meeting/{id}/audio", meetingController.UploadAudio)
 		router.Post("/meeting/{id}/transcribe", meetingController.StartTranscription)
 		router.Post("/meeting/{id}/retranscribe", meetingController.Retranscribe)
+		router.Post("/meeting/{id}/retranscode", meetingController.RetryTranscode)
 		router.Get("/meeting/{id}/progress", meetingController.GetTranscriptionProgress)
 
 		// 仪表盘统计接口，返回全局聚合指标与趋势。

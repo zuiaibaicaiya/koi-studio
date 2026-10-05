@@ -7,7 +7,8 @@
   "author": "koi-studio",
   "main": "dist/electron/main.cjs",
   "scripts": {
-    "build": "rsbuild build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.mjs",
+    "build": "node scripts/fetch-ffmpeg.mjs && rsbuild build && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder -c electron-builder.config.mjs",
+    "fetch:ffmpeg": "node scripts/fetch-ffmpeg.mjs",
     "dev": "rsbuild",
     "format": "prettier --write .",
     "lint": "eslint .",

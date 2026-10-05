@@ -14,3 +14,5 @@ forge
 *.onnx
 *.wav
 koi-server
+# 构建时动态下载的 ffmpeg 二进制（scripts/fetch-ffmpeg.mjs），不进版本控制
+bin/

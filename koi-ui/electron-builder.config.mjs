@@ -26,18 +26,12 @@ export default {
     if (!existsSync(filePath)) return Promise.resolve();
     const content = readFileSync(filePath, 'utf8');
     const updatedContent = content
-      .replace(
-        /^(\s*APP_PORT\s*=\s*)\d+(\s*)$/gm,
-        `$1${serverPort}$2`,
-      )
+      .replace(/^(\s*APP_PORT\s*=\s*)\d+(\s*)$/gm, `$1${serverPort}$2`)
       .replace(
         /^(\s*APP_URL\s*=\s*)\S+(\s*)$/gm,
         `$1http://localhost:${serverPort}$2`,
       )
-      .replace(
-        /^(\s*GRPC_PORT\s*=\s*)\d+(\s*)$/gm,
-        `$1${grpcPort}$2`,
-      );
+      .replace(/^(\s*GRPC_PORT\s*=\s*)\d+(\s*)$/gm, `$1${grpcPort}$2`);
 
     writeFileSync(filePath, updatedContent, 'utf8');
     return Promise.resolve();
@@ -58,7 +52,13 @@ export default {
     {
       from: join(import.meta.dirname, '..', 'koi-server', 'models'),
       to: 'models',
-    }
+    },
+    {
+      // 构建前由 scripts/fetch-ffmpeg.mjs 复制的平台静态 ffmpeg，
+      // 不存在时随 .filter 自动跳过，不阻塞打包
+      from: join(import.meta.dirname, '..', 'koi-server', 'bin'),
+      to: 'koi-server-bin',
+    },
   ].filter((item) => existsSync(item.from)),
   win: {},
   mac: {
@@ -69,7 +69,8 @@ export default {
       NSCameraUsageDescription: '此应用需要访问您的摄像头以进行视频录制。',
       // macOS 14.2+ 通过 CoreAudio Tap 捕获系统音频(loopback)时必须声明此键，
       // 否则 desktopCapturer 启动音频流会静默失败（无任何报错）。
-      NSAudioCaptureUsageDescription: '此应用需要访问系统音频以进行录屏/系统声音录制。',
+      NSAudioCaptureUsageDescription:
+        '此应用需要访问系统音频以进行录屏/系统声音录制。',
       NSAppleEventsUsageDescription: '此应用需要访问系统功能以请求麦克风权限。',
     },
     entitlements: 'entitlements.plist',

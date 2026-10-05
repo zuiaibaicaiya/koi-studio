@@ -6,9 +6,9 @@ import (
 	"strings"
 
 	"github.com/dromara/carbon/v2"
+	"github.com/google/uuid"
 	"github.com/goravel/framework/contracts/http"
 	"github.com/goravel/framework/facades"
-	"github.com/google/uuid"
 
 	"koi-server/app/http/requests/meetings"
 	"koi-server/app/models"
@@ -16,13 +16,8 @@ import (
 	"koi-server/app/services"
 	audiosvc "koi-server/app/services/audio"
 	offlinetranscribe "koi-server/app/services/offline_transcribe"
+	"koi-server/app/services/transcode"
 )
-
-// 允许上传的音频扩展名
-var supportedAudioExtensions = map[string]struct{}{
-	"wav":  {},
-	"wave": {},
-}
 
 // MeetingController 会议控制器（实时会议 + 音频离线转写）
 type MeetingController struct {
@@ -30,6 +25,7 @@ type MeetingController struct {
 	meetingService    *services.MeetingService
 	transcriptService *services.MeetingTranscriptService
 	sessionMgr        *services.MeetingSessionManager
+	transcodeSvc      *transcode.Service
 }
 
 // NewMeetingController 创建控制器实例
@@ -37,12 +33,24 @@ func NewMeetingController(
 	meetingService *services.MeetingService,
 	transcriptService *services.MeetingTranscriptService,
 	sessionMgr *services.MeetingSessionManager,
+	transcodeSvc *transcode.Service,
 ) *MeetingController {
-	return &MeetingController{
+	ctrl := &MeetingController{
 		meetingService:    meetingService,
 		transcriptService: transcriptService,
 		sessionMgr:        sessionMgr,
+		transcodeSvc:      transcodeSvc,
 	}
+
+	// 转码成功后自动触发离线转写；旧转写记录的清理也在此兜底（覆盖手动重试场景）
+	transcodeSvc.SetOnSuccess(func(meetingID uint) error {
+		if cerr := ctrl.transcriptService.DeleteByMeetingID(meetingID); cerr != nil {
+			facades.Log().Warning(fmt.Sprintf("转码完成后清理旧转写记录失败: %v", cerr))
+		}
+		return ctrl.triggerOfflineTranscription(meetingID)
+	})
+
+	return ctrl
 }
 
 // resolveOfflineServices 从 IoC 容器解析离线转写服务（避免构造函数循环依赖）
@@ -363,8 +371,8 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "请选择要上传的音频文件")
 	}
 	ext := strings.ToLower(file.GetClientOriginalExtension())
-	if _, ok := supportedAudioExtensions[ext]; !ok {
-		return ctrl.ApiErrorMsg(ctx, "仅支持 wav 格式的音频文件")
+	if _, ok := transcode.SupportedInputExtensions[ext]; !ok {
+		return ctrl.ApiErrorMsg(ctx, "仅支持 wav/mp3/m4a/aac/flac/ogg/opus/webm/amr/wma 格式的音频文件")
 	}
 
 	// 校验文件大小（默认上限 500MB，可通过配置覆盖）
@@ -383,33 +391,49 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "音频文件内容为空")
 	}
 
-	// 校验 WAV 文件头：拒绝非 WAV 文件或格式不兼容的音频
-	wavInfo, werr := audiosvc.ParseWAVHeader(data)
-	if werr != nil {
-		facades.Log().WithContext(ctx).Warning("上传音频格式校验失败: " + werr.Error())
-		return ctrl.ApiErrorMsg(ctx, "音频文件格式无效，请上传 16kHz 16bit PCM WAV 文件")
+	// 格式判定：16kHz/16bit/单声道 PCM WAV 与转写模型兼容，直接走原流程；
+	// 其余格式（含非标准 WAV）进入异步转码队列，统一转为目标格式。
+	var wavInfo *audiosvc.WAVHeaderInfo
+	compatMsg := ""
+	needsTranscode := true
+	if info, werr := audiosvc.ParseWAVHeader(data); werr == nil {
+		wavInfo = info
+		if compatible, msg := info.IsCompatibleWithTranscription(); compatible {
+			compatMsg = msg // 兼容但带提示（如立体声会被混音）
+			if info.Channels == 1 {
+				needsTranscode = false
+			}
+		} else {
+			compatMsg = msg
+		}
 	}
 
-	compatible, compatMsg := wavInfo.IsCompatibleWithTranscription()
-	if !compatible {
+	// 未启用转码时保持旧行为：仅接受兼容的 WAV 文件
+	if !facades.Config().GetBool("audio.transcode.enabled", true) && needsTranscode {
+		if wavInfo == nil {
+			return ctrl.ApiErrorMsg(ctx, "音频文件格式无效，请上传 16kHz 16bit PCM WAV 文件")
+		}
 		return ctrl.ApiErrorMsg(ctx, compatMsg)
 	}
 
 	// 写入 audio 存储磁盘
 	//
-	// 路径规则对齐实时会议归档：直接存放于 audio disk 根目录。
+	// 兼容文件直存 audio disk 根目录（路径规则对齐实时会议归档）；
+	// 待转码文件存入 original/ 子目录，转码输出写回根目录。
 	// 文件名采用 UUIDv7（去掉连字符的 32 字符 hex），时间有序、数据库索引友好。
 	diskName := facades.Config().GetString("audio.storage.disk", "audio")
 	disk := facades.Storage().Disk(diskName)
 
 	// UUIDv7：前 48 位为毫秒时间戳，保证时间有序；后 80 位为随机位，避免碰撞。
-	// 去掉连字符（ReplaceAll("-", "")）生成 32 字符 hex，与 Socket.IO 连接 ID 同为扁平根目录命名风格。
 	uuidV7, err := uuid.NewV7()
 	if err != nil {
 		facades.Log().WithContext(ctx).Error("生成 UUID 失败: " + err.Error())
 		return ctrl.ApiErrorMsg(ctx, "生成文件标识失败")
 	}
 	relPath := strings.ReplaceAll(uuidV7.String(), "-", "") + "." + ext
+	if needsTranscode {
+		relPath = "original/" + relPath
+	}
 
 	if err := disk.Put(relPath, string(data)); err != nil {
 		facades.Log().WithContext(ctx).Error("保存音频文件失败: " + err.Error())
@@ -423,19 +447,33 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		return ctrl.ApiErrorMsg(ctx, "音频文件保存不完整，请重试")
 	}
 
-	// 如果之前已有音频文件，优先删除旧的，避免浪费磁盘
+	// 如果之前已有音频文件（转码输出或原始文件），优先删除旧的，避免浪费磁盘
 	if meeting.AudioFilePath != "" && meeting.AudioFilePath != relPath {
 		_ = disk.Delete(meeting.AudioFilePath)
 	}
+	if meeting.OriginalFilePath != "" && meeting.OriginalFilePath != relPath {
+		_ = disk.Delete(meeting.OriginalFilePath)
+	}
 
-	// 更新会议记录：写入音频文件路径，保留会议为 created 状态（尚未开始转写）
-	meeting.AudioFilePath = relPath
+	// 更新会议记录：写入音频路径并重置转码状态，保留会议为 created 状态
+	meeting.AudioFilePath = ""
+	meeting.OriginalFilePath = ""
+	meeting.TranscodeStatus = ""
+	meeting.TranscodeProgress = 0
+	meeting.TranscodeError = ""
+	meeting.TranscodeAttempts = 0
+	if needsTranscode {
+		meeting.OriginalFilePath = relPath
+		meeting.TranscodeStatus = models.MeetingTranscodeStatusPending
+	} else {
+		meeting.AudioFilePath = relPath
+	}
 	if uerr := ctrl.meetingService.UpdateMeeting(&meeting); uerr != nil {
 		facades.Log().WithContext(ctx).Error("更新会议音频路径失败: " + uerr.Error())
 		_ = disk.Delete(relPath)
 		return ctrl.ApiErrorMsg(ctx, "更新会议信息失败")
 	}
-	meeting.AudioURL = ctrl.meetingService.GetAudioURL(relPath)
+	meeting.AudioURL = ctrl.meetingService.GetAudioURL(meeting.AudioFilePath)
 
 	// 如果该会议已有历史转写记录（例如重新上传覆盖），清理旧记录，
 	// 避免新转写结果与旧结果混杂。
@@ -443,29 +481,46 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 		facades.Log().WithContext(ctx).Warning("清理旧转写记录失败: " + cerr.Error())
 	}
 
-	// 音频上传成功后，自动触发后端异步离线转写。
-	// 转写结果将写入 meeting_transcripts 表；进度通过 /meeting/{id}/progress 查询。
-	transcribeMsg := ""
-	if terr := ctrl.triggerOfflineTranscription(ctx, uint(id)); terr != nil {
-		transcribeMsg = "音频已上传，但触发转写失败: " + terr.Error()
-		facades.Log().WithContext(ctx).Warning(transcribeMsg)
-	}
-
 	respData := map[string]any{
-		"meeting_id":        meeting.ID,
-		"audio_file_path":   meeting.AudioFilePath,
-		"audio_url":         meeting.AudioURL,
-		"file_size":         len(data),
-		"original_filename": file.GetClientOriginalName(),
-		"sample_rate":       wavInfo.SampleRate,
-		"channels":          wavInfo.Channels,
-		"bits_per_sample":   wavInfo.BitsPerSample,
-		"duration":          wavInfo.DurationSec,
-		"transcription":     "started",
+		"meeting_id":         meeting.ID,
+		"audio_file_path":    meeting.AudioFilePath,
+		"audio_url":          meeting.AudioURL,
+		"original_file_path": meeting.OriginalFilePath,
+		"file_size":          len(data),
+		"original_filename":  file.GetClientOriginalName(),
 	}
 	if compatMsg != "" {
 		respData["warning"] = compatMsg
 	}
+	if wavInfo != nil {
+		respData["sample_rate"] = wavInfo.SampleRate
+		respData["channels"] = wavInfo.Channels
+		respData["bits_per_sample"] = wavInfo.BitsPerSample
+		respData["duration"] = wavInfo.DurationSec
+	}
+
+	// 待转码格式：提交异步转码任务，完成后自动触发离线转写
+	if needsTranscode {
+		if terr := ctrl.transcodeSvc.Submit(meeting.ID); terr != nil {
+			facades.Log().WithContext(ctx).Error("提交转码任务失败: " + terr.Error())
+			respData["transcode_error"] = terr.Error()
+			respData["transcode_status"] = models.MeetingTranscodeStatusFailed
+			return ctrl.ApiSuccess(ctx, respData)
+		}
+		respData["transcode"] = "queued"
+		respData["transcode_status"] = models.MeetingTranscodeStatusPending
+		respData["message"] = "音频已上传，正在后台转码为 16kHz 16bit 单声道 WAV，完成后自动开始转写"
+		return ctrl.ApiSuccess(ctx, respData)
+	}
+
+	// 兼容格式：音频上传成功后，直接触发后端异步离线转写。
+	// 转写结果将写入 meeting_transcripts 表；进度通过 /meeting/{id}/progress 查询。
+	transcribeMsg := ""
+	if terr := ctrl.triggerOfflineTranscription(uint(id)); terr != nil {
+		transcribeMsg = "音频已上传，但触发转写失败: " + terr.Error()
+		facades.Log().WithContext(ctx).Warning(transcribeMsg)
+	}
+	respData["transcription"] = "started"
 	if transcribeMsg != "" {
 		respData["transcription_error"] = transcribeMsg
 	}
@@ -473,9 +528,9 @@ func (ctrl *MeetingController) UploadAudio(ctx http.Context) http.Response {
 }
 
 // triggerOfflineTranscription 触发会议的异步离线转写：
-// 设置会议状态为 ongoing、清理旧记录、调用 OfflineTranscribeService.TranscribeMeeting。
+// 设置会议状态为 ongoing、调用 OfflineTranscribeService.TranscribeMeeting。
 // 返回的错误会被 UploadAudio 记录到日志，但不阻断音频上传响应。
-func (ctrl *MeetingController) triggerOfflineTranscription(ctx http.Context, meetingID uint) error {
+func (ctrl *MeetingController) triggerOfflineTranscription(meetingID uint) error {
 	offlineSvc, _, err := ctrl.resolveOfflineServices()
 	if err != nil {
 		return err
@@ -485,7 +540,7 @@ func (ctrl *MeetingController) triggerOfflineTranscription(ctx http.Context, mee
 		return fmt.Errorf("离线转写模型加载失败: %s", offlineSvc.Status().Error)
 	}
 	if serr := ctrl.meetingService.SetMeetingStatus(int(meetingID), models.MeetingStatusOngoing); serr != nil {
-		facades.Log().WithContext(ctx).Warning("设置会议状态失败: " + serr.Error())
+		facades.Log().Warning(fmt.Sprintf("设置会议状态失败: %v", serr))
 	}
 	if terr := offlineSvc.TranscribeMeeting(meetingID); terr != nil {
 		_ = ctrl.meetingService.SetMeetingStatus(int(meetingID), models.MeetingStatusCreated)
@@ -534,7 +589,7 @@ func (ctrl *MeetingController) StartTranscription(ctx http.Context) http.Respons
 		facades.Log().WithContext(ctx).Warning("清理旧转写记录失败: " + cerr.Error())
 	}
 
-	if terr := ctrl.triggerOfflineTranscription(ctx, uint(id)); terr != nil {
+	if terr := ctrl.triggerOfflineTranscription(uint(id)); terr != nil {
 		facades.Log().WithContext(ctx).Error("触发转写失败: " + terr.Error())
 		return ctrl.ApiErrorMsg(ctx, "触发转写失败: "+terr.Error())
 	}
@@ -593,6 +648,46 @@ func (ctrl *MeetingController) Retranscribe(ctx http.Context) http.Response {
 	})
 }
 
+// RetryTranscode 手动重试会议音频的转码（转码失败后调用）。
+//
+// 重置尝试次数并重新派发异步转码，转码完成后自动触发离线转写。
+// @Route POST /meeting/{id}/retranscode
+func (ctrl *MeetingController) RetryTranscode(ctx http.Context) http.Response {
+	id := ctx.Request().RouteInt("id")
+	if id <= 0 {
+		return ctrl.ApiErrorMsg(ctx, "会议ID不正确")
+	}
+
+	meeting, err := ctrl.meetingService.GetMeetingById(id)
+	if err != nil {
+		return ctrl.ApiErrorMsg(ctx, "会议不存在")
+	}
+	if meeting.Mode != models.MeetingModeAudio {
+		return ctrl.ApiErrorMsg(ctx, "仅音频转写模式的会议支持转码")
+	}
+	if meeting.OriginalFilePath == "" {
+		return ctrl.ApiErrorMsg(ctx, "会议没有待转码的原始音频文件")
+	}
+	if meeting.TranscodeStatus == models.MeetingTranscodeStatusRunning || ctrl.transcodeSvc.IsRunning(uint(id)) {
+		return ctrl.ApiSuccess(ctx, map[string]any{
+			"meeting_id": meeting.ID,
+			"status":     "running",
+			"message":    "已有转码任务进行中，可通过 progress 接口查询进度",
+		})
+	}
+
+	if serr := ctrl.transcodeSvc.Submit(uint(id)); serr != nil {
+		facades.Log().WithContext(ctx).Error("提交转码任务失败: " + serr.Error())
+		return ctrl.ApiErrorMsg(ctx, "提交转码任务失败: "+serr.Error())
+	}
+
+	return ctrl.ApiSuccess(ctx, map[string]any{
+		"meeting_id": meeting.ID,
+		"status":     "queued",
+		"message":    "转码任务已提交，可通过 progress 接口查询进度",
+	})
+}
+
 // GetTranscriptionProgress 查询离线转写的进度
 //
 // 返回：状态（pending/running/completed/failed）、百分比、当前步骤、错误信息等。
@@ -617,22 +712,55 @@ func (ctrl *MeetingController) GetTranscriptionProgress(ctx http.Context) http.R
 	if perr != nil {
 		// 若尚未创建进度记录，但会议已结束，给出已完成的兜底结果
 		if meeting.Status == models.MeetingStatusFinished {
-			return ctrl.ApiSuccess(ctx, map[string]any{
+			return ctrl.ApiSuccess(ctx, ctrl.withTranscodeState(meeting, map[string]any{
 				"meeting_id":    meeting.ID,
 				"status":        offlinetranscribe.StatusCompleted,
 				"progress":      100,
 				"current_step":  "转写完成",
 				"total_seconds": 0,
-			})
+			}))
 		}
 		// 否则返回等待状态
-		return ctrl.ApiSuccess(ctx, map[string]any{
+		return ctrl.ApiSuccess(ctx, ctrl.withTranscodeState(meeting, map[string]any{
 			"meeting_id":   meeting.ID,
 			"status":       offlinetranscribe.StatusPending,
 			"progress":     0,
 			"current_step": "尚未提交转写任务",
-		})
+		}))
 	}
 
-	return ctrl.ApiSuccess(ctx, progress)
+	// 主路径：转写进度结构 + 转码状态字段
+	view := map[string]any{
+		"meeting_id":    progress.MeetingID,
+		"status":        progress.Status,
+		"progress":      progress.Progress,
+		"current_step":  progress.CurrentStep,
+		"total_seconds": progress.TotalSeconds,
+		"started_at":    progress.StartedAt,
+		"finished_at":   progress.FinishedAt,
+	}
+	if progress.ErrorMessage != "" {
+		view["error_message"] = progress.ErrorMessage
+	}
+	return ctrl.ApiSuccess(ctx, ctrl.withTranscodeState(meeting, view))
+}
+
+// withTranscodeState 将会议的转码状态并入进度响应。
+//
+// 数据库状态为 running 但服务内无对应任务（进程重启遗留）时，
+// 上报为失败并给出重试指引。
+func (ctrl *MeetingController) withTranscodeState(meeting models.Meeting, data map[string]any) map[string]any {
+	status := meeting.TranscodeStatus
+	if status == models.MeetingTranscodeStatusRunning && !ctrl.transcodeSvc.IsRunning(meeting.ID) {
+		status = models.MeetingTranscodeStatusFailed
+		data["transcode_error"] = "服务重启导致转码中断，请手动重试"
+	}
+	data["transcode_status"] = status
+	if status != "" {
+		data["transcode_progress"] = meeting.TranscodeProgress
+		if meeting.TranscodeError != "" {
+			data["transcode_error"] = meeting.TranscodeError
+		}
+	}
+	return data
 }

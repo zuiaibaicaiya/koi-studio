@@ -18,6 +18,14 @@ const (
 	MeetingModeAudio = "audio" // 音频转写（上传音频文件转写）
 )
 
+// 会议音频转码状态取值（未转码时为空字符串）
+const (
+	MeetingTranscodeStatusPending   = "pending"   // 等待转码
+	MeetingTranscodeStatusRunning   = "running"   // 转码中
+	MeetingTranscodeStatusCompleted = "completed" // 转码完成
+	MeetingTranscodeStatusFailed    = "failed"    // 转码失败
+)
+
 // Meeting 实时会议模型
 type Meeting struct {
 	orm.Model
@@ -40,6 +48,17 @@ type Meeting struct {
 	Mode string `json:"mode" gorm:"column:mode" example:"live"`
 	// AudioFilePath 会议录音文件路径，会议结束后由归档任务写入
 	AudioFilePath string `json:"audio_file_path" gorm:"column:audio_file_path"`
+	// OriginalFilePath 原始上传音频文件路径（转码前文件，位于 audio disk 的 original/ 目录），
+	// 转码完成后保留供溯源，未走转码流程时为空
+	OriginalFilePath string `json:"original_file_path" gorm:"column:original_file_path"`
+	// TranscodeStatus 转码状态：pending/running/completed/failed，未转码为空
+	TranscodeStatus string `json:"transcode_status" gorm:"column:transcode_status"`
+	// TranscodeProgress 转码进度 0-100
+	TranscodeProgress int `json:"transcode_progress" gorm:"column:transcode_progress"`
+	// TranscodeError 最近一次转码失败原因
+	TranscodeError string `json:"transcode_error" gorm:"column:transcode_error"`
+	// TranscodeAttempts 转码已尝试次数
+	TranscodeAttempts int `json:"transcode_attempts" gorm:"column:transcode_attempts"`
 	// AudioURL 会议录音的可直接访问 URL，由 AudioFilePath 动态生成，不落库
 	AudioURL string `json:"audio_url" gorm:"-" example:"http://localhost/audio/client123.wav"`
 	// CreatedBy 创建人ID，关联 users 表

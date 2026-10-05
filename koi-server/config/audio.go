@@ -155,6 +155,25 @@ func init() {
 			"queue":      config.Env("AUDIO_ARCHIVE_QUEUE", ""),
 		},
 
+		// Transcode
+		//
+		// 上传音频的自动转码：将任意支持的输入格式统一转为
+		// 16kHz / 16bit / 单声道 PCM WAV（与离线转写模型一致）。
+		// ffmpeg_path 留空时按「可执行文件同级目录 → PATH」自动解析，
+		// Electron 客户端打包的 ffmpeg 位于 koi-server-bin/ffmpeg。
+		"transcode": map[string]any{
+			// 是否启用上传自动转码；关闭后仅接受兼容的 WAV 文件。
+			"enabled": config.Env("AUDIO_TRANSCODE_ENABLED", true),
+			// ffmpeg 可执行文件路径，优先级最高。
+			"ffmpeg_path": config.Env("FFMPEG_PATH", ""),
+			// 是否启用响度归一化（loudnorm），会议录音音量差异大时建议开启。
+			"normalize": config.Env("AUDIO_TRANSCODE_NORMALIZE", false),
+			// 失败自动重试上限（含首次执行），超过后标记失败等待手动重试。
+			"max_attempts": config.Env("AUDIO_TRANSCODE_MAX_ATTEMPTS", 3),
+			// 同时转码的文件数上限，转码较吃 CPU，默认串行。
+			"max_concurrency": config.Env("AUDIO_TRANSCODE_MAX_CONCURRENCY", 1),
+		},
+
 		// Session Cleanup
 		//
 		// 由调度任务（bootstrap/schedule.go）周期性回收空闲会话，
